@@ -1,0 +1,21 @@
+[run]
+source = app
+branch = true
+omit =
+    app/__init__.py
+    app/*/__init__.py
+
+[report]
+# Минимальный порог — падаем если покрытие ниже
+fail_under = 70
+show_missing = true
+skip_covered = false
+exclude_lines =
+    pragma: no cover
+    raise NotImplementedError
+    if __name__ == .__main__.:
+    if TYPE_CHECKING:
+    \.\.\.
+
+[html]
+directory = htmlcov

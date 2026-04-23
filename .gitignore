@@ -1,0 +1,79 @@
+# ===== Secrets & local config =====
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg
+*.egg-info/
+dist/
+build/
+develop-eggs/
+eggs/
+.eggs/
+wheels/
+*.whl
+pip-log.txt
+pip-delete-this-directory.txt
+
+# ===== Virtual environments =====
+venv/
+.venv/
+env/
+ENV/
+
+# ===== Testing & coverage =====
+.pytest_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.tox/
+.hypothesis/
+.ruff_cache/
+.mypy_cache/
+.cache/
+
+# ===== IDE =====
+.idea/
+.vscode/
+.claude/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# ===== Logs =====
+*.log
+logs/
+
+# ===== OS =====
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# ===== Jupyter =====
+.ipynb_checkpoints/
+
+# ===== Docker =====
+docker-compose.override.yml
+
+# ===== Project-specific =====
+# Local knowledge base files (can be large, loaded via script)
+knowledge/*.pdf
+knowledge/*.docx
+# Local Postman dumps
+*.postman_backup.json
+# Scratch / local testing
+scratch/
+tmp/
+*.bak
+test.txt
+notes.txt
