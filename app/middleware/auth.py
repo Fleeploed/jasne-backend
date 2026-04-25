@@ -20,6 +20,33 @@ def _get_jwks_client(supabase_url: str) -> PyJWKClient:
     return PyJWKClient(jwks_url, cache_keys=True)
 
 
+def _decode_token_payload(token: str, settings: Settings) -> dict:
+    issuer = f"{settings.supabase_url.rstrip('/')}/auth/v1"
+    options = {"require": ["sub", "exp", "iss"]}
+
+    try:
+        # Validate legacy symmetric tokens first.
+        return jwt.decode(
+            token,
+            settings.supabase_jwt_secret,
+            algorithms=["HS256"],
+            audience="authenticated",
+            issuer=issuer,
+            options=options,
+        )
+    except (jwt.InvalidAlgorithmError, jwt.InvalidSignatureError):
+        # If signature/algorithm doesn't match HS256, try asymmetric keys.
+        signing_key = _get_jwks_client(settings.supabase_url).get_signing_key_from_jwt(token)
+        return jwt.decode(
+            token,
+            signing_key.key,
+            algorithms=["ES256", "RS256"],
+            audience="authenticated",
+            issuer=issuer,
+            options=options,
+        )
+
+
 def get_current_user_id(
     credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
     settings: Settings = Depends(get_settings),
@@ -27,28 +54,7 @@ def get_current_user_id(
     token = credentials.credentials
 
     try:
-        algorithm = jwt.get_unverified_header(token).get("alg", "HS256")
-
-        if algorithm == "HS256":
-            # Legacy Supabase projects — symmetric secret
-            payload = jwt.decode(
-                token,
-                settings.supabase_jwt_secret,
-                algorithms=["HS256"],
-                audience="authenticated",
-                options={"require": ["sub", "exp"]},
-            )
-        else:
-            # New Supabase projects — asymmetric (ES256 / RS256)
-            signing_key = _get_jwks_client(settings.supabase_url).get_signing_key_from_jwt(token)
-            payload = jwt.decode(
-                token,
-                signing_key.key,
-                algorithms=["ES256", "RS256"],
-                audience="authenticated",
-                options={"require": ["sub", "exp"]},
-            )
-
+        payload = _decode_token_payload(token, settings)
         return UUID(payload["sub"])
 
     except jwt.ExpiredSignatureError as exc:
