@@ -12,11 +12,13 @@ from app.middleware.auth import get_current_user_id
 
 
 def _make_token(secret: str, **overrides) -> str:
+    settings = get_settings()
     payload = {
         "sub": "11111111-1111-1111-1111-111111111111",
         "aud": "authenticated",
         "exp": 9999999999,
         "iat": 1700000000,
+        "iss": f"{settings.supabase_url.rstrip('/')}/auth/v1",
         "role": "authenticated",
     }
     payload.update(overrides)
@@ -62,7 +64,11 @@ class TestGetCurrentUserId:
 
     def test_missing_sub_claim(self):
         settings = get_settings()
-        payload = {"aud": "authenticated", "exp": 9999999999}
+        payload = {
+            "aud": "authenticated",
+            "exp": 9999999999,
+            "iss": f"{settings.supabase_url.rstrip('/')}/auth/v1",
+        }
         token = jwt.encode(payload, settings.supabase_jwt_secret, algorithm="HS256")
         creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials=token)
 
@@ -82,6 +88,15 @@ class TestGetCurrentUserId:
     def test_garbage_token(self):
         settings = get_settings()
         creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials="not.a.jwt")
+
+        with pytest.raises(HTTPException) as exc:
+            get_current_user_id(creds, settings)
+        assert exc.value.status_code == 401
+
+    def test_wrong_issuer(self):
+        settings = get_settings()
+        token = _make_token(settings.supabase_jwt_secret, iss="https://example.com/auth/v1")
+        creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials=token)
 
         with pytest.raises(HTTPException) as exc:
             get_current_user_id(creds, settings)
