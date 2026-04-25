@@ -133,7 +133,8 @@ jobs:
       - name: Deploy to Railway (staging)
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN_STAGING }}
-        run: railway up --service jasne-backend --environment staging --detach
+        # Project: jasne-backend-staging, env: production (Railway default), service: jasne-backend
+        run: railway up --service jasne-backend --environment production --detach
 
       - name: Wait for /health to return 200 (max 5 min)
         run: |
