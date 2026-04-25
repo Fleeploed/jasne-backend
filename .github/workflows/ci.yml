@@ -135,8 +135,21 @@ jobs:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN_STAGING }}
         run: railway up --service jasne-backend --environment staging --detach
 
-      - name: Wait for service to be ready
-        run: sleep 30
+      - name: Wait for /health to return 200 (max 5 min)
+        run: |
+          URL="${{ vars.STAGING_URL }}/health"
+          echo "Polling $URL ..."
+          for i in $(seq 1 30); do
+            code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 "$URL" || echo "000")
+            if [ "$code" = "200" ]; then
+              echo "✓ Healthy after $((i * 10))s"
+              exit 0
+            fi
+            echo "  attempt $i/30 → HTTP $code, retrying in 10s"
+            sleep 10
+          done
+          echo "✗ Health check timeout — service did not become healthy in 5 min"
+          exit 1
 
       - name: Smoke test
         run: ./scripts/smoke_test.sh ${{ vars.STAGING_URL }}
@@ -163,8 +176,21 @@ jobs:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN_PRODUCTION }}
         run: railway up --service jasne-backend --environment production --detach
 
-      - name: Wait for service to be ready
-        run: sleep 30
+      - name: Wait for /health to return 200 (max 5 min)
+        run: |
+          URL="${{ vars.PRODUCTION_URL }}/health"
+          echo "Polling $URL ..."
+          for i in $(seq 1 30); do
+            code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 "$URL" || echo "000")
+            if [ "$code" = "200" ]; then
+              echo "✓ Healthy after $((i * 10))s"
+              exit 0
+            fi
+            echo "  attempt $i/30 → HTTP $code, retrying in 10s"
+            sleep 10
+          done
+          echo "✗ Health check timeout — service did not become healthy in 5 min"
+          exit 1
 
       - name: Smoke test
         run: ./scripts/smoke_test.sh ${{ vars.PRODUCTION_URL }}
