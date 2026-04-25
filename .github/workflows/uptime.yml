@@ -10,9 +10,10 @@ name: Uptime Check
 
 on:
   schedule:
-    # Every 15 minutes. GitHub schedules can run a few minutes late under load
-    # — that's fine for an MVP uptime probe.
-    - cron: "*/15 * * * *"
+    # Every 5 minutes (the minimum GitHub Actions allows).
+    # Note: GitHub may delay or skip runs under high load — this is
+    # documented behavior, not a bug. Don't expect surgical 5-min precision.
+    - cron: "*/5 * * * *"
   workflow_dispatch:  # allow manual trigger from Actions tab
 
 # Only one uptime run at a time — if a probe is slow we'd rather skip the
