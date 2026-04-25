@@ -1,0 +1,63 @@
+name: Uptime Check
+
+# Lightweight external health probe — runs every 15 minutes against the live
+# Railway deployment. If /health stops returning 200 (or returns the wrong
+# body), the workflow fails and GitHub emails repo admins automatically.
+#
+# This complements the in-CI smoke test (which only runs on push) by catching
+# failures that happen between deploys: Railway crash-loops, Supabase outages,
+# expired keys, OpenAI quota issues that bubble up at startup, etc.
+
+on:
+  schedule:
+    # Every 5 minutes (the minimum GitHub Actions allows).
+    # Note: GitHub may delay or skip runs under high load — this is
+    # documented behavior, not a bug. Don't expect surgical 5-min precision.
+    - cron: "*/5 * * * *"
+  workflow_dispatch:  # allow manual trigger from Actions tab
+
+# Only one uptime run at a time — if a probe is slow we'd rather skip the
+# next tick than pile up.
+concurrency:
+  group: uptime
+  cancel-in-progress: false
+
+jobs:
+  health:
+    name: GET /health
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Probe live /health endpoint
+        env:
+          URL: https://jasne-backend-production.up.railway.app/health
+        run: |
+          set -uo pipefail
+
+          # Single attempt with reasonable timeout; if Railway is slow that's
+          # itself a signal worth alerting on.
+          response=$(curl -s -m 10 -w "\n%{http_code}\n%{time_total}" "$URL" || echo "")
+          if [ -z "$response" ]; then
+            echo "::error::No response from $URL (network error or timeout)"
+            exit 1
+          fi
+
+          time_total=$(echo "$response" | tail -n 1)
+          code=$(echo "$response" | tail -n 2 | head -n 1)
+          body=$(echo "$response" | head -n -2)
+
+          echo "URL: $URL"
+          echo "HTTP $code  (${time_total}s)"
+          echo "Body: $body"
+
+          if [ "$code" != "200" ]; then
+            echo "::error::Health check returned HTTP $code (expected 200)"
+            exit 1
+          fi
+
+          if ! echo "$body" | grep -q '"status":"ok"'; then
+            echo "::error::/health body missing 'status:ok' — got: $body"
+            exit 1
+          fi
+
+          echo "OK — service is healthy."
