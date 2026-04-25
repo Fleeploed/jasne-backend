@@ -200,3 +200,20 @@ class HealthResponse(_Base):
     status: Literal["ok"] = "ok"
     environment: str = "development"
     version: str = "0.1.0"
+
+
+class DepStatus(_Base):
+    """Status of a single external dependency for the deep health probe."""
+
+    status: Literal["ok", "error"]
+    latency_ms: int | None = None
+    error: str | None = None
+
+
+class DeepHealthResponse(_Base):
+    """Deep readiness probe — overall status reflects all dependencies."""
+
+    status: Literal["ok", "degraded"]
+    environment: str
+    version: str = "0.1.0"
+    deps: dict[str, DepStatus] = Field(default_factory=dict)
