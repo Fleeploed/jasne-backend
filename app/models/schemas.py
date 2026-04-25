@@ -31,7 +31,15 @@ DEFAULT_REMINDER_DAYS: list[int] = [30, 14, 7, 1]
 
 
 class _Base(BaseModel):
-    model_config = ConfigDict(extra="ignore", str_strip_whitespace=True)
+    # `protected_namespaces=()` disables Pydantic v2's `model_` collision check —
+    # we have legitimate domain field names like ScanResponse.model_used (the GPT
+    # model id used for inference). Without this, Pydantic emits a UserWarning
+    # at every import which clutters Railway logs.
+    model_config = ConfigDict(
+        extra="ignore",
+        str_strip_whitespace=True,
+        protected_namespaces=(),
+    )
 
 
 # ---------------------------------------------------------------------------
