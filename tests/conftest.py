@@ -290,6 +290,13 @@ def client(fake_supabase, monkeypatch):
     monkeypatch.setattr("app.routers.deadlines.get_supabase", fake_get_supabase)
     monkeypatch.setattr("app.main.init_supabase", fake_init_supabase)
     monkeypatch.setattr("app.main.close_supabase", fake_close_supabase)
+    monkeypatch.setattr("app.main.get_supabase", fake_get_supabase)
+
+    # Default OpenAI mock for /health/deep — models.list() succeeds.
+    # Individual tests can override by re-patching `app.main.get_openai_client`.
+    fake_openai = MagicMock()
+    fake_openai.models.list = AsyncMock(return_value=MagicMock(data=[]))
+    monkeypatch.setattr("app.main.get_openai_client", lambda: fake_openai)
 
     from app.main import app
 

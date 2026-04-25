@@ -28,9 +28,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
-      - name: Probe live /health endpoint
+      - name: Probe live /health/deep endpoint
         env:
-          URL: https://jasne-backend-production.up.railway.app/health
+          # /health/deep checks Supabase + OpenAI in addition to liveness.
+          # /health (used by Railway's healthcheck) is a cheap liveness-only probe.
+          URL: https://jasne-backend-production.up.railway.app/health/deep
         run: |
           set -uo pipefail
 
@@ -56,8 +58,8 @@ jobs:
           fi
 
           if ! echo "$body" | grep -q '"status":"ok"'; then
-            echo "::error::/health body missing 'status:ok' — got: $body"
+            echo "::error::/health/deep body missing 'status:ok' (degraded?) — got: $body"
             exit 1
           fi
 
-          echo "OK — service is healthy."
+          echo "OK — service and all deps are healthy."
