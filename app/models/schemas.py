@@ -26,15 +26,20 @@ DocumentCategory = Literal[
 DeadlineType = Literal["payment", "action", "response", "expiration"]
 DeadlineStatus = Literal["active", "completed", "missed"]
 UserLanguage = Literal["cs", "en", "uk", "ru"]
+UserPlan = Literal["free", "pro"]
+MessageRole = Literal["user", "assistant"]
+MessageType = Literal["text", "image", "result_card"]
 
 DEFAULT_REMINDER_DAYS: list[int] = [30, 14, 7, 1]
+
+# Hard cap on pages per scan — also enforced in the DB CHECK constraint.
+# Plan-specific limits (3 free / 10 pro) layer on top of this in services/limits.
+MAX_PAGES_HARD_LIMIT: int = 10
 
 
 class _Base(BaseModel):
     # `protected_namespaces=()` disables Pydantic v2's `model_` collision check —
-    # we have legitimate domain field names like ScanResponse.model_used (the GPT
-    # model id used for inference). Without this, Pydantic emits a UserWarning
-    # at every import which clutters Railway logs.
+    # we have legitimate domain field names like ScanResponse.model_used.
     model_config = ConfigDict(
         extra="ignore",
         str_strip_whitespace=True,
@@ -52,6 +57,7 @@ class ProfileResponse(_Base):
     display_name: str | None = None
     language: UserLanguage
     has_datova_schranka: bool
+    plan: UserPlan = "free"
     created_at: datetime
     updated_at: datetime
 
@@ -60,6 +66,8 @@ class ProfileUpdate(_Base):
     display_name: str | None = Field(default=None, max_length=120)
     language: UserLanguage | None = None
     has_datova_schranka: bool | None = None
+    # `plan` is intentionally NOT updatable via this endpoint — it's owned by
+    # the RevenueCat webhook (server-to-server) once payments are wired up.
 
 
 # ---------------------------------------------------------------------------
@@ -74,6 +82,7 @@ class ClassifierResult(_Base):
     sender: str | None = None
     document_language: str = "cs"
     confidence: float = Field(ge=0.0, le=1.0)
+    page_count: int = Field(default=1, ge=1, le=MAX_PAGES_HARD_LIMIT)
     error: str | None = None
 
 
@@ -105,22 +114,36 @@ class AnalysisResult(_Base):
 
 
 # ---------------------------------------------------------------------------
-# Scan
+# Scan — multi-page
 # ---------------------------------------------------------------------------
 
 
 class ScanRequest(_Base):
-    image_path: str = Field(min_length=1, description="Path in Supabase Storage, e.g. {user_id}/file.jpg")
+    image_paths: list[str] = Field(
+        min_length=1,
+        max_length=MAX_PAGES_HARD_LIMIT,
+        description="Storage paths in the documents bucket, one per page. "
+        "Pages are sent together to GPT Vision in one call.",
+    )
     language: UserLanguage | None = Field(
         default=None,
         description="Override the language for this scan. Falls back to profile.language.",
     )
 
+    @field_validator("image_paths")
+    @classmethod
+    def _no_blank_paths(cls, v: list[str]) -> list[str]:
+        cleaned = [p for p in v if p.strip()]
+        if not cleaned:
+            raise ValueError("image_paths must contain at least one non-empty path")
+        return cleaned
+
 
 class ScanResponse(_Base):
     id: UUID
     user_id: UUID
-    image_path: str
+    image_paths: list[str]
+    page_count: int
     ocr_text: str | None = None
     category: DocumentCategory | None = None
     doc_type: str | None = None
@@ -137,6 +160,7 @@ class ScanListItem(_Base):
     doc_type: str | None = None
     summary: str | None = None
     confidence: float | None = None
+    page_count: int = 1
     created_at: datetime
 
     @classmethod
@@ -148,8 +172,34 @@ class ScanListItem(_Base):
             doc_type=row.get("doc_type"),
             summary=result.get("summary"),
             confidence=result.get("confidence"),
+            page_count=row.get("page_count") or len(row.get("image_paths") or []) or 1,
             created_at=row["created_at"],
         )
+
+
+# ---------------------------------------------------------------------------
+# Chat — questions about an existing scan (Pro feature)
+# ---------------------------------------------------------------------------
+
+
+class ScanMessage(_Base):
+    id: UUID
+    scan_id: UUID
+    role: MessageRole
+    content: str
+    message_type: MessageType
+    created_at: datetime
+
+
+class ChatAskRequest(_Base):
+    question: str = Field(min_length=1, max_length=1000)
+
+
+class ChatAskResponse(_Base):
+    user_message: ScanMessage
+    assistant_message: ScanMessage
+    questions_used: int  # how many questions consumed for this scan in current month
+    questions_remaining: int
 
 
 # ---------------------------------------------------------------------------
@@ -192,11 +242,33 @@ class DeadlineResponse(_Base):
     reminder_days: list[int]
     deadline_type: DeadlineType
     status: DeadlineStatus
+    auto_created: bool = False
     created_at: datetime
 
 
 # ---------------------------------------------------------------------------
-# API wrappers
+# Limits — current usage vs plan caps (used by mobile to gate UI)
+# ---------------------------------------------------------------------------
+
+
+class LimitsResponse(_Base):
+    plan: UserPlan
+    month: str  # YYYY-MM, the period these counters cover
+
+    scans_used: int
+    scans_max: int
+    scans_remaining: int
+
+    max_pages_per_scan: int
+
+    # questions consumed for one specific scan (only populated when ?scan_id= is
+    # passed). null when called without a scan filter.
+    questions_used_for_scan: int | None = None
+    max_questions_per_scan: int
+
+
+# ---------------------------------------------------------------------------
+# API wrappers / system
 # ---------------------------------------------------------------------------
 
 
