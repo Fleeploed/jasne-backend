@@ -1,3 +1,9 @@
+"""CRUD /deadlines — list, get, create (manual), update, delete.
+
+Auto-created deadlines (from analyzer) are inserted directly by the scan
+router. Anything created via this endpoint is `auto_created=false`.
+"""
+
 import logging
 from uuid import UUID
 
@@ -51,6 +57,7 @@ async def create_deadline(
     supabase = await get_supabase()
     payload = body.model_dump(mode="json")
     payload["user_id"] = str(user_id)
+    payload["auto_created"] = False  # manual creation via this endpoint
 
     result = await supabase.table("deadlines").insert(payload).execute()
     if not result.data:
