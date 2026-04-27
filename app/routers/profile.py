@@ -1,3 +1,9 @@
+"""GET / PUT /profile — fetch & update the user's profile.
+
+Profile is auto-created by a Postgres trigger on auth signup, but we have a
+defensive fallback that creates it on first read in case the trigger missed.
+"""
+
 import logging
 from uuid import UUID
 
@@ -12,7 +18,12 @@ router = APIRouter(prefix="/profile", tags=["profile"])
 
 
 async def _ensure_profile(user_id: UUID) -> dict:
-    """Fetch profile, creating a default row if missing (defensive — trigger may not have run)."""
+    """Fetch profile, creating a default row if missing.
+
+    Defensive — the auth-trigger should always create one, but if it didn't
+    run (replication lag, manual user insert, etc.) we don't want the app
+    to 404 forever.
+    """
     supabase = await get_supabase()
     result = await supabase.table("profiles").select("*").eq("id", str(user_id)).limit(1).execute()
     if result.data:
@@ -26,13 +37,15 @@ async def _ensure_profile(user_id: UUID) -> dict:
                 "id": str(user_id),
                 "language": "cs",
                 "has_datova_schranka": False,
+                "plan": "free",
             }
         )
         .execute()
     )
     if not created.data:
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to bootstrap profile"
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to bootstrap profile",
         )
     return created.data[0]
 
@@ -52,7 +65,11 @@ async def update_profile(
     if not updates:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="No fields to update")
 
-    # Ensure profile exists before update
+    # `plan` is intentionally NOT in ProfileUpdate — only the RevenueCat
+    # webhook (server-to-server) is allowed to flip it. Strip defensively
+    # in case schema drift ever lets it through.
+    updates.pop("plan", None)
+
     await _ensure_profile(user_id)
 
     supabase = await get_supabase()
