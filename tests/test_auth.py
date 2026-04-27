@@ -12,11 +12,15 @@ from app.middleware.auth import get_current_user_id
 
 
 def _make_token(secret: str, **overrides) -> str:
+    import os
+
+    issuer = f"{os.environ['SUPABASE_URL'].rstrip('/')}/auth/v1"
     payload = {
         "sub": "11111111-1111-1111-1111-111111111111",
         "aud": "authenticated",
         "exp": 9999999999,
         "iat": 1700000000,
+        "iss": issuer,
         "role": "authenticated",
     }
     payload.update(overrides)
