@@ -191,14 +191,20 @@ def test_user_id() -> UUID:
 
 @pytest.fixture
 def jwt_token(test_user_id: UUID) -> str:
-    """Valid HS256 JWT signed with the test secret from pytest.ini env."""
+    """Valid HS256 JWT signed with the test secret from pytest.ini env.
+
+    Includes the `iss` claim required by app/middleware/auth.py since the
+    JWT decoding refactor added issuer validation.
+    """
     import os
 
+    issuer = f"{os.environ['SUPABASE_URL'].rstrip('/')}/auth/v1"
     payload = {
         "sub": str(test_user_id),
         "aud": "authenticated",
         "exp": 9999999999,
         "iat": 1700000000,
+        "iss": issuer,
         "email": "t@t.cz",
         "role": "authenticated",
     }
