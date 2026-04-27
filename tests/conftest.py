@@ -103,6 +103,12 @@ class _FakeQuery:
                 row.setdefault("reminder_days", [30, 14, 7, 1])
                 row.setdefault("status", "active")
                 row.setdefault("deadline_type", row.get("deadline_type", "action"))
+                row.setdefault("auto_created", False)
+                row.setdefault("plan", "free")
+                # Mirror the DB-side generated `page_count` column for scans.
+                if "image_paths" in row and "page_count" not in row:
+                    paths = row.get("image_paths") or []
+                    row["page_count"] = len(paths)
                 self._table.rows.append(row)
                 inserted.append(row)
             return _FakeResponse(inserted)
@@ -218,7 +224,10 @@ def auth_headers(jwt_token: str) -> dict[str, str]:
 
 @pytest.fixture
 def mock_openai_classify(monkeypatch):
-    """Patch classify_document to return a preset ClassifierResult."""
+    """Patch classify_document to return a preset ClassifierResult.
+
+    Signature matches the new multi-page API: takes list[str] of URLs.
+    """
     from app.models.schemas import ClassifierResult
 
     result = ClassifierResult(
@@ -228,9 +237,10 @@ def mock_openai_classify(monkeypatch):
         sender="Finanční úřad pro Prahu 3",
         document_language="cs",
         confidence=0.95,
+        page_count=1,
     )
 
-    async def fake(image_url: str):
+    async def fake(image_urls: list[str]):
         return result
 
     monkeypatch.setattr("app.routers.scan.classify_document", fake)
@@ -240,21 +250,23 @@ def mock_openai_classify(monkeypatch):
 @pytest.fixture
 def mock_openai_analyze(monkeypatch):
     """Patch analyze_document to return a preset AnalysisResult."""
-    from datetime import date
+    from datetime import date, timedelta
 
     from app.models.schemas import AnalysisResult, DeadlineItem
 
+    # Use a future date so the validator doesn't drop it as "in the past".
+    future = date.today() + timedelta(days=30)
     result = AnalysisResult(
         document_type="platebni_vymer",
         document_type_cz="Platební výměr",
         document_type_localized=None,
         sender="Finanční úřad",
-        summary="Нужно оплатить 4 320 Kč до 15 мая.",
+        summary="Je třeba zaplatit 4 320 Kč.",
         translation=None,
-        deadlines=[DeadlineItem(date=date(2026, 5, 15), description="Оплатить налог", type="payment")],
-        actions_required=["Оплатить 4 320 Kč"],
-        penalty="8% годовых",
-        where_to_go="Finanční úřad",
+        deadlines=[DeadlineItem(date=future, description="Zaplatit daň", type="payment")],
+        actions_required=["Zaplatit 4 320 Kč přes VS 9876"],
+        penalty="Úrok z prodlení 8%",
+        where_to_go="Finanční úřad pro Prahu 3",
         documents_needed=["Daňové přiznání"],
         confidence=0.92,
         tips=None,
@@ -293,7 +305,10 @@ def client(fake_supabase, monkeypatch):
     monkeypatch.setattr("app.services.rag.close_supabase", fake_close_supabase)
     monkeypatch.setattr("app.routers.profile.get_supabase", fake_get_supabase)
     monkeypatch.setattr("app.routers.scan.get_supabase", fake_get_supabase)
+    monkeypatch.setattr("app.routers.chat.get_supabase", fake_get_supabase)
     monkeypatch.setattr("app.routers.deadlines.get_supabase", fake_get_supabase)
+    monkeypatch.setattr("app.services.limits.get_supabase", fake_get_supabase)
+    monkeypatch.setattr("app.services.chat.get_supabase", fake_get_supabase, raising=False)
     monkeypatch.setattr("app.main.init_supabase", fake_init_supabase)
     monkeypatch.setattr("app.main.close_supabase", fake_close_supabase)
     monkeypatch.setattr("app.main.get_supabase", fake_get_supabase)
@@ -322,11 +337,13 @@ def openai_chat_mock(monkeypatch):
         mock_client.embeddings.create = AsyncMock(
             return_value=MagicMock(data=[MagicMock(embedding=[0.1] * 1536)])
         )
-        # ocr.py / explain.py do `from app.services.embeddings import get_openai_client`,
+        # classifier.py / analyzer.py / chat.py do
+        # `from app.services.embeddings import get_openai_client`,
         # so we must patch the re-bound reference in each consumer module.
         monkeypatch.setattr("app.services.embeddings.get_openai_client", lambda: mock_client)
-        monkeypatch.setattr("app.services.ocr.get_openai_client", lambda: mock_client)
-        monkeypatch.setattr("app.services.explain.get_openai_client", lambda: mock_client)
+        monkeypatch.setattr("app.services.classifier.get_openai_client", lambda: mock_client)
+        monkeypatch.setattr("app.services.analyzer.get_openai_client", lambda: mock_client)
+        monkeypatch.setattr("app.services.chat.get_openai_client", lambda: mock_client)
         return mock_client
 
     return _set
