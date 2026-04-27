@@ -1,3 +1,5 @@
+"""POST /scans — multi-page scan: OCR → RAG → analyzer → persist + open chat thread."""
+
 import logging
 from uuid import UUID
 
@@ -13,38 +15,49 @@ from app.models.schemas import (
     UserLanguage,
 )
 from app.routers.profile import _ensure_profile
-from app.services.explain import analyze_document
-from app.services.ocr import classify_document
+from app.services.analyzer import analyze_document
+from app.services.classifier import classify_document
+from app.services.limits import check_scan_quota, increment_scan_count
 from app.services.rag import get_supabase, retrieve_chunks
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/scans", tags=["scans"])
 
 
-async def _sign_image_url(image_path: str) -> str:
-    """Get a short-lived signed URL so GPT Vision can fetch a private storage object."""
+async def _sign_image_urls(image_paths: list[str]) -> list[str]:
+    """Get short-lived signed URLs for every page so GPT Vision can fetch them."""
     settings = get_settings()
     supabase = await get_supabase()
-    try:
-        signed = await supabase.storage.from_(settings.supabase_storage_bucket).create_signed_url(
-            image_path, settings.supabase_signed_url_ttl
-        )
-    except Exception as exc:
-        logger.error("Failed to sign URL for %s: %s", image_path, exc)
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Could not sign image URL — is the file uploaded to bucket '{settings.supabase_storage_bucket}'?",
-        ) from exc
+    urls: list[str] = []
 
-    image_url = signed.get("signedURL") or signed.get("signedUrl")
-    if not image_url:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Storage returned no signed URL"
-        )
-    return image_url
+    for path in image_paths:
+        try:
+            signed = await supabase.storage.from_(settings.supabase_storage_bucket).create_signed_url(
+                path, settings.supabase_signed_url_ttl
+            )
+        except Exception as exc:
+            logger.error("Failed to sign URL for %s: %s", path, exc)
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"Could not sign image URL for '{path}' — is it uploaded "
+                    f"to bucket '{settings.supabase_storage_bucket}'?"
+                ),
+            ) from exc
+
+        url = signed.get("signedURL") or signed.get("signedUrl")
+        if not url:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Storage returned no signed URL",
+            )
+        urls.append(url)
+
+    return urls
 
 
 async def _create_deadlines(user_id: UUID, scan_id: UUID, deadlines: list[DeadlineItem]) -> int:
+    """Persist analyzer-suggested deadlines as auto_created=true."""
     if not deadlines:
         return 0
     supabase = await get_supabase()
@@ -56,11 +69,35 @@ async def _create_deadlines(user_id: UUID, scan_id: UUID, deadlines: list[Deadli
             "description": d.description,
             "due_date": d.date.isoformat(),
             "deadline_type": d.type,
+            "auto_created": True,
         }
         for d in deadlines
     ]
     result = await supabase.table("deadlines").insert(rows).execute()
     return len(result.data or [])
+
+
+async def _seed_chat_thread(user_id: UUID, scan_id: UUID, image_paths: list[str], summary: str) -> None:
+    """Open the chat thread for this scan with two seed messages:
+    user uploads photo(s), AI replies with the result card."""
+    supabase = await get_supabase()
+    rows = [
+        {
+            "scan_id": str(scan_id),
+            "user_id": str(user_id),
+            "role": "user",
+            "content": "\n".join(image_paths),
+            "message_type": "image",
+        },
+        {
+            "scan_id": str(scan_id),
+            "user_id": str(user_id),
+            "role": "assistant",
+            "content": summary,
+            "message_type": "result_card",
+        },
+    ]
+    await supabase.table("scan_messages").insert(rows).execute()
 
 
 @router.post("", response_model=ScanResponse, status_code=status.HTTP_201_CREATED)
@@ -72,15 +109,21 @@ async def create_scan(
     supabase = await get_supabase()
 
     profile = await _ensure_profile(user_id)
+    plan = profile.get("plan", "free")
     language: UserLanguage = body.language or profile.get("language", "cs")
     has_datova_schranka: bool = bool(profile.get("has_datova_schranka", False))
 
-    image_url = await _sign_image_url(body.image_path)
+    # Plan-based quota check (monthly scans + per-scan page cap)
+    try:
+        await check_scan_quota(user_id, plan, page_count=len(body.image_paths))
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_402_PAYMENT_REQUIRED, detail=str(exc)) from exc
 
-    # Call 1 — OCR + classification
-    classifier = await classify_document(image_url)
+    image_urls = await _sign_image_urls(body.image_paths)
 
-    # Quality gate — stop early if OCR is unusable, don't burn call 2
+    # Call 1 — OCR + classification (multi-page, single Vision call)
+    classifier = await classify_document(image_urls)
+
     if classifier.confidence < settings.min_ocr_confidence or not classifier.ocr_text.strip():
         logger.warning(
             "OCR quality gate failed user_id=%s confidence=%.2f error=%s",
@@ -93,10 +136,10 @@ async def create_scan(
             detail=f"Could not read document — try a better photo. {classifier.error or ''}".strip(),
         )
 
-    # RAG — contextual chunks for this category
+    # RAG — pull category-specific knowledge chunks
     rag_chunks = await retrieve_chunks(classifier.ocr_text, classifier.category)
 
-    # Call 2 — analysis
+    # Call 2 — analyzer (default model or escalation, picked by category)
     analysis, model_used = await analyze_document(
         classifier=classifier,
         rag_chunks=rag_chunks,
@@ -104,10 +147,10 @@ async def create_scan(
         has_datova_schranka=has_datova_schranka,
     )
 
-    # Persist
+    # Persist scan row
     scan_row = {
         "user_id": str(user_id),
-        "image_path": body.image_path,
+        "image_paths": body.image_paths,
         "ocr_text": classifier.ocr_text,
         "category": classifier.category,
         "doc_type": classifier.doc_type,
@@ -123,11 +166,15 @@ async def create_scan(
     scan_data = inserted.data[0]
     scan_id = UUID(scan_data["id"])
 
+    # Side effects: counters, deadlines, chat thread seed
+    await increment_scan_count(user_id)
     deadlines_created = await _create_deadlines(user_id, scan_id, analysis.deadlines)
+    await _seed_chat_thread(user_id, scan_id, body.image_paths, analysis.summary)
 
     logger.info(
-        "Scan created scan_id=%s category=%s model=%s ocr_conf=%.2f deadlines=%d",
+        "Scan created scan_id=%s pages=%d category=%s model=%s ocr_conf=%.2f deadlines=%d",
         scan_id,
+        scan_data.get("page_count") or len(body.image_paths),
         classifier.category,
         model_used,
         classifier.confidence,
@@ -148,7 +195,7 @@ async def list_scans(
     supabase = await get_supabase()
     result = (
         await supabase.table("scans")
-        .select("id,category,doc_type,result,created_at")
+        .select("id,category,doc_type,result,page_count,image_paths,created_at")
         .eq("user_id", str(user_id))
         .order("created_at", desc=True)
         .range(offset, offset + limit - 1)
