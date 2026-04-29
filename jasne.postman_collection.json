@@ -1,148 +1,249 @@
 {
   "info": {
     "name": "Jasně API",
+    "description": "## Setup\n\n1. Right-click collection → **Edit** → **Variables** tab\n2. Set CURRENT VALUE for:\n   - `base_url` — `https://jasne-backend-production.up.railway.app` (или `http://localhost:8000`)\n   - `supabase_url` — `https://<your-ref>.supabase.co` (Supabase Dashboard → Settings → API)\n   - `anon_key` — Supabase **anon** (public) JWT, начинается с `eyJ...`\n3. Save\n\n## Auth flow\n\n- **Register** — один раз создать юзера. Если падает с `429 over_email_send_rate_limit` → создай юзера через Supabase Dashboard → Authentication → Users → Add user (Auto Confirm).\n- **Login** — токен автоматом сохранится в `{{token}}`, `user_id` в `{{user_id}}`. Все остальные запросы их подхватят.\n\n## Multi-page scan\n\n1. **Upload Page 1** (Body → file → выбери фотку) → 200\n2. (опционально) Upload Page 2, 3...\n3. **Create Scan** — массив `image_paths: [\"<user_id>/page1.jpg\", ...]`. Лимиты: Free 3 страницы, Pro 10.\n\n## Plans\n\n| | Free | Pro |\n|---|---|---|\n| Сканы/мес | 5 | 100 |\n| Страниц/скан | 3 | 10 |\n| Вопросов/скан | 0 | 10 |\n\nПопытка превысить → HTTP 402. Plan меняется RevenueCat webhook'ом (на сейчас — вручную в Supabase Dashboard → profiles).",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
-    {
-      "key": "base_url",
-      "value": "http://localhost:8000"
-    },
-    {
-      "key": "token",
-      "value": "YOUR_JWT_TOKEN"
-    },
-    {
-      "key": "supabase_url",
-      "value": "https://xxxxxxxxxxxx.supabase.co"
-    },
-    {
-      "key": "anon_key",
-      "value": "YOUR_ANON_KEY"
-    }
+    { "key": "base_url", "value": "https://jasne-backend-production.up.railway.app", "type": "string" },
+    { "key": "supabase_url", "value": "https://YOUR-PROJECT-REF.supabase.co", "type": "string" },
+    { "key": "anon_key", "value": "YOUR_ANON_KEY", "type": "string" },
+    { "key": "test_email", "value": "test@jasne.app", "type": "string" },
+    { "key": "test_password", "value": "TestPass123!", "type": "string" },
+    { "key": "token", "value": "", "type": "string" },
+    { "key": "user_id", "value": "", "type": "string" },
+    { "key": "scan_id", "value": "", "type": "string" },
+    { "key": "deadline_id", "value": "", "type": "string" }
   ],
+  "auth": {
+    "type": "bearer",
+    "bearer": [{ "key": "token", "value": "{{token}}", "type": "string" }]
+  },
   "item": [
     {
-      "name": "Auth (Supabase)",
+      "name": "1. Auth (Supabase)",
       "item": [
         {
-          "name": "Register",
+          "name": "Register (один раз)",
           "request": {
+            "auth": { "type": "noauth" },
             "method": "POST",
-            "url": "{{supabase_url}}/auth/v1/signup",
             "header": [
               { "key": "apikey", "value": "{{anon_key}}" },
               { "key": "Content-Type", "value": "application/json" }
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"email\": \"test@test.cz\",\n  \"password\": \"TestPass123!\"\n}"
+              "raw": "{\n  \"email\": \"{{test_email}}\",\n  \"password\": \"{{test_password}}\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{supabase_url}}/auth/v1/signup",
+              "host": ["{{supabase_url}}"],
+              "path": ["auth", "v1", "signup"]
             }
           }
         },
         {
-          "name": "Login",
+          "name": "Login → сохраняет token",
           "event": [
             {
               "listen": "test",
               "script": {
+                "type": "text/javascript",
                 "exec": [
                   "const json = pm.response.json();",
-                  "if (json.access_token) {",
+                  "if (pm.response.code === 200 && json.access_token) {",
                   "  pm.collectionVariables.set('token', json.access_token);",
                   "  pm.collectionVariables.set('user_id', json.user.id);",
-                  "  console.log('Token saved:', json.access_token.substring(0, 30) + '...');",
-                  "}"
+                  "  console.log('✓ Token saved:', json.access_token.substring(0, 30) + '...');",
+                  "  console.log('✓ User ID:', json.user.id);",
+                  "} else {",
+                  "  console.error('✗ Login failed:', json.error_description || json.msg || JSON.stringify(json));",
+                  "}",
+                  "pm.test('Status 200', function () { pm.response.to.have.status(200); });"
                 ]
               }
             }
           ],
           "request": {
+            "auth": { "type": "noauth" },
             "method": "POST",
-            "url": "{{supabase_url}}/auth/v1/token?grant_type=password",
             "header": [
               { "key": "apikey", "value": "{{anon_key}}" },
               { "key": "Content-Type", "value": "application/json" }
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"email\": \"test@test.cz\",\n  \"password\": \"TestPass123!\"\n}"
+              "raw": "{\n  \"email\": \"{{test_email}}\",\n  \"password\": \"{{test_password}}\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{supabase_url}}/auth/v1/token?grant_type=password",
+              "host": ["{{supabase_url}}"],
+              "path": ["auth", "v1", "token"],
+              "query": [{ "key": "grant_type", "value": "password" }]
             }
           }
         }
       ]
     },
     {
-      "name": "System",
+      "name": "2. System",
       "item": [
         {
-          "name": "Health",
+          "name": "Health (liveness)",
           "request": {
+            "auth": { "type": "noauth" },
             "method": "GET",
-            "url": "{{base_url}}/health"
+            "url": { "raw": "{{base_url}}/health", "host": ["{{base_url}}"], "path": ["health"] }
+          }
+        },
+        {
+          "name": "Health Deep (readiness)",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/health/deep", "host": ["{{base_url}}"], "path": ["health", "deep"] },
+            "description": "200 — все ОК. 503 — Supabase или OpenAI лежит, см. deps[].error"
           }
         }
       ]
     },
     {
-      "name": "Profile",
+      "name": "3. Profile",
       "item": [
         {
           "name": "Get Profile",
           "request": {
             "method": "GET",
-            "url": "{{base_url}}/profile",
-            "header": [
-              { "key": "Authorization", "value": "Bearer {{token}}" }
-            ]
+            "url": { "raw": "{{base_url}}/profile", "host": ["{{base_url}}"], "path": ["profile"] }
           }
         },
         {
           "name": "Update Profile",
           "request": {
             "method": "PUT",
-            "url": "{{base_url}}/profile",
-            "header": [
-              { "key": "Authorization", "value": "Bearer {{token}}" },
-              { "key": "Content-Type", "value": "application/json" }
-            ],
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"language\": \"cs\",\n  \"has_datova_schranka\": false,\n  \"display_name\": \"Test User\"\n}"
+              "raw": "{\n  \"language\": \"cs\",\n  \"has_datova_schranka\": true,\n  \"display_name\": \"Test User\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": { "raw": "{{base_url}}/profile", "host": ["{{base_url}}"], "path": ["profile"] },
+            "description": "⚠️ plan НЕ обновляется здесь — RevenueCat webhook owns it"
+          }
+        }
+      ]
+    },
+    {
+      "name": "4. Limits",
+      "item": [
+        {
+          "name": "Get Limits (без scan_id)",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/limits", "host": ["{{base_url}}"], "path": ["limits"] }
+          }
+        },
+        {
+          "name": "Get Limits (с scan_id — для chat)",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/limits?scan_id={{scan_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["limits"],
+              "query": [{ "key": "scan_id", "value": "{{scan_id}}" }]
             }
           }
         }
       ]
     },
     {
-      "name": "Scans",
+      "name": "5. Scans",
       "item": [
         {
-          "name": "Upload Image to Storage",
+          "name": "Upload Page 1 to Storage",
           "request": {
+            "auth": { "type": "noauth" },
             "method": "POST",
-            "url": "{{supabase_url}}/storage/v1/object/documents/{{user_id}}/doc.jpg",
             "header": [
               { "key": "Authorization", "value": "Bearer {{token}}" },
               { "key": "Content-Type", "value": "image/jpeg" }
             ],
-            "body": {
-              "mode": "file",
-              "file": { "src": "" }
+            "body": { "mode": "file", "file": { "src": "" } },
+            "url": {
+              "raw": "{{supabase_url}}/storage/v1/object/documents/{{user_id}}/page1.jpg",
+              "host": ["{{supabase_url}}"],
+              "path": ["storage", "v1", "object", "documents", "{{user_id}}", "page1.jpg"]
+            },
+            "description": "Body → выбрать **file** → твою фотку. RLS пускает только в свою папку."
+          }
+        },
+        {
+          "name": "Upload Page 2 (multi-page)",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}" },
+              { "key": "Content-Type", "value": "image/jpeg" }
+            ],
+            "body": { "mode": "file", "file": { "src": "" } },
+            "url": {
+              "raw": "{{supabase_url}}/storage/v1/object/documents/{{user_id}}/page2.jpg",
+              "host": ["{{supabase_url}}"],
+              "path": ["storage", "v1", "object", "documents", "{{user_id}}", "page2.jpg"]
             }
           }
         },
         {
-          "name": "Create Scan",
+          "name": "Create Scan (single page)",
           "event": [
             {
               "listen": "test",
               "script": {
+                "type": "text/javascript",
                 "exec": [
                   "const json = pm.response.json();",
-                  "if (json.id) {",
+                  "if (pm.response.code === 201 && json.id) {",
                   "  pm.collectionVariables.set('scan_id', json.id);",
-                  "  console.log('Scan ID saved:', json.id);",
+                  "  console.log('✓ Scan ID:', json.id);",
+                  "  console.log('  category:', json.category, '| doc_type:', json.doc_type);",
+                  "  console.log('  pages:', json.page_count, '| model:', json.model_used);",
+                  "} else {",
+                  "  console.error('✗', JSON.stringify(json));",
+                  "}",
+                  "pm.test('Status 201', function () { pm.response.to.have.status(201); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"image_paths\": [\"{{user_id}}/page1.jpg\"],\n  \"language\": \"cs\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": { "raw": "{{base_url}}/scans", "host": ["{{base_url}}"], "path": ["scans"] },
+            "description": "Полный pipeline (5-20 сек): подписать URL → GPT-4o Vision → класс → RAG → analyzer → save + scan_messages + auto-deadlines"
+          }
+        },
+        {
+          "name": "Create Scan (multi-page)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const json = pm.response.json();",
+                  "if (pm.response.code === 201 && json.id) {",
+                  "  pm.collectionVariables.set('scan_id', json.id);",
+                  "  console.log('✓ Multi-page:', json.id, '| pages:', json.page_count);",
                   "}"
                 ]
               }
@@ -150,15 +251,28 @@
           ],
           "request": {
             "method": "POST",
-            "url": "{{base_url}}/scans",
-            "header": [
-              { "key": "Authorization", "value": "Bearer {{token}}" },
-              { "key": "Content-Type", "value": "application/json" }
-            ],
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"image_path\": \"{{user_id}}/doc.jpg\",\n  \"language\": \"cs\"\n}"
-            }
+              "raw": "{\n  \"image_paths\": [\n    \"{{user_id}}/page1.jpg\",\n    \"{{user_id}}/page2.jpg\"\n  ],\n  \"language\": \"cs\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": { "raw": "{{base_url}}/scans", "host": ["{{base_url}}"], "path": ["scans"] },
+            "description": "Free: max 3 страницы → 4+ возвращает 402. Pro: max 10."
+          }
+        },
+        {
+          "name": "Create Scan (перевод UK)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"image_paths\": [\"{{user_id}}/page1.jpg\"],\n  \"language\": \"uk\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": { "raw": "{{base_url}}/scans", "host": ["{{base_url}}"], "path": ["scans"] },
+            "description": "language ∈ {cs, en, uk, ru} переопределяет язык summary/translation"
           }
         },
         {
@@ -167,71 +281,69 @@
             "method": "GET",
             "url": {
               "raw": "{{base_url}}/scans?limit=20&offset=0",
+              "host": ["{{base_url}}"],
+              "path": ["scans"],
               "query": [
                 { "key": "limit", "value": "20" },
                 { "key": "offset", "value": "0" }
               ]
-            },
-            "header": [
-              { "key": "Authorization", "value": "Bearer {{token}}" }
-            ]
+            }
           }
         },
         {
           "name": "Get Scan by ID",
           "request": {
             "method": "GET",
-            "url": "{{base_url}}/scans/{{scan_id}}",
-            "header": [
-              { "key": "Authorization", "value": "Bearer {{token}}" }
-            ]
+            "url": {
+              "raw": "{{base_url}}/scans/{{scan_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["scans", "{{scan_id}}"]
+            }
+          }
+        },
+        {
+          "name": "Delete Scan",
+          "request": {
+            "method": "DELETE",
+            "url": {
+              "raw": "{{base_url}}/scans/{{scan_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["scans", "{{scan_id}}"]
+            }
           }
         }
       ]
     },
     {
-      "name": "Deadlines",
+      "name": "6. Chat (Pro only)",
       "item": [
         {
-          "name": "List Deadlines (active)",
+          "name": "List Messages (тред)",
           "request": {
             "method": "GET",
             "url": {
-              "raw": "{{base_url}}/deadlines?only_active=true",
-              "query": [
-                { "key": "only_active", "value": "true" }
-              ]
+              "raw": "{{base_url}}/scans/{{scan_id}}/chat",
+              "host": ["{{base_url}}"],
+              "path": ["scans", "{{scan_id}}", "chat"]
             },
-            "header": [
-              { "key": "Authorization", "value": "Bearer {{token}}" }
-            ]
+            "description": "Все сообщения треда: фото (image), карточка результата (result_card), Q&A (text)"
           }
         },
         {
-          "name": "List Deadlines (all)",
-          "request": {
-            "method": "GET",
-            "url": {
-              "raw": "{{base_url}}/deadlines?only_active=false",
-              "query": [
-                { "key": "only_active", "value": "false" }
-              ]
-            },
-            "header": [
-              { "key": "Authorization", "value": "Bearer {{token}}" }
-            ]
-          }
-        },
-        {
-          "name": "Create Deadline",
+          "name": "Ask Question",
           "event": [
             {
               "listen": "test",
               "script": {
+                "type": "text/javascript",
                 "exec": [
-                  "const json = pm.response.json();",
-                  "if (json.id) {",
-                  "  pm.collectionVariables.set('deadline_id', json.id);",
+                  "if (pm.response.code === 201) {",
+                  "  const j = pm.response.json();",
+                  "  console.log('Q:', j.user_message.content);",
+                  "  console.log('A:', j.assistant_message.content);",
+                  "  console.log('Used:', j.questions_used, '/ Remaining:', j.questions_remaining);",
+                  "} else if (pm.response.code === 402) {",
+                  "  console.error('✗ Pro feature — upgrade plan');",
                   "}"
                 ]
               }
@@ -239,40 +351,132 @@
           ],
           "request": {
             "method": "POST",
-            "url": "{{base_url}}/deadlines",
-            "header": [
-              { "key": "Authorization", "value": "Bearer {{token}}" },
-              { "key": "Content-Type", "value": "application/json" }
-            ],
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"title\": \"Zaplatit fakturu\",\n  \"description\": \"Faktura č. 2026/042\",\n  \"due_date\": \"2026-05-15\",\n  \"deadline_type\": \"payment\",\n  \"reminder_days\": [30, 14, 7, 1]\n}"
+              "raw": "{\n  \"question\": \"Co znamená VS na tomto dokumentu?\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/scans/{{scan_id}}/chat",
+              "host": ["{{base_url}}"],
+              "path": ["scans", "{{scan_id}}", "chat"]
+            },
+            "description": "Free → 402. Pro → 201, max 10/scan. Контекст (OCR + result) подкладывается автоматически."
+          }
+        }
+      ]
+    },
+    {
+      "name": "7. Deadlines",
+      "item": [
+        {
+          "name": "List Active",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/deadlines?only_active=true",
+              "host": ["{{base_url}}"],
+              "path": ["deadlines"],
+              "query": [{ "key": "only_active", "value": "true" }]
             }
           }
         },
         {
-          "name": "Update Deadline",
+          "name": "List All",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/deadlines?only_active=false",
+              "host": ["{{base_url}}"],
+              "path": ["deadlines"],
+              "query": [{ "key": "only_active", "value": "false" }]
+            }
+          }
+        },
+        {
+          "name": "Get by ID",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/deadlines/{{deadline_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["deadlines", "{{deadline_id}}"]
+            }
+          }
+        },
+        {
+          "name": "Create (manual)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const j = pm.response.json();",
+                  "if (j.id) {",
+                  "  pm.collectionVariables.set('deadline_id', j.id);",
+                  "  console.log('✓', j.id, 'auto_created:', j.auto_created);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"title\": \"Zaplatit fakturu\",\n  \"description\": \"Faktura č. 2026/042\",\n  \"due_date\": \"2026-12-15\",\n  \"deadline_type\": \"payment\",\n  \"reminder_days\": [30, 14, 7, 1]\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": { "raw": "{{base_url}}/deadlines", "host": ["{{base_url}}"], "path": ["deadlines"] },
+            "description": "Ручное создание (auto_created=false). Auto-deadlines создаются при scan POST."
+          }
+        },
+        {
+          "name": "Mark Completed",
           "request": {
             "method": "PATCH",
-            "url": "{{base_url}}/deadlines/{{deadline_id}}",
-            "header": [
-              { "key": "Authorization", "value": "Bearer {{token}}" },
-              { "key": "Content-Type", "value": "application/json" }
-            ],
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"status\": \"completed\"\n}"
+              "raw": "{\n  \"status\": \"completed\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/deadlines/{{deadline_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["deadlines", "{{deadline_id}}"]
             }
           }
         },
         {
-          "name": "Delete Deadline",
+          "name": "Update (date/desc)",
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"due_date\": \"2027-01-15\",\n  \"description\": \"Updated\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/deadlines/{{deadline_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["deadlines", "{{deadline_id}}"]
+            }
+          }
+        },
+        {
+          "name": "Delete",
           "request": {
             "method": "DELETE",
-            "url": "{{base_url}}/deadlines/{{deadline_id}}",
-            "header": [
-              { "key": "Authorization", "value": "Bearer {{token}}" }
-            ]
+            "url": {
+              "raw": "{{base_url}}/deadlines/{{deadline_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["deadlines", "{{deadline_id}}"]
+            }
           }
         }
       ]
