@@ -6,6 +6,7 @@ conversation depth — limits service caps it at 10 questions per scan.
 """
 
 import logging
+from collections.abc import AsyncIterator
 from typing import Any
 from uuid import UUID
 
@@ -51,6 +52,26 @@ def _build_scan_context_message(scan_row: dict[str, Any]) -> str:
     )
 
 
+def _build_chat_messages(
+    scan_row: dict[str, Any],
+    history: list[dict[str, str]],
+    question: str,
+    language: UserLanguage,
+) -> list[dict[str, str]]:
+    return [
+        {
+            "role": "system",
+            "content": CHAT_SYSTEM_PROMPT.format(language=language),
+        },
+        {
+            "role": "system",
+            "content": _build_scan_context_message(scan_row),
+        },
+        *history,
+        {"role": "user", "content": question},
+    ]
+
+
 async def answer_question(
     scan_row: dict[str, Any],
     history: list[dict[str, str]],
@@ -66,24 +87,11 @@ async def answer_question(
     settings = get_settings()
     client = get_openai_client()
 
-    messages: list[dict[str, str]] = [
-        {
-            "role": "system",
-            "content": CHAT_SYSTEM_PROMPT.format(language=language),
-        },
-        {
-            "role": "system",
-            "content": _build_scan_context_message(scan_row),
-        },
-        *history,
-        {"role": "user", "content": question},
-    ]
-
     response = await client.chat.completions.create(
         model=settings.openai_chat_model,
         temperature=0.3,
         max_tokens=settings.openai_max_output_tokens,
-        messages=messages,  # type: ignore[arg-type]
+        messages=_build_chat_messages(scan_row, history, question, language),  # type: ignore[arg-type]
     )
 
     answer = (response.choices[0].message.content or "").strip()
@@ -99,6 +107,43 @@ async def answer_question(
         len(answer),
     )
     return answer
+
+
+async def stream_answer_chunks(
+    scan_row: dict[str, Any],
+    history: list[dict[str, str]],
+    question: str,
+    language: UserLanguage,
+) -> AsyncIterator[str]:
+    """Yield assistant answer chunks as OpenAI streams them."""
+    settings = get_settings()
+    client = get_openai_client()
+
+    stream = await client.chat.completions.create(
+        model=settings.openai_chat_model,
+        temperature=0.3,
+        max_tokens=settings.openai_max_output_tokens,
+        stream=True,
+        messages=_build_chat_messages(scan_row, history, question, language),  # type: ignore[arg-type]
+    )
+
+    chunk_count = 0
+    async for event in stream:
+        if not event.choices:
+            continue
+        delta = event.choices[0].delta.content or ""
+        if not delta:
+            continue
+        chunk_count += 1
+        yield delta
+
+    logger.info(
+        "Chat streamed scan_id=%s history=%d question_len=%d chunks=%d",
+        scan_row.get("id"),
+        len(history),
+        len(question),
+        chunk_count,
+    )
 
 
 async def fetch_scan_history(scan_id: UUID, user_id: UUID) -> list[dict[str, str]]:

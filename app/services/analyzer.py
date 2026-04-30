@@ -85,7 +85,11 @@ async def analyze_document(
         raise ValueError(f"LLM output failed schema: {exc.errors()[0]['msg']}") from exc
 
     # Last-line defense against hallucinated deadlines.
-    kept, rejected = filter_valid_deadlines(result.deadlines)
+    kept, rejected = filter_valid_deadlines(
+        result.deadlines,
+        source_text=classifier.ocr_text,
+        category=classifier.category,
+    )
     if rejected:
         logger.warning(
             "Validator dropped %d/%d deadlines: %s",

@@ -5,9 +5,8 @@ Skill caps:
   Pro  → 100 scans/month, 10 pages/scan, 10 chat questions per scan
 
 Counters live in `usage_limits` (composite PK on user_id+month). We always
-read-modify-write under the assumption that one user's traffic is sequential
-(no realistic race for monthly counters in our scale). If we ever see contention
-we'll move to atomic SQL `update ... returning`.
+increment counters through Postgres RPC functions so concurrent scan/chat
+requests cannot lose updates.
 """
 
 from __future__ import annotations
@@ -111,18 +110,19 @@ async def check_scan_quota(user_id: UUID, plan: UserPlan, page_count: int) -> No
 
 
 async def increment_scan_count(user_id: UUID) -> int:
-    """Bump scans_count by 1 and return the new value."""
+    """Atomically bump scans_count by 1 and return the new value."""
     month = current_month()
-    usage = await get_or_init_usage(user_id, month)
-    new_count = int(usage["scans_count"]) + 1
     supabase = await get_supabase()
-    await (
-        supabase.table("usage_limits")
-        .update({"scans_count": new_count})
-        .eq("user_id", str(user_id))
-        .eq("month", month)
-        .execute()
-    )
+    result = await supabase.rpc(
+        "increment_scan_count",
+        {
+            "p_user_id": str(user_id),
+            "p_month": month,
+        },
+    ).execute()
+    new_count = int((result.data or [0])[0])
+    if new_count <= 0:
+        raise RuntimeError("Failed to increment scan count")
     logger.info("Scan count user=%s month=%s -> %d", user_id, month, new_count)
     return new_count
 
@@ -144,19 +144,19 @@ async def check_chat_quota(user_id: UUID, plan: UserPlan, scan_id: UUID) -> int:
 
 
 async def increment_chat_count(user_id: UUID, scan_id: UUID) -> int:
-    """Bump questions_per_scan[scan_id] by 1 and return the new value."""
+    """Atomically bump questions_per_scan[scan_id] by 1 and return the new value."""
     month = current_month()
-    usage = await get_or_init_usage(user_id, month)
-    qmap: dict[str, int] = dict(usage.get("questions_per_scan") or {})
-    new_count = int(qmap.get(str(scan_id), 0)) + 1
-    qmap[str(scan_id)] = new_count
     supabase = await get_supabase()
-    await (
-        supabase.table("usage_limits")
-        .update({"questions_per_scan": qmap})
-        .eq("user_id", str(user_id))
-        .eq("month", month)
-        .execute()
-    )
+    result = await supabase.rpc(
+        "increment_chat_count",
+        {
+            "p_user_id": str(user_id),
+            "p_month": month,
+            "p_scan_id": str(scan_id),
+        },
+    ).execute()
+    new_count = int((result.data or [0])[0])
+    if new_count <= 0:
+        raise RuntimeError("Failed to increment chat count")
     logger.info("Chat count user=%s scan=%s month=%s -> %d", user_id, scan_id, month, new_count)
     return new_count
