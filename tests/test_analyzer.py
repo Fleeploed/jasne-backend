@@ -57,7 +57,7 @@ class TestAnalyzeDocument:
         )
 
         classifier = ClassifierResult(
-            ocr_text="hello",
+            ocr_text=f"Platební výměr se splatností {future.isoformat()}",
             category="danove",  # → escalation
             doc_type="platebni_vymer",
             sender="FÚ",
@@ -86,7 +86,7 @@ class TestAnalyzeDocument:
             }
         )
         classifier = ClassifierResult(
-            ocr_text="x",
+            ocr_text="Faktura bez termínu splatnosti",
             category="ucty",  # → default model
             doc_type="faktura",
             document_language="cs",
@@ -115,7 +115,7 @@ class TestAnalyzeDocument:
             }
         )
         classifier = ClassifierResult(
-            ocr_text="x",
+            ocr_text=f"Faktura se splatností {future.isoformat()}",
             category="ucty",
             doc_type="faktura",
             document_language="cs",

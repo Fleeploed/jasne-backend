@@ -17,6 +17,21 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/deadlines", tags=["deadlines"])
 
 
+async def _ensure_scan_owned(scan_id: UUID, user_id: UUID) -> None:
+    """Validate scan ownership before linking a manual deadline to it."""
+    supabase = await get_supabase()
+    result = (
+        await supabase.table("scans")
+        .select("id")
+        .eq("id", str(scan_id))
+        .eq("user_id", str(user_id))
+        .limit(1)
+        .execute()
+    )
+    if not result.data:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Scan not found")
+
+
 @router.get("", response_model=list[DeadlineResponse])
 async def list_deadlines(
     only_active: bool = True,
@@ -55,6 +70,9 @@ async def create_deadline(
     user_id: UUID = Depends(get_current_user_id),
 ) -> DeadlineResponse:
     supabase = await get_supabase()
+    if body.scan_id is not None:
+        await _ensure_scan_owned(body.scan_id, user_id)
+
     payload = body.model_dump(mode="json")
     payload["user_id"] = str(user_id)
     payload["auto_created"] = False  # manual creation via this endpoint
@@ -78,6 +96,9 @@ async def update_deadline(
     updates = body.model_dump(exclude_none=True, mode="json")
     if not updates:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="No fields to update")
+
+    if body.scan_id is not None:
+        await _ensure_scan_owned(body.scan_id, user_id)
 
     supabase = await get_supabase()
     result = (

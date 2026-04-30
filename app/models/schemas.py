@@ -226,6 +226,7 @@ class DeadlineCreate(_Base):
 class DeadlineUpdate(_Base):
     title: str | None = Field(default=None, min_length=1, max_length=200)
     description: str | None = None
+    scan_id: UUID | None = None
     due_date: date | None = None
     reminder_days: list[int] | None = None
     deadline_type: DeadlineType | None = None

@@ -81,6 +81,14 @@ class Settings(BaseSettings):
             return [origin.strip() for origin in v.split(",") if origin.strip()]
         return v  # type: ignore[return-value]
 
+    @field_validator("allowed_origins")
+    @classmethod
+    def reject_wildcard_origins_in_production(cls, v: list[str], info) -> list[str]:
+        environment = (info.data.get("environment") or "").lower()
+        if environment == "production" and "*" in v:
+            raise ValueError("ALLOWED_ORIGINS must be explicit in production")
+        return v
+
     @property
     def is_production(self) -> bool:
         return self.environment == "production"

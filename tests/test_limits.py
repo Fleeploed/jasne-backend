@@ -90,6 +90,20 @@ class TestIncrementScanCount:
         new = await increment_scan_count(USER_ID)
         assert new == 2
 
+    @pytest.mark.asyncio
+    async def test_uses_atomic_rpc(self, patched_supabase, monkeypatch):
+        calls = []
+        original_rpc = patched_supabase.rpc
+
+        def spy_rpc(name, params):
+            calls.append((name, params))
+            return original_rpc(name, params)
+
+        monkeypatch.setattr(patched_supabase, "rpc", spy_rpc)
+        new = await increment_scan_count(USER_ID)
+        assert new == 1
+        assert calls[0][0] == "increment_scan_count"
+
 
 class TestCheckChatQuota:
     @pytest.mark.asyncio
@@ -119,3 +133,17 @@ class TestCheckChatQuota:
         # Other scan still has 0
         used = await check_chat_quota(USER_ID, "pro", other_scan)
         assert used == 0
+
+    @pytest.mark.asyncio
+    async def test_chat_increment_uses_atomic_rpc(self, patched_supabase, monkeypatch):
+        calls = []
+        original_rpc = patched_supabase.rpc
+
+        def spy_rpc(name, params):
+            calls.append((name, params))
+            return original_rpc(name, params)
+
+        monkeypatch.setattr(patched_supabase, "rpc", spy_rpc)
+        new = await increment_chat_count(USER_ID, SCAN_ID)
+        assert new == 1
+        assert calls[0][0] == "increment_chat_count"
