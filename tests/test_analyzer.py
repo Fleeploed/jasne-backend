@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from app.models.schemas import ClassifierResult
-from app.services.analyzer import _build_system_prompt, analyze_document
+from app.services.analyzer import _build_system_prompt, _extract_completed_json_fields, analyze_document
 
 
 class TestBuildSystemPrompt:
@@ -34,6 +34,20 @@ class TestBuildSystemPrompt:
         assert "JAZYKOVÝ PROMPT: ČEŠTINA" in prompt
         assert "`actions_required`: česky" in prompt
         assert "`translation`: null" in prompt
+
+    def test_extracts_completed_stream_fields(self):
+        emitted = set()
+        buffer = '{"summary":"Hotovo","actions_required":["Zkontrolovat stav řízení"],"penalty":'
+        fields = _extract_completed_json_fields(buffer, emitted)
+        assert fields == {
+            "summary": "Hotovo",
+            "actions_required": ["Zkontrolovat stav řízení"],
+        }
+
+        emitted.update(fields)
+        buffer += '"Pokuta nehrozí","where_to_go":'
+        fields = _extract_completed_json_fields(buffer, emitted)
+        assert fields == {"penalty": "Pokuta nehrozí"}
 
     def test_datova_schranka_yes(self):
         prompt = _build_system_prompt("ucty", "cs", True)

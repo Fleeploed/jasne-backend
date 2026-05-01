@@ -7,6 +7,9 @@ through the `validator` to drop hallucinated dates.
 
 import json
 import logging
+import re
+from collections.abc import AsyncIterator
+from typing import Any
 
 from pydantic import ValidationError
 
@@ -18,6 +21,17 @@ from app.services.model_router import pick_analyzer_model
 from app.services.validator import filter_valid_deadlines
 
 logger = logging.getLogger(__name__)
+
+STREAM_ANALYSIS_FIELDS: tuple[str, ...] = (
+    "summary",
+    "translation",
+    "actions_required",
+    "penalty",
+    "where_to_go",
+    "documents_needed",
+    "tips",
+    "deadlines",
+)
 
 
 def _build_system_prompt(category: str, language: UserLanguage, has_datova_schranka: bool) -> str:
@@ -31,24 +45,14 @@ def _build_system_prompt(category: str, language: UserLanguage, has_datova_schra
     )
 
 
-async def analyze_document(
-    classifier: ClassifierResult,
-    rag_chunks: list[str],
-    language: UserLanguage,
-    has_datova_schranka: bool,
-) -> tuple[AnalysisResult, str]:
-    """Run the analyzer LLM and return (validated_result, model_used)."""
-    settings = get_settings()
-    client = get_openai_client()
-    model = pick_analyzer_model(classifier.category)
-
+def _build_user_message(classifier: ClassifierResult, rag_chunks: list[str], language: UserLanguage) -> str:
     rag_context = (
         "\n\n---\n".join(rag_chunks)
         if rag_chunks
         else "Žádné další chunky z báze znalostí (RAG vrátil prázdno)."
     )
 
-    user_message = (
+    return (
         f"KATEGORIE: {classifier.category}\n"
         f"TYP DOKUMENTU: {classifier.doc_type}\n"
         f"ODESÍLATEL: {classifier.sender or 'neznámý'}\n"
@@ -61,22 +65,48 @@ async def analyze_document(
         f"BÁZE ZNALOSTÍ (RAG):\n{rag_context}"
     )
 
-    response = await client.chat.completions.create(
-        model=model,
-        temperature=0.2,
-        max_tokens=settings.openai_max_output_tokens,
-        response_format={"type": "json_object"},
-        messages=[
-            {
-                "role": "system",
-                "content": _build_system_prompt(classifier.category, language, has_datova_schranka),
-            },
-            {"role": "user", "content": user_message},
-        ],
-    )
 
-    raw = response.choices[0].message.content or "{}"
+def _build_messages(
+    classifier: ClassifierResult,
+    rag_chunks: list[str],
+    language: UserLanguage,
+    has_datova_schranka: bool,
+) -> list[dict[str, str]]:
+    return [
+        {
+            "role": "system",
+            "content": _build_system_prompt(classifier.category, language, has_datova_schranka),
+        },
+        {"role": "user", "content": _build_user_message(classifier, rag_chunks, language)},
+    ]
 
+
+def _extract_completed_json_fields(
+    buffer: str,
+    emitted: set[str],
+    fields: tuple[str, ...] = STREAM_ANALYSIS_FIELDS,
+) -> dict[str, Any]:
+    """Best-effort extraction of completed top-level JSON fields from a stream."""
+    decoder = json.JSONDecoder()
+    extracted: dict[str, Any] = {}
+    for field in fields:
+        if field in emitted:
+            continue
+        match = re.search(rf'"{re.escape(field)}"\s*:', buffer)
+        if not match:
+            continue
+        value_start = match.end()
+        while value_start < len(buffer) and buffer[value_start].isspace():
+            value_start += 1
+        try:
+            value, _ = decoder.raw_decode(buffer, value_start)
+        except json.JSONDecodeError:
+            continue
+        extracted[field] = value
+    return extracted
+
+
+def _parse_analysis_result(raw: str) -> AnalysisResult:
     try:
         data = json.loads(raw)
     except json.JSONDecodeError as exc:
@@ -84,11 +114,13 @@ async def analyze_document(
         raise ValueError("LLM returned invalid JSON") from exc
 
     try:
-        result = AnalysisResult.model_validate(data)
+        return AnalysisResult.model_validate(data)
     except ValidationError as exc:
         logger.error("Analyzer JSON failed validation: %s | data=%s", exc, data)
         raise ValueError(f"LLM output failed schema: {exc.errors()[0]['msg']}") from exc
 
+
+def _filter_deadlines(result: AnalysisResult, classifier: ClassifierResult) -> AnalysisResult:
     # Last-line defense against hallucinated deadlines.
     kept, rejected = filter_valid_deadlines(
         result.deadlines,
@@ -103,6 +135,30 @@ async def analyze_document(
             rejected,
         )
     result.deadlines = kept
+    return result
+
+
+async def analyze_document(
+    classifier: ClassifierResult,
+    rag_chunks: list[str],
+    language: UserLanguage,
+    has_datova_schranka: bool,
+) -> tuple[AnalysisResult, str]:
+    """Run the analyzer LLM and return (validated_result, model_used)."""
+    settings = get_settings()
+    client = get_openai_client()
+    model = pick_analyzer_model(classifier.category)
+
+    response = await client.chat.completions.create(
+        model=model,
+        temperature=0.2,
+        max_tokens=settings.openai_max_output_tokens,
+        response_format={"type": "json_object"},
+        messages=_build_messages(classifier, rag_chunks, language, has_datova_schranka),
+    )
+
+    raw = response.choices[0].message.content or "{}"
+    result = _filter_deadlines(_parse_analysis_result(raw), classifier)
 
     logger.info(
         "Analysis done model=%s category=%s confidence=%.2f deadlines=%d actions=%d",
@@ -113,3 +169,57 @@ async def analyze_document(
         len(result.actions_required),
     )
     return result, model
+
+
+async def stream_analyze_document(
+    classifier: ClassifierResult,
+    rag_chunks: list[str],
+    language: UserLanguage,
+    has_datova_schranka: bool,
+) -> AsyncIterator[dict[str, Any]]:
+    """Stream completed analyzer fields, then yield the validated full result."""
+    settings = get_settings()
+    client = get_openai_client()
+    model = pick_analyzer_model(classifier.category)
+
+    stream = await client.chat.completions.create(
+        model=model,
+        temperature=0.2,
+        max_tokens=settings.openai_max_output_tokens,
+        response_format={"type": "json_object"},
+        stream=True,
+        messages=_build_messages(classifier, rag_chunks, language, has_datova_schranka),
+    )
+
+    emitted: set[str] = set()
+    raw_parts: list[str] = []
+    async for event in stream:
+        if not event.choices:
+            continue
+        delta = event.choices[0].delta.content or ""
+        if not delta:
+            continue
+        raw_parts.append(delta)
+        buffer = "".join(raw_parts)
+        for field, value in _extract_completed_json_fields(buffer, emitted).items():
+            emitted.add(field)
+            yield {"type": "field", "field": field, "value": value}
+
+    raw = "".join(raw_parts) or "{}"
+    result = _filter_deadlines(_parse_analysis_result(raw), classifier)
+    data = result.model_dump(mode="json")
+    for field in STREAM_ANALYSIS_FIELDS:
+        if field not in emitted:
+            emitted.add(field)
+            yield {"type": "field", "field": field, "value": data.get(field)}
+
+    logger.info(
+        "Analysis streamed model=%s category=%s confidence=%.2f deadlines=%d actions=%d fields=%d",
+        model,
+        classifier.category,
+        result.confidence,
+        len(result.deadlines),
+        len(result.actions_required),
+        len(emitted),
+    )
+    yield {"type": "done", "analysis": result, "model_used": model}

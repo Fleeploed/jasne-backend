@@ -1,5 +1,6 @@
 """End-to-end router tests for /scans (multi-page)."""
 
+import json
 from datetime import UTC, datetime
 from uuid import uuid4
 
@@ -52,6 +53,16 @@ def _seed_scan(fake_supabase, user_id: str, **overrides):
     row.update(overrides)
     fake_supabase.table("scans").rows.append(row)
     return row
+
+
+def _parse_sse(text: str) -> list[tuple[str, dict]]:
+    events = []
+    for block in text.strip().split("\n\n"):
+        lines = block.splitlines()
+        event = next(line.removeprefix("event: ") for line in lines if line.startswith("event: "))
+        data = next(line.removeprefix("data: ") for line in lines if line.startswith("data: "))
+        events.append((event, json.loads(data)))
+    return events
 
 
 class TestCreateScan:
@@ -241,6 +252,69 @@ class TestCreateScan:
             json={"image_paths": [f"p{i}.jpg" for i in range(11)]},
         )
         assert r.status_code == 422
+
+
+class TestCreateScanStream:
+    def test_streams_partial_fields_and_persists_scan(
+        self,
+        client,
+        fake_supabase,
+        auth_headers,
+        test_user_id,
+        mock_openai_classify,
+        mock_openai_analyze,
+        mock_rag_empty,
+        monkeypatch,
+    ):
+        _seed_profile(fake_supabase, str(test_user_id))
+
+        async def fake_stream_analyze_document(*args, **kwargs):
+            yield {"type": "field", "field": "summary", "value": mock_openai_analyze.summary}
+            yield {
+                "type": "field",
+                "field": "actions_required",
+                "value": mock_openai_analyze.actions_required,
+            }
+            yield {"type": "field", "field": "penalty", "value": mock_openai_analyze.penalty}
+            yield {"type": "done", "analysis": mock_openai_analyze, "model_used": "gpt-4o"}
+
+        monkeypatch.setattr("app.routers.scan.stream_analyze_document", fake_stream_analyze_document)
+
+        r = client.post(
+            "/scans/stream",
+            headers=auth_headers,
+            json={"image_paths": [f"{test_user_id}/test.jpg"]},
+        )
+
+        assert r.status_code == 200
+        assert r.headers["content-type"].startswith("text/event-stream")
+        events = _parse_sse(r.text)
+        names = [name for name, _ in events]
+        assert names[:4] == ["status", "status", "status", "status"]
+        assert ("field", {"field": "summary", "value": mock_openai_analyze.summary}) in events
+        assert (
+            "field",
+            {"field": "actions_required", "value": mock_openai_analyze.actions_required},
+        ) in events
+        assert events[-1][0] == "done"
+        assert events[-1][1]["result"]["summary"] == mock_openai_analyze.summary
+        assert events[-1][1]["model_used"] == "gpt-4o"
+        assert len(fake_supabase.table("scans").rows) == 1
+        assert len(fake_supabase.table("scan_messages").rows) == 2
+
+    def test_free_tier_4_pages_rejected_before_stream(
+        self,
+        client,
+        fake_supabase,
+        auth_headers,
+        test_user_id,
+        mock_openai_classify,
+        mock_rag_empty,
+    ):
+        _seed_profile(fake_supabase, str(test_user_id), plan="free")
+        paths = [f"{test_user_id}/p{i}.jpg" for i in range(4)]
+        r = client.post("/scans/stream", headers=auth_headers, json={"image_paths": paths})
+        assert r.status_code == 402
 
 
 class TestListScans:
