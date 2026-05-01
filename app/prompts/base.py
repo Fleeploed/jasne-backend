@@ -1,7 +1,7 @@
 """Base analyzer prompt — call 2 (default nebo escalation model).
 
 Proměnné dosazované za běhu:
-  {language}              — cílový jazyk pro `summary`/`translation`
+  {language}              — cílový jazyk pro všechna uživatelská textová pole
   {has_datova_schranka}   — "ano" / "ne"
   {category_module}       — sekce specifická pro kategorii z prompts/<kategorie>.py
 """
@@ -19,8 +19,13 @@ PŘÍSTUP:
 7. Data — ISO (YYYY-MM-DD) v JSON
 
 JAZYK ODPOVĚDI: {language}
-- Pokud jazyk ≠ cs → povinně vyplň translation v daném jazyce
-- Pokud jazyk = cs → translation = null
+- VŠECHNA uživatelská textová pole piš v jazyce {language}: `summary`,
+  `translation`, `actions_required`, `penalty`, `where_to_go`,
+  `documents_needed`, `tips`, a `document_type_localized`.
+- Jediná výjimka: `document_type_cz` musí vždy zůstat česky.
+- `document_type` musí zůstat strojový slug bez diakritiky.
+- Pokud jazyk ≠ cs → povinně vyplň `translation` v jazyce {language}.
+- Pokud jazyk = cs → `translation = null` a `document_type_localized = null`.
 - České termíny (platební výměr, odvolání, VS, IČO) ponech v originále,
   vysvětli při prvním použití
 
