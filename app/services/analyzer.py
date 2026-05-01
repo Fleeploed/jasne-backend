@@ -12,7 +12,7 @@ from pydantic import ValidationError
 
 from app.config import get_settings
 from app.models.schemas import AnalysisResult, ClassifierResult, UserLanguage
-from app.prompts import BASE_SYSTEM_PROMPT, CATEGORY_MODULES, OSTATNI_MODULE
+from app.prompts import BASE_SYSTEM_PROMPT, CATEGORY_MODULES, LANGUAGE_MODULES, OSTATNI_MODULE
 from app.services.embeddings import get_openai_client
 from app.services.model_router import pick_analyzer_model
 from app.services.validator import filter_valid_deadlines
@@ -22,8 +22,10 @@ logger = logging.getLogger(__name__)
 
 def _build_system_prompt(category: str, language: UserLanguage, has_datova_schranka: bool) -> str:
     module = CATEGORY_MODULES.get(category, OSTATNI_MODULE)
+    language_module = LANGUAGE_MODULES[language]
     return BASE_SYSTEM_PROMPT.format(
         language=language,
+        language_module=language_module,
         has_datova_schranka="ano" if has_datova_schranka else "ne",
         category_module=module,
     )
@@ -52,6 +54,9 @@ async def analyze_document(
         f"ODESÍLATEL: {classifier.sender or 'neznámý'}\n"
         f"OCR CONFIDENCE: {classifier.confidence:.2f}\n"
         f"POČET STRAN: {classifier.page_count}\n\n"
+        f"CÍLOVÝ JAZYK VÝSTUPU: {language}\n"
+        "POZOR: OCR dokument může být česky, ale uživatelská textová pole "
+        "musí být v cílovém jazyce výstupu.\n\n"
         f"OCR TEXT:\n{classifier.ocr_text}\n\n"
         f"BÁZE ZNALOSTÍ (RAG):\n{rag_context}"
     )
