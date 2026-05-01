@@ -4,13 +4,13 @@ Layout podle skill spec — jeden modul na jeden účel:
 
   classifier.py — call 1 (GPT-4o Vision): OCR + klasifikace
   base.py       — call 2 (analyzer): společná šablona, proměnné se vyplňují
+  language_*.py — call 2 add-on: samostatná pravidla výstupního jazyka
   <kategorie>.py — call 2 add-on: pravidla pro lhůty/sankce dané kategorie
   chat.py       — Q&A nad existujícím skenem (Pro)
 
-Všechny prompty jsou v češtině — báze znalostí (RAG chunky) i originální
-dokumenty jsou v češtině, takže LLM lépe drží konzistentní terminologii.
-Výstup `summary` a `translation` se generuje v jazyce uživatele
-(cs/en/uk/ru) podle pole `language` v base prompt.
+Kategorie zůstávají česky kvůli české byrokratické terminologii. Výstupní
+jazyk se ale řídí samostatným language promptem pro cs/en/uk/ru, aby se
+uživatelská pole nemíchala s jazykem OCR dokumentu.
 
 Prompty držíme v kódu (ne v DB), aby změny prošly code review zároveň
 s úpravami JSON schémat, která musí produkovat.
@@ -21,6 +21,7 @@ from app.prompts.chat import CHAT_SYSTEM_PROMPT
 from app.prompts.cizinecka import CIZINECKA_MODULE
 from app.prompts.classifier import CLASSIFIER_SYSTEM_PROMPT
 from app.prompts.danove import DANOVE_MODULE
+from app.prompts.languages import LANGUAGE_MODULES
 from app.prompts.ostatni import OSTATNI_MODULE
 from app.prompts.skolstvi import SKOLSTVI_MODULE
 from app.prompts.smlouvy import SMLOUVY_MODULE
@@ -50,4 +51,5 @@ __all__ = [
     "CATEGORY_MODULES",
     "CHAT_SYSTEM_PROMPT",
     "CLASSIFIER_SYSTEM_PROMPT",
+    "LANGUAGE_MODULES",
 ]

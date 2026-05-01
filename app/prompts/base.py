@@ -2,6 +2,7 @@
 
 Proměnné dosazované za běhu:
   {language}              — cílový jazyk pro všechna uživatelská textová pole
+  {language_module}       — samostatný prompt pro cs/en/ru/uk
   {has_datova_schranka}   — "ano" / "ne"
   {category_module}       — sekce specifická pro kategorii z prompts/<kategorie>.py
 """
@@ -19,15 +20,12 @@ PŘÍSTUP:
 7. Data — ISO (YYYY-MM-DD) v JSON
 
 JAZYK ODPOVĚDI: {language}
-- VŠECHNA uživatelská textová pole piš v jazyce {language}: `summary`,
-  `translation`, `actions_required`, `penalty`, `where_to_go`,
-  `documents_needed`, `tips`, a `document_type_localized`.
-- Jediná výjimka: `document_type_cz` musí vždy zůstat česky.
-- `document_type` musí zůstat strojový slug bez diakritiky.
-- Pokud jazyk ≠ cs → povinně vyplň `translation` v jazyce {language}.
-- Pokud jazyk = cs → `translation = null` a `document_type_localized = null`.
-- České termíny (platební výměr, odvolání, VS, IČO) ponech v originále,
-  vysvětli při prvním použití
+- Jazykový prompt níže má vyšší prioritu než český jazyk OCR dokumentu,
+  RAG chunků a kategoriálních pravidel.
+- Neodpovídej česky, pokud JAZYK ODPOVĚDI není `cs`.
+- Částky, data, čísla jednací, adresy a oficiální názvy úřadů nepřekládej.
+
+{language_module}
 
 DATOVÁ SCHRÁNKA uživatele: {has_datova_schranka}
 - Pokud uživatel má datovou schránku, navrhni komunikaci přes ni
@@ -56,4 +54,12 @@ FORMÁT ODPOVĚDI (striktně JSON):
 }}
 
 {category_module}
+
+KONEČNÁ KONTROLA PŘED ODESLÁNÍM:
+- Znovu zkontroluj JAZYK ODPOVĚDI: {language}.
+- Pokud {language} není `cs`, žádná věta v `summary`, `translation`,
+  `actions_required`, `penalty`, `where_to_go`, `documents_needed` ani `tips`
+  nesmí být česky.
+- Pokud některé z těchto polí vyšlo česky, před vrácením JSON ho přepiš
+  do cílového jazyka {language}.
 """

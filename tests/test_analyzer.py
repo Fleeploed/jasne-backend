@@ -13,9 +13,27 @@ class TestBuildSystemPrompt:
     def test_contains_language(self):
         prompt = _build_system_prompt("danove", "ru", False)
         assert "JAZYK ODPOVĚDI: ru" in prompt
-        assert "VŠECHNA uživatelská textová pole piš v jazyce ru" in prompt
-        assert "`actions_required`" in prompt
-        assert "`document_type_cz` musí vždy zůstat česky" in prompt
+        assert "ЯЗЫКОВОЙ ПРОМПТ: РУССКИЙ" in prompt
+        assert "`actions_required`: на русском" in prompt
+        assert "`document_type_cz`: название типа документа на чешском" in prompt
+
+    def test_ukrainian_prompt_is_separate(self):
+        prompt = _build_system_prompt("cizinecka", "uk", False)
+        assert "МОВНИЙ ПРОМПТ: УКРАЇНСЬКА" in prompt
+        assert "`actions_required`: українською" in prompt
+        assert "Не відповідай чеською" in prompt
+
+    def test_english_prompt_is_separate(self):
+        prompt = _build_system_prompt("cizinecka", "en", False)
+        assert "LANGUAGE PROMPT: ENGLISH" in prompt
+        assert "`actions_required`: English" in prompt
+        assert "Do not answer in Czech" in prompt
+
+    def test_czech_prompt_is_separate(self):
+        prompt = _build_system_prompt("cizinecka", "cs", False)
+        assert "JAZYKOVÝ PROMPT: ČEŠTINA" in prompt
+        assert "`actions_required`: česky" in prompt
+        assert "`translation`: null" in prompt
 
     def test_datova_schranka_yes(self):
         prompt = _build_system_prompt("ucty", "cs", True)
