@@ -37,6 +37,9 @@ OMEZENÍ:
 - Pokud OCR confidence < 0.7 → upozorni v poli tips
 
 FORMÁT ODPOVĚDI (striktně JSON):
+- Dodrž pořadí polí níže. Je důležité pro streamování výsledku uživateli:
+  nejdřív `summary`, potom `actions_required`, potom `penalty`, `where_to_go`,
+  `documents_needed`, `tips`, `deadlines`, a nakonec metadata.
 {{
   "document_type": "platebni_vymer",
   "document_type_cz": "Platební výměr",
@@ -44,13 +47,13 @@ FORMÁT ODPOVĚDI (striktně JSON):
   "sender": "...",
   "summary": "...",
   "translation": "... (null pokud language=cs)",
-  "deadlines": [{{"date": "YYYY-MM-DD", "description": "...", "type": "payment|action|response|expiration"}}],
   "actions_required": ["...", "..."],
   "penalty": "...",
   "where_to_go": "...",
   "documents_needed": ["..."],
+  "tips": "...",
+  "deadlines": [{{"date": "YYYY-MM-DD", "description": "...", "type": "payment|action|response|expiration"}}],
   "confidence": 0.92,
-  "tips": "..."
 }}
 
 {category_module}
