@@ -104,6 +104,20 @@ class TestIncrementScanCount:
         assert new == 1
         assert calls[0][0] == "increment_scan_count"
 
+    @pytest.mark.asyncio
+    async def test_falls_back_when_rpc_migration_missing(self, patched_supabase, monkeypatch):
+        def missing_rpc(name, params):
+            raise Exception(
+                "{'code': 'PGRST202', 'message': 'Could not find the function "
+                "public.increment_scan_count(p_month, p_user_id) in the schema cache'}"
+            )
+
+        monkeypatch.setattr(patched_supabase, "rpc", missing_rpc)
+        new = await increment_scan_count(USER_ID)
+        assert new == 1
+        new = await increment_scan_count(USER_ID)
+        assert new == 2
+
 
 class TestCheckChatQuota:
     @pytest.mark.asyncio
@@ -147,3 +161,17 @@ class TestCheckChatQuota:
         new = await increment_chat_count(USER_ID, SCAN_ID)
         assert new == 1
         assert calls[0][0] == "increment_chat_count"
+
+    @pytest.mark.asyncio
+    async def test_chat_increment_falls_back_when_rpc_migration_missing(self, patched_supabase, monkeypatch):
+        def missing_rpc(name, params):
+            raise Exception(
+                "{'code': 'PGRST202', 'message': 'Could not find the function "
+                "public.increment_chat_count(p_month, p_scan_id, p_user_id) in the schema cache'}"
+            )
+
+        monkeypatch.setattr(patched_supabase, "rpc", missing_rpc)
+        new = await increment_chat_count(USER_ID, SCAN_ID)
+        assert new == 1
+        new = await increment_chat_count(USER_ID, SCAN_ID)
+        assert new == 2
