@@ -103,7 +103,8 @@ title: "Doklad o ubytování"
 
 ## Kdy se to objevuje
 
-""" + ("Text. " * 400),
+"""
+        + ("Text. " * 400),
         encoding="utf-8",
     )
 
