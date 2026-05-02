@@ -32,6 +32,20 @@ SANKCE:
   až 10 mil. Kč zaměstnavateli
 - Nesplnění výzvy: zastavení řízení, ztráta zaplaceného poplatku
 
+POTVRZENÍ O PODÁNÍ ŽÁDOSTI:
+- Pokud `TYP DOKUMENTU` nebo OCR říká "potvrzení o podání žádosti",
+  jde o potvrzení, že žádost už byla podána. Nejde o výzvu k doložení.
+- V takovém případě:
+  - `summary`: vysvětli, jaká žádost byla podána podle OCR
+    (např. prodloužení doby platnosti zaměstnanecké karty).
+  - `actions_required`: typicky jen sledovat stav řízení / uschovat potvrzení.
+  - `documents_needed`: [] — žádné obecné přílohy původní žádosti neuváděj.
+  - `penalty`: null, pokud OCR neobsahuje konkrétní výzvu, lhůtu nebo sankci.
+  - `tips`: můžeš zmínit, že potvrzení samo o sobě není povolením k pobytu
+    a je vhodné mít platný cestovní doklad, pokud to OCR obsahuje.
+- Nikdy z RAG nedoplňuj u potvrzení obecné přílohy jako ubytování, pracovní
+  smlouvu nebo pojištění. Ty patří do původní žádosti, ne do tohoto potvrzení.
+
 TIPS:
 - Lhůta pro odvolání 15 dní je krátká — okamžitě jednat
 - Při zastavení řízení lze podat novou žádost (nový poplatek 2 500 Kč),
