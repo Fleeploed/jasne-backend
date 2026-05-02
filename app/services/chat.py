@@ -144,11 +144,29 @@ def _build_scan_context_message(scan_row: dict[str, Any]) -> str:
     )
 
 
+def _build_knowledge_context_message(rag_chunks: list[str] | None) -> str:
+    if not rag_chunks:
+        return (
+            "BÁZE ZNALOSTÍ (RAG): Pro tuto otázku nebyly nalezeny žádné relevantní "
+            "chunky. Pokud odpověď není v OCR/result/history, řekni, že ji v kontextu nemáš."
+        )
+
+    chunks = "\n\n".join(f"[RAG {index}]\n{chunk}" for index, chunk in enumerate(rag_chunks, start=1))
+    return (
+        "BÁZE ZNALOSTÍ (RAG) PRO AKTUÁLNÍ OTÁZKU:\n"
+        "Použij tyto chunky, pokud odpovídají otázce uživatele. Hodí se hlavně pro "
+        "obecné informace, adresy, kontakty, úřední hodiny a postupy. "
+        "Konkrétní lhůty, částky a povinnosti z dokumentu ber z OCR/result, ne z RAG.\n\n"
+        f"{chunks}"
+    )
+
+
 def _build_chat_messages(
     scan_row: dict[str, Any],
     history: list[dict[str, str]],
     question: str,
     language: UserLanguage,
+    rag_chunks: list[str] | None = None,
 ) -> list[dict[str, str]]:
     history_context = (
         "HISTORIE CHATU: Následující user/assistant zprávy jsou skutečná "
@@ -167,6 +185,10 @@ def _build_chat_messages(
         },
         {
             "role": "system",
+            "content": _build_knowledge_context_message(rag_chunks),
+        },
+        {
+            "role": "system",
             "content": history_context,
         },
         *history,
@@ -179,6 +201,7 @@ async def answer_question(
     history: list[dict[str, str]],
     question: str,
     language: UserLanguage,
+    rag_chunks: list[str] | None = None,
 ) -> str:
     """Run the chat LLM and return assistant's text answer.
 
@@ -193,7 +216,7 @@ async def answer_question(
         model=settings.openai_chat_model,
         temperature=0.3,
         max_tokens=settings.openai_max_output_tokens,
-        messages=_build_chat_messages(scan_row, history, question, language),  # type: ignore[arg-type]
+        messages=_build_chat_messages(scan_row, history, question, language, rag_chunks),  # type: ignore[arg-type]
     )
 
     answer = (response.choices[0].message.content or "").strip()
@@ -216,6 +239,7 @@ async def stream_answer_chunks(
     history: list[dict[str, str]],
     question: str,
     language: UserLanguage,
+    rag_chunks: list[str] | None = None,
 ) -> AsyncIterator[str]:
     """Yield assistant answer chunks as OpenAI streams them."""
     settings = get_settings()
@@ -226,7 +250,7 @@ async def stream_answer_chunks(
         temperature=0.3,
         max_tokens=settings.openai_max_output_tokens,
         stream=True,
-        messages=_build_chat_messages(scan_row, history, question, language),  # type: ignore[arg-type]
+        messages=_build_chat_messages(scan_row, history, question, language, rag_chunks),  # type: ignore[arg-type]
     )
 
     chunk_count = 0

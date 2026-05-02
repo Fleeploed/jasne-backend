@@ -19,7 +19,7 @@ from app.services.limits import (
     check_chat_quota,
     increment_chat_count,
 )
-from app.services.rag import get_supabase
+from app.services.rag import get_supabase, retrieve_chat_chunks
 
 logger = logging.getLogger(__name__)
 
@@ -125,6 +125,7 @@ async def ask_question(
     scan_row = await _load_scan(scan_id, user_id)
     language: UserLanguage = scan_row.get("language") or language
     history = await fetch_scan_history(scan_id, user_id)
+    rag_chunks = await retrieve_chat_chunks(body.question, scan_row.get("category"))
 
     # Run LLM
     answer = await answer_question(
@@ -132,6 +133,7 @@ async def ask_question(
         history=history,
         question=body.question,
         language=language,
+        rag_chunks=rag_chunks,
     )
 
     user_message, assistant_message = await _persist_chat_pair(scan_id, user_id, body.question, answer)
@@ -165,6 +167,7 @@ async def ask_question_stream(
     scan_row = await _load_scan(scan_id, user_id)
     language: UserLanguage = scan_row.get("language") or language
     history = await fetch_scan_history(scan_id, user_id)
+    rag_chunks = await retrieve_chat_chunks(body.question, scan_row.get("category"))
     caps = caps_for_plan(plan)
 
     async def events() -> AsyncIterator[str]:
@@ -175,6 +178,7 @@ async def ask_question_stream(
                 history=history,
                 question=body.question,
                 language=language,
+                rag_chunks=rag_chunks,
             ):
                 answer_parts.append(chunk)
                 yield _sse("token", {"text": chunk})
