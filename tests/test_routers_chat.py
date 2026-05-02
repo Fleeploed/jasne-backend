@@ -186,7 +186,33 @@ class TestAskQuestion:
         messages = _build_chat_messages(scan_row, [], "куда идти?", "ru")
         assert "JAZYK ODPOVĚDI: ru" in messages[0]["content"]
         assert "Nikdy neodpovídej česky" in messages[0]["content"]
+        assert "что на фото" in messages[0]["content"]
+        assert "Neříkej, že neumíš analyzovat fotky" in messages[0]["content"]
         assert "JAZYK SKENU: ru" in messages[1]["content"]
+        assert messages[2]["content"] == "HISTORIE CHATU: Zatím žádná předchozí textová historie."
+
+    def test_chat_messages_include_history_marker(self, fake_supabase, test_user_id):
+        sid = _seed_cizinecka_pickup_scan(fake_supabase, str(test_user_id), language="ru")
+        scan_row = fake_supabase.table("scans").rows[-1]
+
+        messages = _build_chat_messages(
+            scan_row,
+            [
+                {"role": "user", "content": "что на фото?"},
+                {"role": "assistant", "content": "На фото výzva k převzetí průkazu."},
+            ],
+            "а куда идти?",
+            "ru",
+        )
+
+        assert messages[2]["role"] == "system"
+        assert "dosavadní historie tohoto chatu" in messages[2]["content"]
+        assert messages[3] == {"role": "user", "content": "что на фото?"}
+        assert messages[4] == {
+            "role": "assistant",
+            "content": "На фото výzva k převzetí průkazu.",
+        }
+        assert messages[5] == {"role": "user", "content": "а куда идти?"}
 
     def test_pro_user_capped_at_10(self, client, fake_supabase, auth_headers, test_user_id, monkeypatch):
         _seed_profile(fake_supabase, str(test_user_id), plan="pro")
