@@ -219,6 +219,92 @@ class TestAnalyzeDocument:
         assert result.actions_required == ["Uschovat potvrzení a sledovat stav žádosti"]
 
     @pytest.mark.asyncio
+    async def test_card_pickup_notice_suppresses_unconfirmed_fee_guidance(self, openai_chat_mock):
+        openai_chat_mock(
+            {
+                "document_type": "vyzva_k_prevzeti_prukazu",
+                "document_type_cz": "Výzva k převzetí průkazu",
+                "document_type_localized": None,
+                "sender": "Ministerstvo vnitra ČR",
+                "summary": (
+                    "Ministerstvo vnitra vyzývá k převzetí průkazu dne 12.01.2023. "
+                    "Je nutné přinést platný cestovní doklad a uhradit správní poplatek ve formě kolku."
+                ),
+                "translation": None,
+                "actions_required": [
+                    "Dostavit se osobně dne 12.01.2023 v 14:40.",
+                    "Přinést platný cestovní doklad.",
+                    "Uhradit správní poplatek ve formě kolku.",
+                ],
+                "penalty": "Pokud se nedostavíte do 60 dnů, řízení bude zastaveno.",
+                "where_to_go": "OAMP Cigánkova 1861/2, Praha 4.",
+                "documents_needed": [
+                    "Platný cestovní doklad.",
+                    "Kolky na správní poplatek.",
+                ],
+                "confidence": 0.95,
+                "tips": "Doporučuji si připravit kolky předem.",
+                "deadlines": [],
+            }
+        )
+        classifier = ClassifierResult(
+            ocr_text=(
+                "Výzva k převzetí průkazu o povolení k dlouhodobému pobytu. "
+                "S sebou je třeba si přinést platný cestovní doklad a uhradit správní poplatek "
+                "VE FORMĚ KOLKU ve výši: [ ] bez poplatku (0 Kč) [ ] 2 500 Kč [ ] 300 Kč [ ] 1 000 Kč."
+            ),
+            category="cizinecka",
+            doc_type="vyzva_k_prevzeti_prukazu",
+            sender="Ministerstvo vnitra ČR",
+            document_language="cs",
+            confidence=0.95,
+            page_count=1,
+        )
+        result, _ = await analyze_document(classifier, [], "cs", False)
+
+        assert "poplatek" not in result.summary.lower()
+        assert "kolk" not in result.summary.lower()
+        assert result.actions_required == [
+            "Dostavit se osobně dne 12.01.2023 v 14:40.",
+            "Přinést platný cestovní doklad.",
+        ]
+        assert result.documents_needed == ["Platný cestovní doklad."]
+        assert result.tips is None
+        assert result.penalty == "Pokud se nedostavíte do 60 dnů, řízení bude zastaveno."
+
+    @pytest.mark.asyncio
+    async def test_card_pickup_notice_keeps_explicit_checked_positive_fee(self, openai_chat_mock):
+        openai_chat_mock(
+            {
+                "document_type": "vyzva_k_prevzeti_prukazu",
+                "document_type_cz": "Výzva k převzetí průkazu",
+                "summary": "Převzetí průkazu.",
+                "deadlines": [],
+                "actions_required": ["Uhradit správní poplatek 300 Kč ve formě kolku."],
+                "documents_needed": ["Platný cestovní doklad.", "Kolek 300 Kč."],
+                "confidence": 0.95,
+                "tips": "Připravte si kolek 300 Kč.",
+            }
+        )
+        classifier = ClassifierResult(
+            ocr_text=(
+                "Výzva k převzetí průkazu. Poplatek ve formě kolku ve výši: "
+                "[ ] bez poplatku (0 Kč) [ ] 2 500 Kč [x] 300 Kč [ ] 1 000 Kč."
+            ),
+            category="cizinecka",
+            doc_type="vyzva_k_prevzeti_prukazu",
+            sender="Ministerstvo vnitra ČR",
+            document_language="cs",
+            confidence=0.95,
+            page_count=1,
+        )
+        result, _ = await analyze_document(classifier, [], "cs", False)
+
+        assert result.actions_required == ["Uhradit správní poplatek 300 Kč ve formě kolku."]
+        assert "Kolek 300 Kč." in result.documents_needed
+        assert result.tips == "Připravte si kolek 300 Kč."
+
+    @pytest.mark.asyncio
     async def test_invalid_json_raises(self, monkeypatch):
         mock_response = MagicMock()
         mock_response.choices = [MagicMock(message=MagicMock(content="not json"))]

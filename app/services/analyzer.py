@@ -53,6 +53,46 @@ _CONFIRMATION_ACTION_BLOCKLIST = (
     "оплат",
 )
 
+_FEE_TERMS = (
+    "poplatek",
+    "poplatku",
+    "kolk",
+    "kolku",
+    "kolky",
+    "uhradit",
+    "zaplatit",
+    "fee",
+    "payment",
+    "stamp",
+    "оплат",
+    "платеж",
+    "платіж",
+    "колк",
+)
+
+
+def _ascii_fold(text: str) -> str:
+    replacements = str.maketrans(
+        {
+            "á": "a",
+            "č": "c",
+            "ď": "d",
+            "é": "e",
+            "ě": "e",
+            "í": "i",
+            "ň": "n",
+            "ó": "o",
+            "ř": "r",
+            "š": "s",
+            "ť": "t",
+            "ú": "u",
+            "ů": "u",
+            "ý": "y",
+            "ž": "z",
+        }
+    )
+    return text.lower().translate(replacements)
+
 
 def _looks_like_submission_confirmation(classifier: ClassifierResult) -> bool:
     doc_type = classifier.doc_type.lower()
@@ -62,6 +102,63 @@ def _looks_like_submission_confirmation(classifier: ClassifierResult) -> bool:
         or "potvrzeni o podani zadosti" in doc_type
         or "potvrzení o podání žádosti" in ocr
     )
+
+
+def _looks_like_card_pickup_notice(classifier: ClassifierResult) -> bool:
+    doc_type = _ascii_fold(classifier.doc_type)
+    ocr = _ascii_fold(classifier.ocr_text)
+    return (
+        "vyzva_k_prevzeti_prukazu" in doc_type
+        or "vyzva k prevzeti prukazu" in ocr
+        or "prevzeti prukazu o povoleni k dlouhodobemu pobytu" in ocr
+    )
+
+
+def _has_checked_positive_fee(ocr_text: str) -> bool:
+    text = _ascii_fold(ocr_text)
+    checked = r"(?:\[x\]|\(x\)|☒|✅|✓|✔|x)"
+    amount = r"(?:300|1\s*000|1000|2\s*500|2500)\s*(?:kc|kč)"
+    positive_checked = re.compile(rf"(?:{checked}\s*{amount})|(?:{amount}\s*{checked})")
+    return bool(positive_checked.search(text))
+
+
+def _has_checked_no_fee(ocr_text: str) -> bool:
+    text = _ascii_fold(ocr_text)
+    checked = r"(?:\[x\]|\(x\)|☒|✅|✓|✔|x)"
+    return bool(re.search(rf"{checked}\s*bez poplatku\s*\(0\s*(?:kc|kč)\)", text))
+
+
+def _should_suppress_fee_guidance(classifier: ClassifierResult) -> bool:
+    if not _looks_like_card_pickup_notice(classifier):
+        return False
+    if _has_checked_no_fee(classifier.ocr_text):
+        return True
+    return not _has_checked_positive_fee(classifier.ocr_text)
+
+
+def _mentions_fee(text: str) -> bool:
+    folded = _ascii_fold(text)
+    lowered = text.lower()
+    return any(term in folded or term in lowered for term in _FEE_TERMS)
+
+
+def _filter_fee_items(items: list[str]) -> list[str]:
+    return [item for item in items if not _mentions_fee(item)]
+
+
+def _strip_unconfirmed_fee_text(text: str | None) -> str | None:
+    if not text:
+        return text
+
+    cleaned = re.sub(
+        r"\s+(?:a|,)\s+(?:uhradit|zaplatit)\s+[^.]*?(?:kolk\w*|poplat\w*)[^.]*",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+    sentences = re.split(r"(?<=[.!?])\s+", cleaned.strip())
+    kept = [sentence for sentence in sentences if sentence and not _mentions_fee(sentence)]
+    return " ".join(kept).strip() or None
 
 
 def _confirmation_followup_action(language: UserLanguage) -> str:
@@ -83,12 +180,25 @@ def _clean_confirmation_actions(actions: list[str], language: UserLanguage) -> l
     return kept or [_confirmation_followup_action(language)]
 
 
+def _apply_card_pickup_fee_guardrail(result: AnalysisResult, classifier: ClassifierResult) -> AnalysisResult:
+    if not _should_suppress_fee_guidance(classifier):
+        return result
+
+    result.summary = _strip_unconfirmed_fee_text(result.summary) or result.summary
+    result.tips = _strip_unconfirmed_fee_text(result.tips)
+    result.actions_required = _filter_fee_items(result.actions_required)
+    result.documents_needed = _filter_fee_items(result.documents_needed)
+    return result
+
+
 def _apply_analysis_guardrails(
     result: AnalysisResult,
     classifier: ClassifierResult,
     language: UserLanguage,
 ) -> AnalysisResult:
     """Last-line defense against RAG-driven hallucinations for known doc types."""
+    result = _apply_card_pickup_fee_guardrail(result, classifier)
+
     if not _looks_like_submission_confirmation(classifier):
         return result
 
@@ -106,6 +216,12 @@ def _sanitize_stream_field(
     language: UserLanguage,
 ) -> Any:
     if not _looks_like_submission_confirmation(classifier):
+        if not _should_suppress_fee_guidance(classifier):
+            return value
+        if field in {"summary", "tips"} and isinstance(value, str):
+            return _strip_unconfirmed_fee_text(value)
+        if field in {"actions_required", "documents_needed"} and isinstance(value, list):
+            return _filter_fee_items([str(item) for item in value])
         return value
     if field == "documents_needed":
         return []
