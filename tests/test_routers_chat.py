@@ -4,6 +4,8 @@ import json
 from datetime import UTC, datetime
 from uuid import uuid4
 
+from app.services.chat import _build_chat_messages, _build_scan_context_message
+
 
 def _seed_profile(fake_supabase, user_id: str, **overrides):
     row = {
@@ -43,6 +45,44 @@ def _seed_scan(fake_supabase, user_id: str):
                 "confidence": 0.9,
             },
             "language": "cs",
+            "model_used": "gpt-4o",
+            "created_at": datetime.now(UTC).isoformat(),
+        }
+    )
+    return sid
+
+
+def _seed_cizinecka_pickup_scan(fake_supabase, user_id: str, *, language: str = "ru"):
+    sid = str(uuid4())
+    fake_supabase.table("scans").rows.append(
+        {
+            "id": sid,
+            "user_id": user_id,
+            "image_paths": [f"{user_id}/p.jpg"],
+            "page_count": 1,
+            "ocr_text": (
+                "Výzva k převzetí průkazu o povolení k dlouhodobému pobytu. "
+                "S sebou je třeba si přinést platný cestovní doklad a uhradit správní poplatek "
+                "VE FORMĚ KOLKU ve výši: [ ] bez poplatku (0 Kč) [ ] 2 500 Kč [ ] 300 Kč [ ] 1 000 Kč."
+            ),
+            "category": "cizinecka",
+            "doc_type": "vyzva_k_prevzeti_prukazu",
+            "category_confidence": 0.95,
+            "result": {
+                "document_type": "vyzva_k_prevzeti_prukazu",
+                "document_type_cz": "Výzva k převzetí průkazu",
+                "summary": "Нужно прийти за картой.",
+                "deadlines": [],
+                "actions_required": [
+                    "Прийти лично на OAMP.",
+                    "Взять действующий паспорт.",
+                    "Подготовить kolky 2 500 Kč.",
+                ],
+                "penalty": "Если не прийти в течение 60 дней, řízení bude zastaveno.",
+                "documents_needed": ["Действующий паспорт.", "Kolky 2 500 Kč."],
+                "confidence": 0.95,
+            },
+            "language": language,
             "model_used": "gpt-4o",
             "created_at": datetime.now(UTC).isoformat(),
         }
@@ -111,6 +151,42 @@ class TestAskQuestion:
         assert "Odpověď na: Co znamená VS?" in body["assistant_message"]["content"]
         assert body["questions_used"] == 1
         assert body["questions_remaining"] == 9
+
+    def test_uses_scan_language_not_profile_language(
+        self, client, fake_supabase, auth_headers, test_user_id, monkeypatch
+    ):
+        _seed_profile(fake_supabase, str(test_user_id), plan="pro", language="cs")
+        sid = _seed_cizinecka_pickup_scan(fake_supabase, str(test_user_id), language="ru")
+        seen = {}
+
+        async def fake_answer(scan_row, history, question, language):
+            seen["language"] = language
+            return "Идите на OAMP Cigánkova."
+
+        monkeypatch.setattr("app.routers.chat.answer_question", fake_answer)
+
+        r = client.post(
+            f"/scans/{sid}/chat",
+            headers=auth_headers,
+            json={"question": "куда идти?"},
+        )
+        assert r.status_code == 201, r.json()
+        assert seen["language"] == "ru"
+        assert r.json()["assistant_message"]["content"] == "Идите на OAMP Cigánkova."
+
+    def test_chat_context_suppresses_unconfirmed_fee_guidance(self, fake_supabase, test_user_id):
+        sid = _seed_cizinecka_pickup_scan(fake_supabase, str(test_user_id), language="ru")
+        scan_row = fake_supabase.table("scans").rows[-1]
+
+        context = _build_scan_context_message(scan_row)
+        assert "Подготовить kolky" not in context
+        assert "Kolky 2 500" not in context
+        assert "POPLATEK/KOLKY" in context
+
+        messages = _build_chat_messages(scan_row, [], "куда идти?", "ru")
+        assert "JAZYK ODPOVĚDI: ru" in messages[0]["content"]
+        assert "Nikdy neodpovídej česky" in messages[0]["content"]
+        assert "JAZYK SKENU: ru" in messages[1]["content"]
 
     def test_pro_user_capped_at_10(self, client, fake_supabase, auth_headers, test_user_id, monkeypatch):
         _seed_profile(fake_supabase, str(test_user_id), plan="pro")

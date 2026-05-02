@@ -6,6 +6,7 @@ conversation depth — limits service caps it at 10 questions per scan.
 """
 
 import logging
+import re
 from collections.abc import AsyncIterator
 from typing import Any
 from uuid import UUID
@@ -16,6 +17,79 @@ from app.prompts import CHAT_SYSTEM_PROMPT
 from app.services.embeddings import get_openai_client
 
 logger = logging.getLogger(__name__)
+
+_FEE_TERMS = (
+    "poplatek",
+    "poplatku",
+    "kolk",
+    "kolku",
+    "kolky",
+    "uhradit",
+    "zaplatit",
+    "fee",
+    "payment",
+    "stamp",
+    "оплат",
+    "платеж",
+    "платіж",
+    "колк",
+)
+
+
+def _ascii_fold(text: str) -> str:
+    replacements = str.maketrans(
+        {
+            "á": "a",
+            "č": "c",
+            "ď": "d",
+            "é": "e",
+            "ě": "e",
+            "í": "i",
+            "ň": "n",
+            "ó": "o",
+            "ř": "r",
+            "š": "s",
+            "ť": "t",
+            "ú": "u",
+            "ů": "u",
+            "ý": "y",
+            "ž": "z",
+        }
+    )
+    return text.lower().translate(replacements)
+
+
+def _looks_like_card_pickup_notice(scan_row: dict[str, Any]) -> bool:
+    doc_type = _ascii_fold(str(scan_row.get("doc_type") or ""))
+    ocr = _ascii_fold(str(scan_row.get("ocr_text") or ""))
+    return (
+        "vyzva_k_prevzeti_prukazu" in doc_type
+        or "vyzva k prevzeti prukazu" in ocr
+        or "prevzeti prukazu o povoleni k dlouhodobemu pobytu" in ocr
+    )
+
+
+def _has_checked_positive_fee(ocr_text: str) -> bool:
+    text = _ascii_fold(ocr_text)
+    checked = r"(?:\[x\]|\(x\)|☒|✅|✓|✔|x)"
+    amount = r"(?:300|1\s*000|1000|2\s*500|2500)\s*(?:kc|kč)"
+    return bool(re.search(rf"(?:{checked}\s*{amount})|(?:{amount}\s*{checked})", text))
+
+
+def _should_suppress_fee_guidance(scan_row: dict[str, Any]) -> bool:
+    if not _looks_like_card_pickup_notice(scan_row):
+        return False
+    return not _has_checked_positive_fee(str(scan_row.get("ocr_text") or ""))
+
+
+def _mentions_fee(text: str) -> bool:
+    folded = _ascii_fold(text)
+    lowered = text.lower()
+    return any(term in folded or term in lowered for term in _FEE_TERMS)
+
+
+def _filter_fee_items(items: list[Any]) -> list[Any]:
+    return [item for item in items if not _mentions_fee(str(item))]
 
 
 def _build_scan_context_message(scan_row: dict[str, Any]) -> str:
@@ -28,6 +102,12 @@ def _build_scan_context_message(scan_row: dict[str, Any]) -> str:
     deadlines = result.get("deadlines") or []
     actions = result.get("actions_required") or []
     penalty = result.get("penalty") or "(neuvedeno)"
+    documents_needed = result.get("documents_needed") or []
+
+    suppress_fee_guidance = _should_suppress_fee_guidance(scan_row)
+    if suppress_fee_guidance:
+        actions = _filter_fee_items(actions)
+        documents_needed = _filter_fee_items(documents_needed)
 
     deadlines_str = (
         "\n".join(f"- {d.get('date')}: {d.get('description')} ({d.get('type')})" for d in deadlines)
@@ -35,16 +115,28 @@ def _build_scan_context_message(scan_row: dict[str, Any]) -> str:
         else "(žádné lhůty)"
     )
     actions_str = "\n".join(f"- {a}" for a in actions) if actions else "(žádné akce)"
+    documents_needed_str = (
+        "\n".join(f"- {doc}" for doc in documents_needed) if documents_needed else "(žádné dokumenty)"
+    )
+    fee_guard = (
+        "\nPOPLATEK/KOLKY: V OCR není jednoznačně vybraná částka větší než 0 Kč. "
+        "Neříkej uživateli, že má platit nebo připravit kolky, pokud se ptá na tento dokument.\n"
+        if suppress_fee_guidance
+        else ""
+    )
 
     return (
         "KONTEXT DOKUMENTU (z předchozí analýzy):\n\n"
+        f"JAZYK SKENU: {scan_row.get('language') or '(neznámý)'}\n"
         f"KATEGORIE: {scan_row.get('category')}\n"
         f"TYP: {scan_row.get('doc_type')}\n"
         f"ODESÍLATEL: {(result.get('sender')) or '(neznámý)'}\n\n"
         f"SUMMARY:\n{summary}\n\n"
         f"LHŮTY:\n{deadlines_str}\n\n"
         f"AKCE:\n{actions_str}\n\n"
+        f"DOKUMENTY POTŘEBNÉ:\n{documents_needed_str}\n\n"
         f"SANKCE:\n{penalty}\n\n"
+        f"{fee_guard}"
         "OCR TEXT (přesný přepis dokumentu):\n"
         "---\n"
         f"{ocr}\n"
@@ -61,7 +153,7 @@ def _build_chat_messages(
     return [
         {
             "role": "system",
-            "content": CHAT_SYSTEM_PROMPT.format(language=language),
+            "content": CHAT_SYSTEM_PROMPT.format(language=language, scan_language=scan_row.get("language")),
         },
         {
             "role": "system",

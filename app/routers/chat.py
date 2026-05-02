@@ -123,6 +123,7 @@ async def ask_question(
         raise HTTPException(status_code=status.HTTP_402_PAYMENT_REQUIRED, detail=str(exc)) from exc
 
     scan_row = await _load_scan(scan_id, user_id)
+    language: UserLanguage = scan_row.get("language") or language
     history = await fetch_scan_history(scan_id, user_id)
 
     # Run LLM
@@ -162,6 +163,7 @@ async def ask_question_stream(
         raise HTTPException(status_code=status.HTTP_402_PAYMENT_REQUIRED, detail=str(exc)) from exc
 
     scan_row = await _load_scan(scan_id, user_id)
+    language: UserLanguage = scan_row.get("language") or language
     history = await fetch_scan_history(scan_id, user_id)
     caps = caps_for_plan(plan)
 
