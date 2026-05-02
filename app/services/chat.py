@@ -150,6 +150,12 @@ def _build_chat_messages(
     question: str,
     language: UserLanguage,
 ) -> list[dict[str, str]]:
+    history_context = (
+        "HISTORIE CHATU: Následující user/assistant zprávy jsou skutečná "
+        "dosavadní historie tohoto chatu. Použij je pro návazné otázky."
+        if history
+        else "HISTORIE CHATU: Zatím žádná předchozí textová historie."
+    )
     return [
         {
             "role": "system",
@@ -158,6 +164,10 @@ def _build_chat_messages(
         {
             "role": "system",
             "content": _build_scan_context_message(scan_row),
+        },
+        {
+            "role": "system",
+            "content": history_context,
         },
         *history,
         {"role": "user", "content": question},
@@ -245,10 +255,11 @@ async def fetch_scan_history(scan_id: UUID, user_id: UUID) -> list[dict[str, str
     supabase = await get_supabase()
     result = (
         await supabase.table("scan_messages")
-        .select("role,content,message_type,created_at")
+        .select("id,role,content,message_type,created_at")
         .eq("scan_id", str(scan_id))
         .eq("user_id", str(user_id))
         .order("created_at")
+        .order("id")
         .execute()
     )
 
