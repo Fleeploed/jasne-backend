@@ -1,11 +1,15 @@
 """POST /scans — multi-page scan: OCR → RAG → analyzer → persist + open chat thread."""
 
+import base64
 import json
 import logging
 from collections.abc import AsyncIterator
+from dataclasses import dataclass
+from pathlib import PurePosixPath
 from typing import Any
 from uuid import UUID
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
 
@@ -29,41 +33,182 @@ from app.services.rag import get_supabase, retrieve_chunks
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/scans", tags=["scans"])
 
+SUPPORTED_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
+PDF_EXTENSION = ".pdf"
+PDF_RENDER_SCALE = 2.0
+MAX_PDF_BYTES = 20 * 1024 * 1024
+
+
+@dataclass(frozen=True)
+class PreparedVisionInputs:
+    """Prepared GPT Vision inputs after storage validation and PDF rendering."""
+
+    urls: list[str]
+    page_count: int
+
 
 def _sse(event: str, payload: dict[str, Any]) -> str:
     return f"event: {event}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
 
-async def _sign_image_urls(image_paths: list[str]) -> list[str]:
-    """Get short-lived signed URLs for every page so GPT Vision can fetch them."""
+def _storage_suffix(path: str) -> str:
+    return PurePosixPath(path.split("?", 1)[0]).suffix.lower()
+
+
+def _validate_storage_path(user_id: UUID, path: str) -> str:
+    """Ensure service-role signing is limited to files under the current user prefix."""
+    clean_path = path.strip()
+    user_prefix = f"{user_id}/"
+    parts = PurePosixPath(clean_path).parts
+
+    if not clean_path:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Storage path is blank")
+    if clean_path.startswith("/") or "://" in clean_path or "\x00" in clean_path:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Invalid storage path: '{path}'")
+    if ".." in parts:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Invalid storage path: '{path}'")
+    if not clean_path.startswith(user_prefix):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Storage path must belong to the authenticated user",
+        )
+    return clean_path
+
+
+async def _sign_storage_url(path: str) -> str:
+    """Get a short-lived signed URL for a storage object."""
     settings = get_settings()
     supabase = await get_supabase()
+
+    try:
+        signed = await supabase.storage.from_(settings.supabase_storage_bucket).create_signed_url(
+            path, settings.supabase_signed_url_ttl
+        )
+    except Exception as exc:
+        logger.error("Failed to sign URL for %s: %s", path, exc)
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"Could not sign storage URL for '{path}' — is it uploaded "
+                f"to bucket '{settings.supabase_storage_bucket}'?"
+            ),
+        ) from exc
+
+    url = signed.get("signedURL") or signed.get("signedUrl")
+    if not url:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Storage returned no signed URL",
+        )
+    return url
+
+
+async def _download_signed_object(url: str, path: str) -> bytes:
+    """Download a signed Supabase object that must be transformed before GPT Vision."""
+    try:
+        async with httpx.AsyncClient(follow_redirects=True, timeout=30.0) as client:
+            response = await client.get(url)
+    except httpx.HTTPError as exc:
+        logger.error("Failed to download signed storage object %s: %s", path, exc)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Could not download PDF '{path}' from storage",
+        ) from exc
+
+    if response.status_code >= 400:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Could not download PDF '{path}' from storage",
+        )
+
+    content = response.content
+    if len(content) > MAX_PDF_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail="PDF is too large. Upload up to 20 MB or split it into images.",
+        )
+    return content
+
+
+def _render_pdf_to_png_data_urls(pdf_bytes: bytes, path: str) -> list[str]:
+    """Render a PDF into PNG data URLs accepted by OpenAI Vision."""
+    try:
+        import fitz
+    except ImportError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="PDF support is not installed on the server",
+        ) from exc
+
+    try:
+        document = fitz.open(stream=pdf_bytes, filetype="pdf")
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f"Invalid PDF: '{path}'"
+        ) from exc
+
+    try:
+        page_count = int(document.page_count)
+        if page_count < 1:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f"PDF has no pages: '{path}'"
+            )
+        if page_count > 10:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="PDF has more than 10 pages. Split it into a smaller document.",
+            )
+
+        try:
+            matrix = fitz.Matrix(PDF_RENDER_SCALE, PDF_RENDER_SCALE)
+            data_urls: list[str] = []
+            for page_index in range(page_count):
+                page = document.load_page(page_index)
+                pixmap = page.get_pixmap(matrix=matrix, alpha=False)
+                png_bytes = pixmap.tobytes("png")
+                encoded = base64.b64encode(png_bytes).decode("ascii")
+                data_urls.append(f"data:image/png;base64,{encoded}")
+            return data_urls
+        except Exception as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Could not render PDF: '{path}'",
+            ) from exc
+    finally:
+        document.close()
+
+
+async def _prepare_vision_inputs(user_id: UUID, image_paths: list[str]) -> PreparedVisionInputs:
+    """Validate storage paths and convert supported inputs into GPT Vision URLs."""
     urls: list[str] = []
 
-    for path in image_paths:
-        try:
-            signed = await supabase.storage.from_(settings.supabase_storage_bucket).create_signed_url(
-                path, settings.supabase_signed_url_ttl
-            )
-        except Exception as exc:
-            logger.error("Failed to sign URL for %s: %s", path, exc)
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=(
-                    f"Could not sign image URL for '{path}' — is it uploaded "
-                    f"to bucket '{settings.supabase_storage_bucket}'?"
-                ),
-            ) from exc
+    for raw_path in image_paths:
+        path = _validate_storage_path(user_id, raw_path)
+        suffix = _storage_suffix(path)
 
-        url = signed.get("signedURL") or signed.get("signedUrl")
-        if not url:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Storage returned no signed URL",
-            )
-        urls.append(url)
+        if suffix in SUPPORTED_IMAGE_EXTENSIONS:
+            urls.append(await _sign_storage_url(path))
+            continue
 
-    return urls
+        if suffix == PDF_EXTENSION:
+            signed_url = await _sign_storage_url(path)
+            pdf_bytes = await _download_signed_object(signed_url, path)
+            urls.extend(_render_pdf_to_png_data_urls(pdf_bytes, path))
+            continue
+
+        raise HTTPException(
+            status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+            detail="Unsupported file type. Upload PNG, JPEG, GIF, WEBP, or PDF.",
+        )
+
+    return PreparedVisionInputs(urls=urls, page_count=len(urls))
+
+
+async def _check_scan_quota_or_402(user_id: UUID, plan: str, page_count: int) -> None:
+    try:
+        await check_scan_quota(user_id, plan, page_count=page_count)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_402_PAYMENT_REQUIRED, detail=str(exc)) from exc
 
 
 async def _create_deadlines(user_id: UUID, scan_id: UUID, deadlines: list[DeadlineItem]) -> int:
@@ -129,12 +274,28 @@ async def _persist_completed_scan(
         "result": analysis.model_dump(mode="json"),
         "language": language,
         "model_used": model_used,
+        "page_count": classifier.page_count,
     }
-    inserted = await supabase.table("scans").insert(scan_row).execute()
+    try:
+        inserted = await supabase.table("scans").insert(scan_row).execute()
+    except Exception as exc:
+        message = str(exc).lower()
+        if "page_count" not in message or "generated" not in message:
+            raise
+
+        logger.warning(
+            "scans.page_count is still generated in the database; "
+            "retrying insert without explicit page_count. Apply migration 0005."
+        )
+        legacy_scan_row = dict(scan_row)
+        legacy_scan_row.pop("page_count", None)
+        inserted = await supabase.table("scans").insert(legacy_scan_row).execute()
+
     if not inserted.data:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to save scan")
 
     scan_data = inserted.data[0]
+    scan_data["page_count"] = classifier.page_count
     scan_id = UUID(scan_data["id"])
 
     await increment_scan_count(user_id)
@@ -144,7 +305,7 @@ async def _persist_completed_scan(
     logger.info(
         "Scan created scan_id=%s pages=%d category=%s model=%s ocr_conf=%.2f deadlines=%d",
         scan_id,
-        scan_data.get("page_count") or len(body.image_paths),
+        classifier.page_count,
         classifier.category,
         model_used,
         classifier.confidence,
@@ -166,15 +327,14 @@ async def create_scan(
     has_datova_schranka: bool = bool(profile.get("has_datova_schranka", False))
 
     # Plan-based quota check (monthly scans + per-scan page cap)
-    try:
-        await check_scan_quota(user_id, plan, page_count=len(body.image_paths))
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_402_PAYMENT_REQUIRED, detail=str(exc)) from exc
+    await _check_scan_quota_or_402(user_id, plan, page_count=len(body.image_paths))
 
-    image_urls = await _sign_image_urls(body.image_paths)
+    vision_inputs = await _prepare_vision_inputs(user_id, body.image_paths)
+    await _check_scan_quota_or_402(user_id, plan, page_count=vision_inputs.page_count)
 
     # Call 1 — OCR + classification (multi-page, single Vision call)
-    classifier = await classify_document(image_urls)
+    classifier = await classify_document(vision_inputs.urls)
+    classifier = classifier.model_copy(update={"page_count": vision_inputs.page_count})
 
     if classifier.confidence < settings.min_ocr_confidence or not classifier.ocr_text.strip():
         logger.warning(
@@ -213,18 +373,17 @@ async def create_scan_stream(
     language: UserLanguage = body.language or profile.get("language", "cs")
     has_datova_schranka: bool = bool(profile.get("has_datova_schranka", False))
 
-    try:
-        await check_scan_quota(user_id, plan, page_count=len(body.image_paths))
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_402_PAYMENT_REQUIRED, detail=str(exc)) from exc
+    await _check_scan_quota_or_402(user_id, plan, page_count=len(body.image_paths))
 
     async def events() -> AsyncIterator[str]:
         try:
-            yield _sse("status", {"step": "signing_urls", "message": "Preparing document images"})
-            image_urls = await _sign_image_urls(body.image_paths)
+            yield _sse("status", {"step": "preparing_inputs", "message": "Preparing document pages"})
+            vision_inputs = await _prepare_vision_inputs(user_id, body.image_paths)
+            await _check_scan_quota_or_402(user_id, plan, page_count=vision_inputs.page_count)
 
             yield _sse("status", {"step": "ocr", "message": "Reading document text"})
-            classifier = await classify_document(image_urls)
+            classifier = await classify_document(vision_inputs.urls)
+            classifier = classifier.model_copy(update={"page_count": vision_inputs.page_count})
             yield _sse(
                 "status",
                 {
@@ -270,6 +429,8 @@ async def create_scan_stream(
             yield _sse("status", {"step": "saving", "message": "Saving scan and reminders"})
             scan = await _persist_completed_scan(user_id, body, classifier, analysis, language, model_used)
             yield _sse("done", scan.model_dump(mode="json"))
+        except HTTPException as exc:
+            yield _sse("error", {"status_code": exc.status_code, "detail": exc.detail})
         except Exception as exc:
             logger.exception("Streaming scan failed user_id=%s", user_id)
             yield _sse("error", {"detail": str(exc) or "Streaming scan failed"})

@@ -116,6 +116,139 @@ class TestCreateScan:
         assert body["page_count"] == 3
         assert body["image_paths"] == paths
 
+    def test_pdf_scan_is_rendered_before_classifier(
+        self,
+        client,
+        fake_supabase,
+        auth_headers,
+        test_user_id,
+        mock_openai_analyze,
+        mock_rag_empty,
+        monkeypatch,
+    ):
+        _seed_profile(fake_supabase, str(test_user_id))
+
+        from app.models.schemas import ClassifierResult
+
+        seen = {}
+
+        async def fake_download(url: str, path: str) -> bytes:
+            seen["download_url"] = url
+            seen["download_path"] = path
+            return b"%PDF-1.6"
+
+        def fake_render(pdf_bytes: bytes, path: str) -> list[str]:
+            seen["pdf_bytes"] = pdf_bytes
+            seen["render_path"] = path
+            return ["data:image/png;base64,page1", "data:image/png;base64,page2"]
+
+        async def fake_classify(image_urls: list[str]) -> ClassifierResult:
+            seen["classifier_urls"] = image_urls
+            return ClassifierResult(
+                ocr_text="PDF text",
+                category="ostatni",
+                doc_type="pdf_document",
+                sender=None,
+                document_language="cs",
+                confidence=0.95,
+                page_count=1,
+            )
+
+        monkeypatch.setattr("app.routers.scan._download_signed_object", fake_download)
+        monkeypatch.setattr("app.routers.scan._render_pdf_to_png_data_urls", fake_render)
+        monkeypatch.setattr("app.routers.scan.classify_document", fake_classify)
+
+        path = f"{test_user_id}/document.pdf"
+        r = client.post(
+            "/scans",
+            headers=auth_headers,
+            json={"image_paths": [path]},
+        )
+
+        assert r.status_code == 201, r.json()
+        assert seen["download_url"].startswith(f"https://fake-storage/{path}")
+        assert seen["download_path"] == path
+        assert seen["pdf_bytes"] == b"%PDF-1.6"
+        assert seen["render_path"] == path
+        assert seen["classifier_urls"] == ["data:image/png;base64,page1", "data:image/png;base64,page2"]
+        assert r.json()["page_count"] == 2
+
+    def test_multi_page_pdf_counts_pages_for_quota(
+        self,
+        client,
+        fake_supabase,
+        auth_headers,
+        test_user_id,
+        mock_openai_analyze,
+        mock_rag_empty,
+        monkeypatch,
+    ):
+        _seed_profile(fake_supabase, str(test_user_id), plan="free")
+
+        async def fake_download(url: str, path: str) -> bytes:
+            return b"%PDF-1.6"
+
+        def fake_render(pdf_bytes: bytes, path: str) -> list[str]:
+            return [f"data:image/png;base64,page{i}" for i in range(4)]
+
+        async def fake_classify(image_urls: list[str]):
+            raise AssertionError("quota should block before classifier")
+
+        monkeypatch.setattr("app.routers.scan._download_signed_object", fake_download)
+        monkeypatch.setattr("app.routers.scan._render_pdf_to_png_data_urls", fake_render)
+        monkeypatch.setattr("app.routers.scan.classify_document", fake_classify)
+
+        r = client.post(
+            "/scans",
+            headers=auth_headers,
+            json={"image_paths": [f"{test_user_id}/large.pdf"]},
+        )
+
+        assert r.status_code == 402
+        assert "max 3 pages" in r.json()["detail"]
+
+    def test_rejects_storage_path_outside_user_prefix(
+        self,
+        client,
+        fake_supabase,
+        auth_headers,
+        test_user_id,
+        mock_openai_classify,
+        mock_openai_analyze,
+        mock_rag_empty,
+    ):
+        _seed_profile(fake_supabase, str(test_user_id))
+
+        r = client.post(
+            "/scans",
+            headers=auth_headers,
+            json={"image_paths": ["99999999-9999-9999-9999-999999999999/doc.jpg"]},
+        )
+
+        assert r.status_code == 403
+        assert "authenticated user" in r.json()["detail"]
+
+    def test_unsupported_file_type_rejected(
+        self,
+        client,
+        fake_supabase,
+        auth_headers,
+        test_user_id,
+        mock_openai_classify,
+        mock_openai_analyze,
+        mock_rag_empty,
+    ):
+        _seed_profile(fake_supabase, str(test_user_id))
+
+        r = client.post(
+            "/scans",
+            headers=auth_headers,
+            json={"image_paths": [f"{test_user_id}/doc.heic"]},
+        )
+
+        assert r.status_code == 415
+        assert "Unsupported file type" in r.json()["detail"]
+
     def test_free_tier_4_pages_rejected(
         self,
         client,
