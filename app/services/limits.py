@@ -106,6 +106,31 @@ def _looks_like_missing_rpc(exc: Exception, function_name: str) -> bool:
     )
 
 
+def _rpc_int_result(data: object, function_name: str) -> int:
+    """Normalize Supabase RPC scalar return shapes.
+
+    PostgREST returns scalar SQL function results as a bare JSON value, while
+    tests and some client paths may expose a single-item list or object.
+    """
+    if data is None:
+        return 0
+    if isinstance(data, bool):
+        return int(data)
+    if isinstance(data, int | float | str):
+        return int(data)
+    if isinstance(data, list):
+        if not data:
+            return 0
+        return _rpc_int_result(data[0], function_name)
+    if isinstance(data, dict):
+        for key in (function_name, "value", "count"):
+            if key in data:
+                return _rpc_int_result(data[key], function_name)
+        if len(data) == 1:
+            return _rpc_int_result(next(iter(data.values())), function_name)
+    raise TypeError(f"Unexpected RPC result for {function_name}: {data!r}")
+
+
 async def _increment_scan_count_fallback(user_id: UUID, month: str) -> int:
     """Non-atomic compatibility path used until the RPC migration is applied."""
     usage = await get_or_init_usage(user_id, month)
@@ -181,7 +206,7 @@ async def increment_scan_count(user_id: UUID) -> int:
         logger.info("Scan count user=%s month=%s -> %d", user_id, month, new_count)
         return new_count
 
-    new_count = int((result.data or [0])[0])
+    new_count = _rpc_int_result(result.data, "increment_scan_count")
     if new_count <= 0:
         raise RuntimeError("Failed to increment scan count")
     logger.info("Scan count user=%s month=%s -> %d", user_id, month, new_count)
@@ -228,7 +253,7 @@ async def increment_chat_count(user_id: UUID, scan_id: UUID) -> int:
         logger.info("Chat count user=%s scan=%s month=%s -> %d", user_id, scan_id, month, new_count)
         return new_count
 
-    new_count = int((result.data or [0])[0])
+    new_count = _rpc_int_result(result.data, "increment_chat_count")
     if new_count <= 0:
         raise RuntimeError("Failed to increment chat count")
     logger.info("Chat count user=%s scan=%s month=%s -> %d", user_id, scan_id, month, new_count)
