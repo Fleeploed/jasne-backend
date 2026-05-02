@@ -4,7 +4,12 @@ import json
 from datetime import UTC, datetime
 from uuid import uuid4
 
-from app.services.chat import _build_chat_messages, _build_scan_context_message
+from app.services.chat import (
+    _build_chat_messages,
+    _build_knowledge_context_message,
+    _build_scan_context_message,
+)
+from app.services.rag import _extract_keyword_terms
 
 
 def _seed_profile(fake_supabase, user_id: str, **overrides):
@@ -135,9 +140,14 @@ class TestAskQuestion:
         sid = _seed_scan(fake_supabase, str(test_user_id))
 
         # Mock the answer_question service
-        async def fake_answer(scan_row, history, question, language):
+        async def fake_rag(question, category):
+            return ["Voroněžská 144/20, Liberec\nPo, St: 8.00–16.00\nPá: 8.00–13.00"]
+
+        async def fake_answer(scan_row, history, question, language, rag_chunks=None):
+            assert rag_chunks == ["Voroněžská 144/20, Liberec\nPo, St: 8.00–16.00\nPá: 8.00–13.00"]
             return f"Odpověď na: {question}"
 
+        monkeypatch.setattr("app.routers.chat.retrieve_chat_chunks", fake_rag)
         monkeypatch.setattr("app.routers.chat.answer_question", fake_answer)
 
         r = client.post(
@@ -159,7 +169,7 @@ class TestAskQuestion:
         sid = _seed_cizinecka_pickup_scan(fake_supabase, str(test_user_id), language="ru")
         seen = {}
 
-        async def fake_answer(scan_row, history, question, language):
+        async def fake_answer(scan_row, history, question, language, rag_chunks=None):
             seen["language"] = language
             return "Идите на OAMP Cigánkova."
 
@@ -189,7 +199,8 @@ class TestAskQuestion:
         assert "что на фото" in messages[0]["content"]
         assert "Neříkej, že neumíš analyzovat fotky" in messages[0]["content"]
         assert "JAZYK SKENU: ru" in messages[1]["content"]
-        assert messages[2]["content"] == "HISTORIE CHATU: Zatím žádná předchozí textová historie."
+        assert "BÁZE ZNALOSTÍ (RAG)" in messages[2]["content"]
+        assert messages[3]["content"] == "HISTORIE CHATU: Zatím žádná předchozí textová historie."
 
     def test_chat_messages_include_history_marker(self, fake_supabase, test_user_id):
         sid = _seed_cizinecka_pickup_scan(fake_supabase, str(test_user_id), language="ru")
@@ -205,14 +216,42 @@ class TestAskQuestion:
             "ru",
         )
 
-        assert messages[2]["role"] == "system"
-        assert "dosavadní historie tohoto chatu" in messages[2]["content"]
-        assert messages[3] == {"role": "user", "content": "что на фото?"}
-        assert messages[4] == {
+        assert messages[3]["role"] == "system"
+        assert "dosavadní historie tohoto chatu" in messages[3]["content"]
+        assert messages[4] == {"role": "user", "content": "что на фото?"}
+        assert messages[5] == {
             "role": "assistant",
             "content": "На фото výzva k převzetí průkazu.",
         }
-        assert messages[5] == {"role": "user", "content": "а куда идти?"}
+        assert messages[6] == {"role": "user", "content": "а куда идти?"}
+
+    def test_chat_messages_include_rag_context(self, fake_supabase, test_user_id):
+        _seed_cizinecka_pickup_scan(fake_supabase, str(test_user_id), language="ru")
+        scan_row = fake_supabase.table("scans").rows[-1]
+
+        messages = _build_chat_messages(
+            scan_row,
+            [],
+            "рабочие часы VORONĚŽSKÁ 144/20?",
+            "ru",
+            ["Voroněžská 144/20, Liberec\nPo, St: 8.00–16.00\nPá: 8.00–13.00"],
+        )
+
+        assert "BÁZE ZNALOSTÍ (RAG) PRO AKTUÁLNÍ OTÁZKU" in messages[2]["content"]
+        assert "Voroněžská 144/20" in messages[2]["content"]
+        assert "Po, St: 8.00–16.00" in messages[2]["content"]
+
+    def test_empty_rag_context_tells_model_not_to_guess(self):
+        context = _build_knowledge_context_message([])
+        assert "nebyly nalezeny" in context
+        assert "nemáš" in context
+
+    def test_chat_keyword_terms_keep_exact_address_tokens(self):
+        terms = _extract_keyword_terms("рабочие часы VORONĚŽSKÁ 144/20, 460 01 LIBEREC?")
+        assert "VORONĚŽSKÁ" in terms
+        assert "144/20" in terms
+        assert "LIBEREC" in terms
+        assert "рабочие" not in terms
 
     def test_pro_user_capped_at_10(self, client, fake_supabase, auth_headers, test_user_id, monkeypatch):
         _seed_profile(fake_supabase, str(test_user_id), plan="pro")
