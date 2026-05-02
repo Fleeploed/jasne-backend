@@ -57,7 +57,7 @@ class Settings(BaseSettings):
     # RAG
     # =====================================================================
     rag_top_k: int = 5
-    rag_similarity_threshold: float = 0.65
+    rag_similarity_threshold: float = 0.50
     embedding_max_chars: int = 20000  # text-embedding-3 accepts ~8k tokens (~32k chars)
 
     # =====================================================================

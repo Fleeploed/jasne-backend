@@ -36,3 +36,8 @@ def test_parses_comma_separated_origins():
         )
     )
     assert settings.allowed_origins == ["https://app.example", "https://admin.example"]
+
+
+def test_rag_threshold_defaults_to_retrieval_friendly_value():
+    settings = Settings(**_base_settings())
+    assert settings.rag_similarity_threshold == 0.50
