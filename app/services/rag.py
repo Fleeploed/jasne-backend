@@ -159,8 +159,23 @@ def _chunk_dedupe_key(chunk: str) -> str:
     return re.sub(r"\s+", " ", chunk).casefold()[:500]
 
 
+def _language_rank(metadata: dict, preferred_language: str | None) -> tuple[int, str]:
+    language = str(metadata.get("language") or "")
+    if preferred_language and language == preferred_language:
+        return (0, language)
+    if language == "cs":
+        return (1, language)
+    if language == "en":
+        return (2, language)
+    return (3, language)
+
+
 async def retrieve_keyword_chunks(
-    query_text: str, category: DocumentCategory, *, match_count: int = 5
+    query_text: str,
+    category: DocumentCategory,
+    *,
+    match_count: int = 5,
+    preferred_language: str | None = None,
 ) -> list[str]:
     """Keyword fallback for exact addresses, office names, and identifiers."""
     terms = _extract_keyword_terms(query_text)
@@ -181,10 +196,14 @@ async def retrieve_keyword_chunks(
             .eq("metadata->>category", category)
             .ilike("content", f"%{_escape_ilike(term)}%")
             .order("id", desc=True)
-            .limit(max(1, match_count - len(chunks)))
+            .limit(max(4, (match_count - len(chunks)) * 4))
             .execute()
         )
-        for row in result.data or []:
+        rows = sorted(
+            result.data or [],
+            key=lambda row: _language_rank(row.get("metadata") or {}, preferred_language),
+        )
+        for row in rows:
             content = _snippet_around_term(str(row.get("content") or ""), term).strip()
             if not content or content in seen:
                 continue
@@ -197,13 +216,20 @@ async def retrieve_keyword_chunks(
     return chunks
 
 
-async def retrieve_chat_chunks(question: str, category: DocumentCategory) -> list[str]:
+async def retrieve_chat_chunks(
+    question: str, category: DocumentCategory, preferred_language: str | None = None
+) -> list[str]:
     """Hybrid retrieval for follow-up chat questions."""
     if not question.strip() or not category:
         return []
 
     settings = get_settings()
-    keyword_chunks = await retrieve_keyword_chunks(question, category, match_count=settings.rag_top_k)
+    keyword_chunks = await retrieve_keyword_chunks(
+        question,
+        category,
+        match_count=settings.rag_top_k,
+        preferred_language=preferred_language,
+    )
     vector_chunks = await retrieve_chunks(question, category)
 
     chunks: list[str] = []
