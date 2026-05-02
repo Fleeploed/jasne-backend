@@ -38,6 +38,9 @@ KATEGORIE:
 PRAVIDLA OCR:
 - Po řádcích, zachovej strukturu a tabulky
 - NEPŘEKLÁDEJ, NEPŘEFORMULOVÁVEJ — pouze přepis
+- Checkboxy a zaškrtávací políčka přepisuj explicitně jako `[x]` pro
+  zaškrtnuté a `[ ]` pro nezaškrtnuté. U poplatků je to kritické:
+  zachovej přesně, zda je vybráno `bez poplatku (0 Kč)` nebo konkrétní částka.
 - Nečitelné → [nečitelné]
 - Špatná fotka → confidence = 0.0, ocr_text = "", error = popis
 

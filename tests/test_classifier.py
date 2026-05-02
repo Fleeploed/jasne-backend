@@ -2,7 +2,14 @@
 
 import pytest
 
+from app.prompts.classifier import CLASSIFIER_SYSTEM_PROMPT
 from app.services.classifier import classify_document
+
+
+def test_classifier_prompt_preserves_checkbox_state():
+    assert "[x]" in CLASSIFIER_SYSTEM_PROMPT
+    assert "[ ]" in CLASSIFIER_SYSTEM_PROMPT
+    assert "bez poplatku (0 Kč)" in CLASSIFIER_SYSTEM_PROMPT
 
 
 class TestClassifyDocument:
