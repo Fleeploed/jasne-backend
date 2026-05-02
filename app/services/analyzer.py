@@ -33,6 +33,88 @@ STREAM_ANALYSIS_FIELDS: tuple[str, ...] = (
     "deadlines",
 )
 
+_CONFIRMATION_ACTION_BLOCKLIST = (
+    "dolož",
+    "dopln",
+    "předlož",
+    "predloz",
+    "přinést",
+    "prines",
+    "podat žádost",
+    "podat zadost",
+    "zaplat",
+    "submit",
+    "provide",
+    "bring",
+    "додати",
+    "подати заяв",
+    "предостав",
+    "донест",
+    "оплат",
+)
+
+
+def _looks_like_submission_confirmation(classifier: ClassifierResult) -> bool:
+    doc_type = classifier.doc_type.lower()
+    ocr = classifier.ocr_text.lower()
+    return (
+        "potvrzeni_o_podani_zadosti" in doc_type
+        or "potvrzeni o podani zadosti" in doc_type
+        or "potvrzení o podání žádosti" in ocr
+    )
+
+
+def _confirmation_followup_action(language: UserLanguage) -> str:
+    if language == "en":
+        return "Keep the confirmation and follow the application status through IPC."
+    if language == "uk":
+        return "Збережіть підтвердження та відстежуйте стан заяви через IPC."
+    if language == "ru":
+        return "Сохраните подтверждение и отслеживайте статус заявления через IPC."
+    return "Uschovat potvrzení a sledovat stav žádosti přes IPC."
+
+
+def _clean_confirmation_actions(actions: list[str], language: UserLanguage) -> list[str]:
+    kept = [
+        action
+        for action in actions
+        if not any(blocked in action.lower() for blocked in _CONFIRMATION_ACTION_BLOCKLIST)
+    ]
+    return kept or [_confirmation_followup_action(language)]
+
+
+def _apply_analysis_guardrails(
+    result: AnalysisResult,
+    classifier: ClassifierResult,
+    language: UserLanguage,
+) -> AnalysisResult:
+    """Last-line defense against RAG-driven hallucinations for known doc types."""
+    if not _looks_like_submission_confirmation(classifier):
+        return result
+
+    result.documents_needed = []
+    result.penalty = None
+    result.deadlines = []
+    result.actions_required = _clean_confirmation_actions(result.actions_required, language)
+    return result
+
+
+def _sanitize_stream_field(
+    field: str,
+    value: Any,
+    classifier: ClassifierResult,
+    language: UserLanguage,
+) -> Any:
+    if not _looks_like_submission_confirmation(classifier):
+        return value
+    if field == "documents_needed":
+        return []
+    if field in {"penalty", "deadlines"}:
+        return None if field == "penalty" else []
+    if field == "actions_required" and isinstance(value, list):
+        return _clean_confirmation_actions([str(action) for action in value], language)
+    return value
+
 
 def _build_system_prompt(category: str, language: UserLanguage, has_datova_schranka: bool) -> str:
     module = CATEGORY_MODULES.get(category, OSTATNI_MODULE)
@@ -158,7 +240,9 @@ async def analyze_document(
     )
 
     raw = response.choices[0].message.content or "{}"
-    result = _filter_deadlines(_parse_analysis_result(raw), classifier)
+    result = _apply_analysis_guardrails(
+        _filter_deadlines(_parse_analysis_result(raw), classifier), classifier, language
+    )
 
     logger.info(
         "Analysis done model=%s category=%s confidence=%.2f deadlines=%d actions=%d",
@@ -203,10 +287,16 @@ async def stream_analyze_document(
         buffer = "".join(raw_parts)
         for field, value in _extract_completed_json_fields(buffer, emitted).items():
             emitted.add(field)
-            yield {"type": "field", "field": field, "value": value}
+            yield {
+                "type": "field",
+                "field": field,
+                "value": _sanitize_stream_field(field, value, classifier, language),
+            }
 
     raw = "".join(raw_parts) or "{}"
-    result = _filter_deadlines(_parse_analysis_result(raw), classifier)
+    result = _apply_analysis_guardrails(
+        _filter_deadlines(_parse_analysis_result(raw), classifier), classifier, language
+    )
     data = result.model_dump(mode="json")
     for field in STREAM_ANALYSIS_FIELDS:
         if field not in emitted:

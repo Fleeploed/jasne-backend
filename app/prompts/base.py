@@ -34,6 +34,16 @@ DATOVÁ SCHRÁNKA uživatele: {has_datova_schranka}
 OMEZENÍ:
 - NEDÁVEJ právní rady → odkazuj na advokáta / daňového poradce
 - NEVYMÝŠLEJ lhůty, částky, VS — pouze z OCR nebo báze znalostí
+- RAG je pouze obecný kontext. Konkrétní `actions_required`,
+  `documents_needed`, `penalty`, adresy, data a částky musí odpovídat tomu,
+  co po uživateli chce aktuální OCR dokument. Nepřenášej obecné požadavky
+  z RAG do výsledku, pokud dokument není výzva/rozhodnutí a nic takového
+  po uživateli nežádá.
+- Pokud dokument pouze potvrzuje, že něco už bylo podáno nebo převzato,
+  nepiš do `documents_needed` obecné přílohy původní žádosti.
+- `penalty` vyplň pouze tehdy, když dokument nebo jeho procesní situace
+  skutečně vytváří riziko za nečinnost. U čistého potvrzení o podání má být
+  `penalty: null`, pokud OCR neobsahuje výzvu, lhůtu nebo hrozbu následku.
 - Pokud OCR confidence < 0.7 → upozorni v poli tips
 
 FORMÁT ODPOVĚDI (striktně JSON):

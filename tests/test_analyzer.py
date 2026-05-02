@@ -62,6 +62,12 @@ class TestBuildSystemPrompt:
         assert "Finanční úřad" in prompt
         assert "Platební výměr" in prompt
 
+    def test_cizinecka_prompt_guards_submission_confirmation(self):
+        prompt = _build_system_prompt("cizinecka", "cs", False)
+        assert "POTVRZENÍ O PODÁNÍ ŽÁDOSTI" in prompt
+        assert "`documents_needed`: []" in prompt
+        assert "`penalty`: null" in prompt
+
     def test_unknown_category_falls_back_to_ostatni(self):
         prompt = _build_system_prompt("totally_made_up", "cs", False)
         assert "OSTATNÍ" in prompt
@@ -161,6 +167,56 @@ class TestAnalyzeDocument:
         # Past deadline filtered out, future kept
         assert len(result.deadlines) == 1
         assert result.deadlines[0].description == "new"
+
+    @pytest.mark.asyncio
+    async def test_submission_confirmation_drops_rag_hallucinated_requirements(self, openai_chat_mock):
+        openai_chat_mock(
+            {
+                "document_type": "potvrzeni_o_podani_zadosti",
+                "document_type_cz": "Potvrzení o podání žádosti",
+                "document_type_localized": None,
+                "sender": "Ministerstvo vnitra ČR",
+                "summary": "Byla podána žádost o prodloužení zaměstnanecké karty.",
+                "translation": None,
+                "actions_required": [
+                    "Doložit doklad o ubytování",
+                    "Uschovat potvrzení a sledovat stav žádosti",
+                ],
+                "penalty": "Pokud nebude žádost vyřízena včas, hrozí správní vyhoštění.",
+                "where_to_go": "OAMP Praha I",
+                "documents_needed": [
+                    "Doklad o zajištění ubytování",
+                    "Platný cestovní doklad",
+                    "Pracovní smlouva",
+                ],
+                "confidence": 0.95,
+                "tips": "Sledujte stav žádosti online.",
+                "deadlines": [],
+            }
+        )
+        classifier = ClassifierResult(
+            ocr_text=(
+                "POTVRZENÍ O PODÁNÍ ŽÁDOSTI. Tímto potvrzujeme, že výše uvedený cizinec "
+                "dne 25.03.2026 podal žádost o prodloužení doby platnosti zaměstnanecké karty."
+            ),
+            category="cizinecka",
+            doc_type="potvrzeni_o_podani_zadosti",
+            sender="Ministerstvo vnitra ČR",
+            document_language="cs",
+            confidence=0.95,
+            page_count=1,
+        )
+        result, _ = await analyze_document(
+            classifier,
+            ["Obecný RAG o přílohách k zaměstnanecké kartě."],
+            "cs",
+            False,
+        )
+
+        assert result.penalty is None
+        assert result.documents_needed == []
+        assert result.deadlines == []
+        assert result.actions_required == ["Uschovat potvrzení a sledovat stav žádosti"]
 
     @pytest.mark.asyncio
     async def test_invalid_json_raises(self, monkeypatch):
