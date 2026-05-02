@@ -150,6 +150,15 @@ def _snippet_around_term(content: str, term: str, *, window: int = 900) -> str:
     return snippet
 
 
+def _chunk_dedupe_key(chunk: str) -> str:
+    chunk = chunk.strip()
+    if chunk.startswith("..."):
+        chunk = chunk[3:].lstrip()
+    if chunk.endswith("..."):
+        chunk = chunk[:-3].rstrip()
+    return re.sub(r"\s+", " ", chunk).casefold()[:500]
+
+
 async def retrieve_keyword_chunks(
     query_text: str, category: DocumentCategory, *, match_count: int = 5
 ) -> list[str]:
@@ -171,6 +180,7 @@ async def retrieve_keyword_chunks(
             .select("content,metadata")
             .eq("metadata->>category", category)
             .ilike("content", f"%{_escape_ilike(term)}%")
+            .order("id", desc=True)
             .limit(max(1, match_count - len(chunks)))
             .execute()
         )
@@ -199,9 +209,10 @@ async def retrieve_chat_chunks(question: str, category: DocumentCategory) -> lis
     chunks: list[str] = []
     seen: set[str] = set()
     for chunk in [*keyword_chunks, *vector_chunks]:
-        if chunk in seen:
+        key = _chunk_dedupe_key(chunk)
+        if key in seen:
             continue
-        seen.add(chunk)
+        seen.add(key)
         chunks.append(chunk)
         if len(chunks) >= settings.rag_top_k:
             break
