@@ -125,7 +125,7 @@ async def ask_question(
     scan_row = await _load_scan(scan_id, user_id)
     language: UserLanguage = scan_row.get("language") or language
     history = await fetch_scan_history(scan_id, user_id)
-    rag_chunks = await retrieve_chat_chunks(body.question, scan_row.get("category"))
+    rag_chunks = await retrieve_chat_chunks(body.question, scan_row.get("category"), language)
 
     # Run LLM
     answer = await answer_question(
@@ -167,7 +167,7 @@ async def ask_question_stream(
     scan_row = await _load_scan(scan_id, user_id)
     language: UserLanguage = scan_row.get("language") or language
     history = await fetch_scan_history(scan_id, user_id)
-    rag_chunks = await retrieve_chat_chunks(body.question, scan_row.get("category"))
+    rag_chunks = await retrieve_chat_chunks(body.question, scan_row.get("category"), language)
     caps = caps_for_plan(plan)
 
     async def events() -> AsyncIterator[str]:

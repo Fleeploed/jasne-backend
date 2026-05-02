@@ -349,7 +349,9 @@ def client(fake_supabase, monkeypatch):
     monkeypatch.setattr("app.services.limits.get_supabase", fake_get_supabase)
     monkeypatch.setattr("app.services.chat.get_supabase", fake_get_supabase, raising=False)
 
-    async def fake_retrieve_chat_chunks(question: str, category: str) -> list[str]:
+    async def fake_retrieve_chat_chunks(
+        question: str, category: str, preferred_language: str | None = None
+    ) -> list[str]:
         return []
 
     monkeypatch.setattr("app.routers.chat.retrieve_chat_chunks", fake_retrieve_chat_chunks)

@@ -140,7 +140,8 @@ class TestAskQuestion:
         sid = _seed_scan(fake_supabase, str(test_user_id))
 
         # Mock the answer_question service
-        async def fake_rag(question, category):
+        async def fake_rag(question, category, preferred_language=None):
+            assert preferred_language == "cs"
             return ["Voroněžská 144/20, Liberec\nPo, St: 8.00–16.00\nPá: 8.00–13.00"]
 
         async def fake_answer(scan_row, history, question, language, rag_chunks=None):
