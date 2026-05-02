@@ -19,6 +19,19 @@ USER_ID = UUID("11111111-1111-1111-1111-111111111111")
 SCAN_ID = UUID("22222222-2222-2222-2222-222222222222")
 
 
+class _ScalarRpcResponse:
+    def __init__(self, data):
+        self.data = data
+
+
+class _ScalarRpcQuery:
+    def __init__(self, data):
+        self.data = data
+
+    async def execute(self):
+        return _ScalarRpcResponse(self.data)
+
+
 class TestPlanLimits:
     def test_skill_caps_match(self):
         assert PLAN_LIMITS["free"]["monthly_scans"] == 5
@@ -105,6 +118,16 @@ class TestIncrementScanCount:
         assert calls[0][0] == "increment_scan_count"
 
     @pytest.mark.asyncio
+    async def test_handles_scalar_rpc_result_from_supabase(self, patched_supabase, monkeypatch):
+        def scalar_rpc(name, params):
+            assert name == "increment_scan_count"
+            return _ScalarRpcQuery(3)
+
+        monkeypatch.setattr(patched_supabase, "rpc", scalar_rpc)
+        new = await increment_scan_count(USER_ID)
+        assert new == 3
+
+    @pytest.mark.asyncio
     async def test_falls_back_when_rpc_migration_missing(self, patched_supabase, monkeypatch):
         def missing_rpc(name, params):
             raise Exception(
@@ -161,6 +184,18 @@ class TestCheckChatQuota:
         new = await increment_chat_count(USER_ID, SCAN_ID)
         assert new == 1
         assert calls[0][0] == "increment_chat_count"
+
+    @pytest.mark.asyncio
+    async def test_chat_increment_handles_scalar_rpc_result_from_supabase(
+        self, patched_supabase, monkeypatch
+    ):
+        def scalar_rpc(name, params):
+            assert name == "increment_chat_count"
+            return _ScalarRpcQuery(4)
+
+        monkeypatch.setattr(patched_supabase, "rpc", scalar_rpc)
+        new = await increment_chat_count(USER_ID, SCAN_ID)
+        assert new == 4
 
     @pytest.mark.asyncio
     async def test_chat_increment_falls_back_when_rpc_migration_missing(self, patched_supabase, monkeypatch):
