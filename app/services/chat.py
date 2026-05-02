@@ -156,6 +156,8 @@ def _build_knowledge_context_message(rag_chunks: list[str] | None) -> str:
         "BÁZE ZNALOSTÍ (RAG) PRO AKTUÁLNÍ OTÁZKU:\n"
         "Použij tyto chunky, pokud odpovídají otázce uživatele. Hodí se hlavně pro "
         "obecné informace, adresy, kontakty, úřední hodiny a postupy. "
+        "Pokud se chunky liší, preferuj dříve uvedený chunk s přesnou adresou "
+        "nebo konkrétní kontaktní kartou. "
         "Konkrétní lhůty, částky a povinnosti z dokumentu ber z OCR/result, ne z RAG.\n\n"
         f"{chunks}"
     )
