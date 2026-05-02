@@ -122,8 +122,7 @@ class ScanRequest(_Base):
     image_paths: list[str] = Field(
         min_length=1,
         max_length=MAX_PAGES_HARD_LIMIT,
-        description="Storage paths in the documents bucket, one per page. "
-        "Pages are sent together to GPT Vision in one call.",
+        description="Storage paths in the documents bucket. Images are sent as pages; PDFs are rendered to pages.",
     )
     language: UserLanguage | None = Field(
         default=None,
@@ -133,7 +132,7 @@ class ScanRequest(_Base):
     @field_validator("image_paths")
     @classmethod
     def _no_blank_paths(cls, v: list[str]) -> list[str]:
-        cleaned = [p for p in v if p.strip()]
+        cleaned = [p.strip() for p in v if p.strip()]
         if not cleaned:
             raise ValueError("image_paths must contain at least one non-empty path")
         return cleaned
