@@ -90,13 +90,13 @@ async def close_supabase() -> None:
         logger.info("Supabase client released")
 
 
-async def retrieve_chunks(ocr_text: str, category: DocumentCategory) -> list[str]:
+async def _retrieve_vector_chunks(query_text: str, category: DocumentCategory) -> list[str]:
     """Cosine-similarity search with category filter via pgvector RPC."""
-    if not ocr_text.strip():
+    if not query_text.strip():
         return []
 
     settings = get_settings()
-    embedding = await embed_text(ocr_text)
+    embedding = await embed_text(query_text)
     supabase = await get_supabase()
 
     result = await supabase.rpc(
@@ -110,6 +110,34 @@ async def retrieve_chunks(ocr_text: str, category: DocumentCategory) -> list[str
     ).execute()
 
     chunks: list[str] = [row["content"] for row in (result.data or [])]
+    return chunks
+
+
+async def retrieve_chunks(ocr_text: str, category: DocumentCategory) -> list[str]:
+    """Hybrid scan retrieval.
+
+    Vector search finds broad process context. Keyword search is needed for
+    exact office addresses like "Žukovského 888/2", where hours/contact chunks
+    should win over generic immigration chunks.
+    """
+    if not ocr_text.strip():
+        return []
+
+    settings = get_settings()
+    keyword_chunks = await retrieve_keyword_chunks(ocr_text, category, match_count=settings.rag_top_k)
+    vector_chunks = await _retrieve_vector_chunks(ocr_text, category)
+
+    chunks: list[str] = []
+    seen: set[str] = set()
+    for chunk in [*keyword_chunks, *vector_chunks]:
+        key = _chunk_dedupe_key(chunk)
+        if key in seen:
+            continue
+        seen.add(key)
+        chunks.append(chunk)
+        if len(chunks) >= settings.rag_top_k:
+            break
+
     logger.info("RAG returned %d chunks for category=%s", len(chunks), category)
     return chunks
 
@@ -230,7 +258,7 @@ async def retrieve_chat_chunks(
         match_count=settings.rag_top_k,
         preferred_language=preferred_language,
     )
-    vector_chunks = await retrieve_chunks(question, category)
+    vector_chunks = await _retrieve_vector_chunks(question, category)
 
     chunks: list[str] = []
     seen: set[str] = set()

@@ -102,6 +102,7 @@ def _build_scan_context_message(scan_row: dict[str, Any]) -> str:
     deadlines = result.get("deadlines") or []
     actions = result.get("actions_required") or []
     penalty = result.get("penalty") or "(neuvedeno)"
+    office_hours = result.get("office_hours") or "(neuvedeno)"
     documents_needed = result.get("documents_needed") or []
 
     suppress_fee_guidance = _should_suppress_fee_guidance(scan_row)
@@ -136,6 +137,7 @@ def _build_scan_context_message(scan_row: dict[str, Any]) -> str:
         f"AKCE:\n{actions_str}\n\n"
         f"DOKUMENTY POTŘEBNÉ:\n{documents_needed_str}\n\n"
         f"SANKCE:\n{penalty}\n\n"
+        f"ÚŘEDNÍ HODINY:\n{office_hours}\n\n"
         f"{fee_guard}"
         "OCR TEXT (přesný přepis dokumentu):\n"
         "---\n"
@@ -156,6 +158,9 @@ def _build_knowledge_context_message(rag_chunks: list[str] | None) -> str:
         "BÁZE ZNALOSTÍ (RAG) PRO AKTUÁLNÍ OTÁZKU:\n"
         "Použij tyto chunky, pokud odpovídají otázce uživatele. Hodí se hlavně pro "
         "obecné informace, adresy, kontakty, úřední hodiny a postupy. "
+        "Když se uživatel ptá na hodiny práce / úřední hodiny / opening hours "
+        "a RAG obsahuje hodiny pro adresu z dokumentu, odpověz z RAG; neříkej, "
+        "že hodiny nejsou v dokumentu. "
         "Pokud se chunky liší, preferuj dříve uvedený chunk s přesnou adresou "
         "nebo konkrétní kontaktní kartou. "
         "Konkrétní lhůty, částky a povinnosti z dokumentu ber z OCR/result, ne z RAG.\n\n"

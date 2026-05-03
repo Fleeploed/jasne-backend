@@ -108,6 +108,7 @@ class TestAnalysisResult:
         )
         assert r.deadlines == []
         assert r.actions_required == []
+        assert r.office_hours is None
         assert r.documents_needed == []
 
     def test_with_deadlines(self):

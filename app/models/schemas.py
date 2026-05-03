@@ -108,6 +108,7 @@ class AnalysisResult(_Base):
     actions_required: list[str] = Field(default_factory=list)
     penalty: str | None = None
     where_to_go: str | None = None
+    office_hours: str | None = None
     documents_needed: list[str] = Field(default_factory=list)
     confidence: float = Field(ge=0.0, le=1.0)
     tips: str | None = None

@@ -86,6 +86,21 @@ def _sse(event: str, payload: dict) -> str:
     return f"event: {event}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
 
+def _build_chat_rag_query(question: str, scan_row: dict) -> str:
+    """Add stable scan context to short follow-up questions.
+
+    Questions like "часы работы" have no address tokens, so lexical RAG cannot
+    find the office-hours chunk unless we include the scan's known destination.
+    """
+    result = scan_row.get("result") or {}
+    context_parts = [
+        question,
+        str(result.get("where_to_go") or ""),
+        str(result.get("office_hours") or ""),
+    ]
+    return "\n".join(part for part in context_parts if part.strip())
+
+
 @router.get("", response_model=list[ScanMessage])
 async def list_messages(
     scan_id: UUID,
@@ -125,7 +140,11 @@ async def ask_question(
     scan_row = await _load_scan(scan_id, user_id)
     language: UserLanguage = scan_row.get("language") or language
     history = await fetch_scan_history(scan_id, user_id)
-    rag_chunks = await retrieve_chat_chunks(body.question, scan_row.get("category"), language)
+    rag_chunks = await retrieve_chat_chunks(
+        _build_chat_rag_query(body.question, scan_row),
+        scan_row.get("category"),
+        language,
+    )
 
     # Run LLM
     answer = await answer_question(
@@ -167,7 +186,11 @@ async def ask_question_stream(
     scan_row = await _load_scan(scan_id, user_id)
     language: UserLanguage = scan_row.get("language") or language
     history = await fetch_scan_history(scan_id, user_id)
-    rag_chunks = await retrieve_chat_chunks(body.question, scan_row.get("category"), language)
+    rag_chunks = await retrieve_chat_chunks(
+        _build_chat_rag_query(body.question, scan_row),
+        scan_row.get("category"),
+        language,
+    )
     caps = caps_for_plan(plan)
 
     async def events() -> AsyncIterator[str]:

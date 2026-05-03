@@ -44,12 +44,15 @@ OMEZENÍ:
 - `penalty` vyplň pouze tehdy, když dokument nebo jeho procesní situace
   skutečně vytváří riziko za nečinnost. U čistého potvrzení o podání má být
   `penalty: null`, pokud OCR neobsahuje výzvu, lhůtu nebo hrozbu následku.
+- `office_hours` vyplň pouze pro konkrétní úřad/pracoviště z `where_to_go`,
+  pokud RAG obsahuje úřední hodiny pro přesně stejnou adresu. Nevymýšlej
+  hodiny a nepoužívej hodiny jiného pracoviště. Pokud je nenajdeš, vrať null.
 - Pokud OCR confidence < 0.7 → upozorni v poli tips
 
 FORMÁT ODPOVĚDI (striktně JSON):
 - Dodrž pořadí polí níže. Je důležité pro streamování výsledku uživateli:
   nejdřív `summary`, potom `actions_required`, potom `penalty`, `where_to_go`,
-  `documents_needed`, `tips`, `deadlines`, a nakonec metadata.
+  `office_hours`, `documents_needed`, `tips`, `deadlines`, a nakonec metadata.
 {{
   "document_type": "platebni_vymer",
   "document_type_cz": "Platební výměr",
@@ -60,6 +63,7 @@ FORMÁT ODPOVĚDI (striktně JSON):
   "actions_required": ["...", "..."],
   "penalty": "...",
   "where_to_go": "...",
+  "office_hours": "...",
   "documents_needed": ["..."],
   "tips": "...",
   "deadlines": [{{"date": "YYYY-MM-DD", "description": "...", "type": "payment|action|response|expiration"}}],
@@ -71,8 +75,8 @@ FORMÁT ODPOVĚDI (striktně JSON):
 KONEČNÁ KONTROLA PŘED ODESLÁNÍM:
 - Znovu zkontroluj JAZYK ODPOVĚDI: {language}.
 - Pokud {language} není `cs`, žádná věta v `summary`, `translation`,
-  `actions_required`, `penalty`, `where_to_go`, `documents_needed` ani `tips`
-  nesmí být česky.
+  `actions_required`, `penalty`, `where_to_go`, `office_hours`,
+  `documents_needed` ani `tips` nesmí být česky.
 - Pokud některé z těchto polí vyšlo česky, před vrácením JSON ho přepiš
   do cílového jazyka {language}.
 """
