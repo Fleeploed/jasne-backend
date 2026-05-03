@@ -28,6 +28,7 @@ STREAM_ANALYSIS_FIELDS: tuple[str, ...] = (
     "actions_required",
     "penalty",
     "where_to_go",
+    "office_hours",
     "documents_needed",
     "tips",
     "deadlines",

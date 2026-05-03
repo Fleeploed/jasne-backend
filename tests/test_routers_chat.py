@@ -4,6 +4,7 @@ import json
 from datetime import UTC, datetime
 from uuid import uuid4
 
+from app.routers.chat import _build_chat_rag_query
 from app.services.chat import (
     _build_chat_messages,
     _build_knowledge_context_message,
@@ -241,6 +242,18 @@ class TestAskQuestion:
         assert "BÁZE ZNALOSTÍ (RAG) PRO AKTUÁLNÍ OTÁZKU" in messages[2]["content"]
         assert "Voroněžská 144/20" in messages[2]["content"]
         assert "Po, St: 8.00–16.00" in messages[2]["content"]
+
+    def test_short_hours_question_adds_scan_address_to_rag_query(self, fake_supabase, test_user_id):
+        _seed_cizinecka_pickup_scan(fake_supabase, str(test_user_id), language="ru")
+        scan_row = fake_supabase.table("scans").rows[-1]
+        scan_row["result"]["where_to_go"] = (
+            "Ministerstvo vnitra ČR, Odbor azylové a migrační politiky, Žukovského 888/2, 161 00 Praha"
+        )
+
+        query = _build_chat_rag_query("часы работы", scan_row)
+
+        assert "часы работы" in query
+        assert "Žukovského 888/2" in query
 
     def test_empty_rag_context_tells_model_not_to_guess(self):
         context = _build_knowledge_context_message([])
