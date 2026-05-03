@@ -1,5 +1,6 @@
 """End-to-end router tests for /scans (multi-page)."""
 
+import json
 from datetime import UTC, datetime
 from uuid import uuid4
 
@@ -54,6 +55,16 @@ def _seed_scan(fake_supabase, user_id: str, **overrides):
     return row
 
 
+def _parse_sse(text: str) -> list[tuple[str, dict]]:
+    events = []
+    for block in text.strip().split("\n\n"):
+        lines = block.splitlines()
+        event = next(line.removeprefix("event: ") for line in lines if line.startswith("event: "))
+        data = next(line.removeprefix("data: ") for line in lines if line.startswith("data: "))
+        events.append((event, json.loads(data)))
+    return events
+
+
 class TestCreateScan:
     def test_happy_path_single_page(
         self,
@@ -104,6 +115,139 @@ class TestCreateScan:
         body = r.json()
         assert body["page_count"] == 3
         assert body["image_paths"] == paths
+
+    def test_pdf_scan_is_rendered_before_classifier(
+        self,
+        client,
+        fake_supabase,
+        auth_headers,
+        test_user_id,
+        mock_openai_analyze,
+        mock_rag_empty,
+        monkeypatch,
+    ):
+        _seed_profile(fake_supabase, str(test_user_id))
+
+        from app.models.schemas import ClassifierResult
+
+        seen = {}
+
+        async def fake_download(url: str, path: str) -> bytes:
+            seen["download_url"] = url
+            seen["download_path"] = path
+            return b"%PDF-1.6"
+
+        def fake_render(pdf_bytes: bytes, path: str) -> list[str]:
+            seen["pdf_bytes"] = pdf_bytes
+            seen["render_path"] = path
+            return ["data:image/png;base64,page1", "data:image/png;base64,page2"]
+
+        async def fake_classify(image_urls: list[str]) -> ClassifierResult:
+            seen["classifier_urls"] = image_urls
+            return ClassifierResult(
+                ocr_text="PDF text",
+                category="ostatni",
+                doc_type="pdf_document",
+                sender=None,
+                document_language="cs",
+                confidence=0.95,
+                page_count=1,
+            )
+
+        monkeypatch.setattr("app.routers.scan._download_signed_object", fake_download)
+        monkeypatch.setattr("app.routers.scan._render_pdf_to_png_data_urls", fake_render)
+        monkeypatch.setattr("app.routers.scan.classify_document", fake_classify)
+
+        path = f"{test_user_id}/document.pdf"
+        r = client.post(
+            "/scans",
+            headers=auth_headers,
+            json={"image_paths": [path]},
+        )
+
+        assert r.status_code == 201, r.json()
+        assert seen["download_url"].startswith(f"https://fake-storage/{path}")
+        assert seen["download_path"] == path
+        assert seen["pdf_bytes"] == b"%PDF-1.6"
+        assert seen["render_path"] == path
+        assert seen["classifier_urls"] == ["data:image/png;base64,page1", "data:image/png;base64,page2"]
+        assert r.json()["page_count"] == 2
+
+    def test_multi_page_pdf_counts_pages_for_quota(
+        self,
+        client,
+        fake_supabase,
+        auth_headers,
+        test_user_id,
+        mock_openai_analyze,
+        mock_rag_empty,
+        monkeypatch,
+    ):
+        _seed_profile(fake_supabase, str(test_user_id), plan="free")
+
+        async def fake_download(url: str, path: str) -> bytes:
+            return b"%PDF-1.6"
+
+        def fake_render(pdf_bytes: bytes, path: str) -> list[str]:
+            return [f"data:image/png;base64,page{i}" for i in range(4)]
+
+        async def fake_classify(image_urls: list[str]):
+            raise AssertionError("quota should block before classifier")
+
+        monkeypatch.setattr("app.routers.scan._download_signed_object", fake_download)
+        monkeypatch.setattr("app.routers.scan._render_pdf_to_png_data_urls", fake_render)
+        monkeypatch.setattr("app.routers.scan.classify_document", fake_classify)
+
+        r = client.post(
+            "/scans",
+            headers=auth_headers,
+            json={"image_paths": [f"{test_user_id}/large.pdf"]},
+        )
+
+        assert r.status_code == 402
+        assert "max 3 pages" in r.json()["detail"]
+
+    def test_rejects_storage_path_outside_user_prefix(
+        self,
+        client,
+        fake_supabase,
+        auth_headers,
+        test_user_id,
+        mock_openai_classify,
+        mock_openai_analyze,
+        mock_rag_empty,
+    ):
+        _seed_profile(fake_supabase, str(test_user_id))
+
+        r = client.post(
+            "/scans",
+            headers=auth_headers,
+            json={"image_paths": ["99999999-9999-9999-9999-999999999999/doc.jpg"]},
+        )
+
+        assert r.status_code == 403
+        assert "authenticated user" in r.json()["detail"]
+
+    def test_unsupported_file_type_rejected(
+        self,
+        client,
+        fake_supabase,
+        auth_headers,
+        test_user_id,
+        mock_openai_classify,
+        mock_openai_analyze,
+        mock_rag_empty,
+    ):
+        _seed_profile(fake_supabase, str(test_user_id))
+
+        r = client.post(
+            "/scans",
+            headers=auth_headers,
+            json={"image_paths": [f"{test_user_id}/doc.heic"]},
+        )
+
+        assert r.status_code == 415
+        assert "Unsupported file type" in r.json()["detail"]
 
     def test_free_tier_4_pages_rejected(
         self,
@@ -241,6 +385,69 @@ class TestCreateScan:
             json={"image_paths": [f"p{i}.jpg" for i in range(11)]},
         )
         assert r.status_code == 422
+
+
+class TestCreateScanStream:
+    def test_streams_partial_fields_and_persists_scan(
+        self,
+        client,
+        fake_supabase,
+        auth_headers,
+        test_user_id,
+        mock_openai_classify,
+        mock_openai_analyze,
+        mock_rag_empty,
+        monkeypatch,
+    ):
+        _seed_profile(fake_supabase, str(test_user_id))
+
+        async def fake_stream_analyze_document(*args, **kwargs):
+            yield {"type": "field", "field": "summary", "value": mock_openai_analyze.summary}
+            yield {
+                "type": "field",
+                "field": "actions_required",
+                "value": mock_openai_analyze.actions_required,
+            }
+            yield {"type": "field", "field": "penalty", "value": mock_openai_analyze.penalty}
+            yield {"type": "done", "analysis": mock_openai_analyze, "model_used": "gpt-4o"}
+
+        monkeypatch.setattr("app.routers.scan.stream_analyze_document", fake_stream_analyze_document)
+
+        r = client.post(
+            "/scans/stream",
+            headers=auth_headers,
+            json={"image_paths": [f"{test_user_id}/test.jpg"]},
+        )
+
+        assert r.status_code == 200
+        assert r.headers["content-type"].startswith("text/event-stream")
+        events = _parse_sse(r.text)
+        names = [name for name, _ in events]
+        assert names[:4] == ["status", "status", "status", "status"]
+        assert ("field", {"field": "summary", "value": mock_openai_analyze.summary}) in events
+        assert (
+            "field",
+            {"field": "actions_required", "value": mock_openai_analyze.actions_required},
+        ) in events
+        assert events[-1][0] == "done"
+        assert events[-1][1]["result"]["summary"] == mock_openai_analyze.summary
+        assert events[-1][1]["model_used"] == "gpt-4o"
+        assert len(fake_supabase.table("scans").rows) == 1
+        assert len(fake_supabase.table("scan_messages").rows) == 2
+
+    def test_free_tier_4_pages_rejected_before_stream(
+        self,
+        client,
+        fake_supabase,
+        auth_headers,
+        test_user_id,
+        mock_openai_classify,
+        mock_rag_empty,
+    ):
+        _seed_profile(fake_supabase, str(test_user_id), plan="free")
+        paths = [f"{test_user_id}/p{i}.jpg" for i in range(4)]
+        r = client.post("/scans/stream", headers=auth_headers, json={"image_paths": paths})
+        assert r.status_code == 402
 
 
 class TestListScans:

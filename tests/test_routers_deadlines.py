@@ -22,6 +22,26 @@ def _seed_deadline(fake_supabase, user_id: str, **overrides):
     return row
 
 
+def _seed_scan(fake_supabase, user_id: str, **overrides):
+    row = {
+        "id": str(uuid4()),
+        "user_id": user_id,
+        "image_paths": [f"{user_id}/doc.jpg"],
+        "page_count": 1,
+        "ocr_text": "ocr",
+        "category": "ucty",
+        "doc_type": "faktura",
+        "category_confidence": 0.9,
+        "result": {},
+        "language": "cs",
+        "model_used": "gpt-4o-mini",
+        "created_at": datetime.now(UTC).isoformat(),
+    }
+    row.update(overrides)
+    fake_supabase.table("scans").rows.append(row)
+    return row
+
+
 class TestListDeadlines:
     def test_empty_list(self, client, auth_headers):
         r = client.get("/deadlines", headers=auth_headers)
@@ -81,6 +101,36 @@ class TestCreateDeadline:
         assert r.json()["title"] == "pay tax"
         assert r.json()["status"] == "active"
 
+    def test_create_rejects_foreign_scan_id(self, client, fake_supabase, auth_headers):
+        other_scan = _seed_scan(fake_supabase, "99999999-9999-9999-9999-999999999999")
+        r = client.post(
+            "/deadlines",
+            headers=auth_headers,
+            json={
+                "scan_id": other_scan["id"],
+                "title": "pay tax",
+                "due_date": "2026-05-15",
+                "deadline_type": "payment",
+            },
+        )
+        assert r.status_code == 404
+        assert r.json()["detail"] == "Scan not found"
+
+    def test_create_allows_own_scan_id(self, client, fake_supabase, auth_headers, test_user_id):
+        own_scan = _seed_scan(fake_supabase, str(test_user_id))
+        r = client.post(
+            "/deadlines",
+            headers=auth_headers,
+            json={
+                "scan_id": own_scan["id"],
+                "title": "pay tax",
+                "due_date": "2026-05-15",
+                "deadline_type": "payment",
+            },
+        )
+        assert r.status_code == 201
+        assert r.json()["scan_id"] == own_scan["id"]
+
     def test_validation_missing_due_date(self, client, auth_headers):
         r = client.post("/deadlines", headers=auth_headers, json={"title": "x"})
         assert r.status_code == 422
@@ -113,6 +163,17 @@ class TestUpdateDeadline:
     def test_patch_nonexistent(self, client, auth_headers):
         r = client.patch(f"/deadlines/{uuid4()}", headers=auth_headers, json={"status": "completed"})
         assert r.status_code == 404
+
+    def test_patch_rejects_foreign_scan_id(self, client, fake_supabase, auth_headers, test_user_id):
+        row = _seed_deadline(fake_supabase, str(test_user_id))
+        other_scan = _seed_scan(fake_supabase, "99999999-9999-9999-9999-999999999999")
+        r = client.patch(
+            f"/deadlines/{row['id']}",
+            headers=auth_headers,
+            json={"scan_id": other_scan["id"]},
+        )
+        assert r.status_code == 404
+        assert r.json()["detail"] == "Scan not found"
 
 
 class TestDeleteDeadline:

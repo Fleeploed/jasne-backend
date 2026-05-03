@@ -1,7 +1,8 @@
 """Base analyzer prompt — call 2 (default nebo escalation model).
 
 Proměnné dosazované za běhu:
-  {language}              — cílový jazyk pro `summary`/`translation`
+  {language}              — cílový jazyk pro všechna uživatelská textová pole
+  {language_module}       — samostatný prompt pro cs/en/ru/uk
   {has_datova_schranka}   — "ano" / "ne"
   {category_module}       — sekce specifická pro kategorii z prompts/<kategorie>.py
 """
@@ -19,10 +20,12 @@ PŘÍSTUP:
 7. Data — ISO (YYYY-MM-DD) v JSON
 
 JAZYK ODPOVĚDI: {language}
-- Pokud jazyk ≠ cs → povinně vyplň translation v daném jazyce
-- Pokud jazyk = cs → translation = null
-- České termíny (platební výměr, odvolání, VS, IČO) ponech v originále,
-  vysvětli při prvním použití
+- Jazykový prompt níže má vyšší prioritu než český jazyk OCR dokumentu,
+  RAG chunků a kategoriálních pravidel.
+- Neodpovídej česky, pokud JAZYK ODPOVĚDI není `cs`.
+- Částky, data, čísla jednací, adresy a oficiální názvy úřadů nepřekládej.
+
+{language_module}
 
 DATOVÁ SCHRÁNKA uživatele: {has_datova_schranka}
 - Pokud uživatel má datovou schránku, navrhni komunikaci přes ni
@@ -31,9 +34,25 @@ DATOVÁ SCHRÁNKA uživatele: {has_datova_schranka}
 OMEZENÍ:
 - NEDÁVEJ právní rady → odkazuj na advokáta / daňového poradce
 - NEVYMÝŠLEJ lhůty, částky, VS — pouze z OCR nebo báze znalostí
+- RAG je pouze obecný kontext. Konkrétní `actions_required`,
+  `documents_needed`, `penalty`, adresy, data a částky musí odpovídat tomu,
+  co po uživateli chce aktuální OCR dokument. Nepřenášej obecné požadavky
+  z RAG do výsledku, pokud dokument není výzva/rozhodnutí a nic takového
+  po uživateli nežádá.
+- Pokud dokument pouze potvrzuje, že něco už bylo podáno nebo převzato,
+  nepiš do `documents_needed` obecné přílohy původní žádosti.
+- `penalty` vyplň pouze tehdy, když dokument nebo jeho procesní situace
+  skutečně vytváří riziko za nečinnost. U čistého potvrzení o podání má být
+  `penalty: null`, pokud OCR neobsahuje výzvu, lhůtu nebo hrozbu následku.
+- `office_hours` vyplň pouze pro konkrétní úřad/pracoviště z `where_to_go`,
+  pokud RAG obsahuje úřední hodiny pro přesně stejnou adresu. Nevymýšlej
+  hodiny a nepoužívej hodiny jiného pracoviště. Pokud je nenajdeš, vrať null.
 - Pokud OCR confidence < 0.7 → upozorni v poli tips
 
 FORMÁT ODPOVĚDI (striktně JSON):
+- Dodrž pořadí polí níže. Je důležité pro streamování výsledku uživateli:
+  nejdřív `summary`, potom `actions_required`, potom `penalty`, `where_to_go`,
+  `office_hours`, `documents_needed`, `tips`, `deadlines`, a nakonec metadata.
 {{
   "document_type": "platebni_vymer",
   "document_type_cz": "Platební výměr",
@@ -41,14 +60,23 @@ FORMÁT ODPOVĚDI (striktně JSON):
   "sender": "...",
   "summary": "...",
   "translation": "... (null pokud language=cs)",
-  "deadlines": [{{"date": "YYYY-MM-DD", "description": "...", "type": "payment|action|response|expiration"}}],
   "actions_required": ["...", "..."],
   "penalty": "...",
   "where_to_go": "...",
+  "office_hours": "...",
   "documents_needed": ["..."],
+  "tips": "...",
+  "deadlines": [{{"date": "YYYY-MM-DD", "description": "...", "type": "payment|action|response|expiration"}}],
   "confidence": 0.92,
-  "tips": "..."
 }}
 
 {category_module}
+
+KONEČNÁ KONTROLA PŘED ODESLÁNÍM:
+- Znovu zkontroluj JAZYK ODPOVĚDI: {language}.
+- Pokud {language} není `cs`, žádná věta v `summary`, `translation`,
+  `actions_required`, `penalty`, `where_to_go`, `office_hours`,
+  `documents_needed` ani `tips` nesmí být česky.
+- Pokud některé z těchto polí vyšlo česky, před vrácením JSON ho přepiš
+  do cílového jazyka {language}.
 """

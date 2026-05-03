@@ -7,26 +7,334 @@ through the `validator` to drop hallucinated dates.
 
 import json
 import logging
+import re
+from collections.abc import AsyncIterator
+from typing import Any
 
 from pydantic import ValidationError
 
 from app.config import get_settings
 from app.models.schemas import AnalysisResult, ClassifierResult, UserLanguage
-from app.prompts import BASE_SYSTEM_PROMPT, CATEGORY_MODULES, OSTATNI_MODULE
+from app.prompts import BASE_SYSTEM_PROMPT, CATEGORY_MODULES, LANGUAGE_MODULES, OSTATNI_MODULE
 from app.services.embeddings import get_openai_client
 from app.services.model_router import pick_analyzer_model
 from app.services.validator import filter_valid_deadlines
 
 logger = logging.getLogger(__name__)
 
+STREAM_ANALYSIS_FIELDS: tuple[str, ...] = (
+    "summary",
+    "translation",
+    "actions_required",
+    "penalty",
+    "where_to_go",
+    "office_hours",
+    "documents_needed",
+    "tips",
+    "deadlines",
+)
+
+_CONFIRMATION_ACTION_BLOCKLIST = (
+    "dolož",
+    "dopln",
+    "předlož",
+    "predloz",
+    "přinést",
+    "prines",
+    "podat žádost",
+    "podat zadost",
+    "zaplat",
+    "submit",
+    "provide",
+    "bring",
+    "додати",
+    "подати заяв",
+    "предостав",
+    "донест",
+    "оплат",
+)
+
+_FEE_TERMS = (
+    "poplatek",
+    "poplatku",
+    "kolk",
+    "kolku",
+    "kolky",
+    "uhradit",
+    "zaplatit",
+    "fee",
+    "payment",
+    "stamp",
+    "оплат",
+    "платеж",
+    "платіж",
+    "колк",
+)
+
+
+def _ascii_fold(text: str) -> str:
+    replacements = str.maketrans(
+        {
+            "á": "a",
+            "č": "c",
+            "ď": "d",
+            "é": "e",
+            "ě": "e",
+            "í": "i",
+            "ň": "n",
+            "ó": "o",
+            "ř": "r",
+            "š": "s",
+            "ť": "t",
+            "ú": "u",
+            "ů": "u",
+            "ý": "y",
+            "ž": "z",
+        }
+    )
+    return text.lower().translate(replacements)
+
+
+def _looks_like_submission_confirmation(classifier: ClassifierResult) -> bool:
+    doc_type = classifier.doc_type.lower()
+    ocr = classifier.ocr_text.lower()
+    return (
+        "potvrzeni_o_podani_zadosti" in doc_type
+        or "potvrzeni o podani zadosti" in doc_type
+        or "potvrzení o podání žádosti" in ocr
+    )
+
+
+def _looks_like_card_pickup_notice(classifier: ClassifierResult) -> bool:
+    doc_type = _ascii_fold(classifier.doc_type)
+    ocr = _ascii_fold(classifier.ocr_text)
+    return (
+        "vyzva_k_prevzeti_prukazu" in doc_type
+        or "vyzva k prevzeti prukazu" in ocr
+        or "prevzeti prukazu o povoleni k dlouhodobemu pobytu" in ocr
+    )
+
+
+def _has_checked_positive_fee(ocr_text: str) -> bool:
+    text = _ascii_fold(ocr_text)
+    checked = r"(?:\[x\]|\(x\)|☒|✅|✓|✔|x)"
+    amount = r"(?:300|1\s*000|1000|2\s*500|2500)\s*(?:kc|kč)"
+    positive_checked = re.compile(rf"(?:{checked}\s*{amount})|(?:{amount}\s*{checked})")
+    return bool(positive_checked.search(text))
+
+
+def _has_checked_no_fee(ocr_text: str) -> bool:
+    text = _ascii_fold(ocr_text)
+    checked = r"(?:\[x\]|\(x\)|☒|✅|✓|✔|x)"
+    return bool(re.search(rf"{checked}\s*bez poplatku\s*\(0\s*(?:kc|kč)\)", text))
+
+
+def _should_suppress_fee_guidance(classifier: ClassifierResult) -> bool:
+    if not _looks_like_card_pickup_notice(classifier):
+        return False
+    if _has_checked_no_fee(classifier.ocr_text):
+        return True
+    return not _has_checked_positive_fee(classifier.ocr_text)
+
+
+def _mentions_fee(text: str) -> bool:
+    folded = _ascii_fold(text)
+    lowered = text.lower()
+    return any(term in folded or term in lowered for term in _FEE_TERMS)
+
+
+def _filter_fee_items(items: list[str]) -> list[str]:
+    return [item for item in items if not _mentions_fee(item)]
+
+
+def _strip_unconfirmed_fee_text(text: str | None) -> str | None:
+    if not text:
+        return text
+
+    cleaned = re.sub(
+        r"\s+(?:a|,)\s+(?:uhradit|zaplatit)\s+[^.]*?(?:kolk\w*|poplat\w*)[^.]*",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+    sentences = re.split(r"(?<=[.!?])\s+", cleaned.strip())
+    kept = [sentence for sentence in sentences if sentence and not _mentions_fee(sentence)]
+    return " ".join(kept).strip() or None
+
+
+def _confirmation_followup_action(language: UserLanguage) -> str:
+    if language == "en":
+        return "Keep the confirmation and follow the application status through IPC."
+    if language == "uk":
+        return "Збережіть підтвердження та відстежуйте стан заяви через IPC."
+    if language == "ru":
+        return "Сохраните подтверждение и отслеживайте статус заявления через IPC."
+    return "Uschovat potvrzení a sledovat stav žádosti přes IPC."
+
+
+def _clean_confirmation_actions(actions: list[str], language: UserLanguage) -> list[str]:
+    kept = [
+        action
+        for action in actions
+        if not any(blocked in action.lower() for blocked in _CONFIRMATION_ACTION_BLOCKLIST)
+    ]
+    return kept or [_confirmation_followup_action(language)]
+
+
+def _apply_card_pickup_fee_guardrail(result: AnalysisResult, classifier: ClassifierResult) -> AnalysisResult:
+    if not _should_suppress_fee_guidance(classifier):
+        return result
+
+    result.summary = _strip_unconfirmed_fee_text(result.summary) or result.summary
+    result.tips = _strip_unconfirmed_fee_text(result.tips)
+    result.actions_required = _filter_fee_items(result.actions_required)
+    result.documents_needed = _filter_fee_items(result.documents_needed)
+    return result
+
+
+def _apply_analysis_guardrails(
+    result: AnalysisResult,
+    classifier: ClassifierResult,
+    language: UserLanguage,
+) -> AnalysisResult:
+    """Last-line defense against RAG-driven hallucinations for known doc types."""
+    result = _apply_card_pickup_fee_guardrail(result, classifier)
+
+    if not _looks_like_submission_confirmation(classifier):
+        return result
+
+    result.documents_needed = []
+    result.penalty = None
+    result.deadlines = []
+    result.actions_required = _clean_confirmation_actions(result.actions_required, language)
+    return result
+
+
+def _sanitize_stream_field(
+    field: str,
+    value: Any,
+    classifier: ClassifierResult,
+    language: UserLanguage,
+) -> Any:
+    if not _looks_like_submission_confirmation(classifier):
+        if not _should_suppress_fee_guidance(classifier):
+            return value
+        if field in {"summary", "tips"} and isinstance(value, str):
+            return _strip_unconfirmed_fee_text(value)
+        if field in {"actions_required", "documents_needed"} and isinstance(value, list):
+            return _filter_fee_items([str(item) for item in value])
+        return value
+    if field == "documents_needed":
+        return []
+    if field in {"penalty", "deadlines"}:
+        return None if field == "penalty" else []
+    if field == "actions_required" and isinstance(value, list):
+        return _clean_confirmation_actions([str(action) for action in value], language)
+    return value
+
 
 def _build_system_prompt(category: str, language: UserLanguage, has_datova_schranka: bool) -> str:
     module = CATEGORY_MODULES.get(category, OSTATNI_MODULE)
+    language_module = LANGUAGE_MODULES[language]
     return BASE_SYSTEM_PROMPT.format(
         language=language,
+        language_module=language_module,
         has_datova_schranka="ano" if has_datova_schranka else "ne",
         category_module=module,
     )
+
+
+def _build_user_message(classifier: ClassifierResult, rag_chunks: list[str], language: UserLanguage) -> str:
+    rag_context = (
+        "\n\n---\n".join(rag_chunks)
+        if rag_chunks
+        else "Žádné další chunky z báze znalostí (RAG vrátil prázdno)."
+    )
+
+    return (
+        f"KATEGORIE: {classifier.category}\n"
+        f"TYP DOKUMENTU: {classifier.doc_type}\n"
+        f"ODESÍLATEL: {classifier.sender or 'neznámý'}\n"
+        f"OCR CONFIDENCE: {classifier.confidence:.2f}\n"
+        f"POČET STRAN: {classifier.page_count}\n\n"
+        f"CÍLOVÝ JAZYK VÝSTUPU: {language}\n"
+        "POZOR: OCR dokument může být česky, ale uživatelská textová pole "
+        "musí být v cílovém jazyce výstupu.\n\n"
+        f"OCR TEXT:\n{classifier.ocr_text}\n\n"
+        f"BÁZE ZNALOSTÍ (RAG):\n{rag_context}"
+    )
+
+
+def _build_messages(
+    classifier: ClassifierResult,
+    rag_chunks: list[str],
+    language: UserLanguage,
+    has_datova_schranka: bool,
+) -> list[dict[str, str]]:
+    return [
+        {
+            "role": "system",
+            "content": _build_system_prompt(classifier.category, language, has_datova_schranka),
+        },
+        {"role": "user", "content": _build_user_message(classifier, rag_chunks, language)},
+    ]
+
+
+def _extract_completed_json_fields(
+    buffer: str,
+    emitted: set[str],
+    fields: tuple[str, ...] = STREAM_ANALYSIS_FIELDS,
+) -> dict[str, Any]:
+    """Best-effort extraction of completed top-level JSON fields from a stream."""
+    decoder = json.JSONDecoder()
+    extracted: dict[str, Any] = {}
+    for field in fields:
+        if field in emitted:
+            continue
+        match = re.search(rf'"{re.escape(field)}"\s*:', buffer)
+        if not match:
+            continue
+        value_start = match.end()
+        while value_start < len(buffer) and buffer[value_start].isspace():
+            value_start += 1
+        try:
+            value, _ = decoder.raw_decode(buffer, value_start)
+        except json.JSONDecodeError:
+            continue
+        extracted[field] = value
+    return extracted
+
+
+def _parse_analysis_result(raw: str) -> AnalysisResult:
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        logger.error("Analyzer returned invalid JSON: %s | %s", exc, raw[:200])
+        raise ValueError("LLM returned invalid JSON") from exc
+
+    try:
+        return AnalysisResult.model_validate(data)
+    except ValidationError as exc:
+        logger.error("Analyzer JSON failed validation: %s | data=%s", exc, data)
+        raise ValueError(f"LLM output failed schema: {exc.errors()[0]['msg']}") from exc
+
+
+def _filter_deadlines(result: AnalysisResult, classifier: ClassifierResult) -> AnalysisResult:
+    # Last-line defense against hallucinated deadlines.
+    kept, rejected = filter_valid_deadlines(
+        result.deadlines,
+        source_text=classifier.ocr_text,
+        category=classifier.category,
+    )
+    if rejected:
+        logger.warning(
+            "Validator dropped %d/%d deadlines: %s",
+            len(rejected),
+            len(result.deadlines),
+            rejected,
+        )
+    result.deadlines = kept
+    return result
 
 
 async def analyze_document(
@@ -40,60 +348,18 @@ async def analyze_document(
     client = get_openai_client()
     model = pick_analyzer_model(classifier.category)
 
-    rag_context = (
-        "\n\n---\n".join(rag_chunks)
-        if rag_chunks
-        else "Žádné další chunky z báze znalostí (RAG vrátil prázdno)."
-    )
-
-    user_message = (
-        f"KATEGORIE: {classifier.category}\n"
-        f"TYP DOKUMENTU: {classifier.doc_type}\n"
-        f"ODESÍLATEL: {classifier.sender or 'neznámý'}\n"
-        f"OCR CONFIDENCE: {classifier.confidence:.2f}\n"
-        f"POČET STRAN: {classifier.page_count}\n\n"
-        f"OCR TEXT:\n{classifier.ocr_text}\n\n"
-        f"BÁZE ZNALOSTÍ (RAG):\n{rag_context}"
-    )
-
     response = await client.chat.completions.create(
         model=model,
         temperature=0.2,
         max_tokens=settings.openai_max_output_tokens,
         response_format={"type": "json_object"},
-        messages=[
-            {
-                "role": "system",
-                "content": _build_system_prompt(classifier.category, language, has_datova_schranka),
-            },
-            {"role": "user", "content": user_message},
-        ],
+        messages=_build_messages(classifier, rag_chunks, language, has_datova_schranka),
     )
 
     raw = response.choices[0].message.content or "{}"
-
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        logger.error("Analyzer returned invalid JSON: %s | %s", exc, raw[:200])
-        raise ValueError("LLM returned invalid JSON") from exc
-
-    try:
-        result = AnalysisResult.model_validate(data)
-    except ValidationError as exc:
-        logger.error("Analyzer JSON failed validation: %s | data=%s", exc, data)
-        raise ValueError(f"LLM output failed schema: {exc.errors()[0]['msg']}") from exc
-
-    # Last-line defense against hallucinated deadlines.
-    kept, rejected = filter_valid_deadlines(result.deadlines)
-    if rejected:
-        logger.warning(
-            "Validator dropped %d/%d deadlines: %s",
-            len(rejected),
-            len(result.deadlines),
-            rejected,
-        )
-    result.deadlines = kept
+    result = _apply_analysis_guardrails(
+        _filter_deadlines(_parse_analysis_result(raw), classifier), classifier, language
+    )
 
     logger.info(
         "Analysis done model=%s category=%s confidence=%.2f deadlines=%d actions=%d",
@@ -104,3 +370,63 @@ async def analyze_document(
         len(result.actions_required),
     )
     return result, model
+
+
+async def stream_analyze_document(
+    classifier: ClassifierResult,
+    rag_chunks: list[str],
+    language: UserLanguage,
+    has_datova_schranka: bool,
+) -> AsyncIterator[dict[str, Any]]:
+    """Stream completed analyzer fields, then yield the validated full result."""
+    settings = get_settings()
+    client = get_openai_client()
+    model = pick_analyzer_model(classifier.category)
+
+    stream = await client.chat.completions.create(
+        model=model,
+        temperature=0.2,
+        max_tokens=settings.openai_max_output_tokens,
+        response_format={"type": "json_object"},
+        stream=True,
+        messages=_build_messages(classifier, rag_chunks, language, has_datova_schranka),
+    )
+
+    emitted: set[str] = set()
+    raw_parts: list[str] = []
+    async for event in stream:
+        if not event.choices:
+            continue
+        delta = event.choices[0].delta.content or ""
+        if not delta:
+            continue
+        raw_parts.append(delta)
+        buffer = "".join(raw_parts)
+        for field, value in _extract_completed_json_fields(buffer, emitted).items():
+            emitted.add(field)
+            yield {
+                "type": "field",
+                "field": field,
+                "value": _sanitize_stream_field(field, value, classifier, language),
+            }
+
+    raw = "".join(raw_parts) or "{}"
+    result = _apply_analysis_guardrails(
+        _filter_deadlines(_parse_analysis_result(raw), classifier), classifier, language
+    )
+    data = result.model_dump(mode="json")
+    for field in STREAM_ANALYSIS_FIELDS:
+        if field not in emitted:
+            emitted.add(field)
+            yield {"type": "field", "field": field, "value": data.get(field)}
+
+    logger.info(
+        "Analysis streamed model=%s category=%s confidence=%.2f deadlines=%d actions=%d fields=%d",
+        model,
+        classifier.category,
+        result.confidence,
+        len(result.deadlines),
+        len(result.actions_required),
+        len(emitted),
+    )
+    yield {"type": "done", "analysis": result, "model_used": model}

@@ -57,7 +57,7 @@ class Settings(BaseSettings):
     # RAG
     # =====================================================================
     rag_top_k: int = 5
-    rag_similarity_threshold: float = 0.65
+    rag_similarity_threshold: float = 0.50
     embedding_max_chars: int = 20000  # text-embedding-3 accepts ~8k tokens (~32k chars)
 
     # =====================================================================
@@ -80,6 +80,14 @@ class Settings(BaseSettings):
         if isinstance(v, str):
             return [origin.strip() for origin in v.split(",") if origin.strip()]
         return v  # type: ignore[return-value]
+
+    @field_validator("allowed_origins")
+    @classmethod
+    def reject_wildcard_origins_in_production(cls, v: list[str], info) -> list[str]:
+        environment = (info.data.get("environment") or "").lower()
+        if environment == "production" and "*" in v:
+            raise ValueError("ALLOWED_ORIGINS must be explicit in production")
+        return v
 
     @property
     def is_production(self) -> bool:

@@ -2,12 +2,12 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "meta": {
     "project": "Jasně backend",
-    "snapshot_date": "2026-04-27",
+    "snapshot_date": "2026-05-02",
     "live_url": "https://jasne-backend-production.up.railway.app",
     "repo": "https://github.com/Fleeploed/jasne-backend",
-    "default_branch": "main",
+    "default_branch": "develop",
     "current_version": "0.1.0",
-    "phase": "MVP backend complete, ready for mobile integration"
+    "phase": "MVP backend with scan/chat streaming, PDF input, and cizinecka RAG loaded"
   },
 
   "infrastructure": {
@@ -15,7 +15,7 @@
       "service": "Railway",
       "project": "jasne-backend-staging",
       "environment": "production (single env, prod-prod separation deferred)",
-      "branch_tracked": "main",
+      "branch_tracked": "develop",
       "wait_for_ci": true,
       "auto_deploy_on_push": true,
       "region": "europe-west4-drams3a",
@@ -29,7 +29,7 @@
       "region": "eu-west-1",
       "postgres_version": "17",
       "extensions": ["vector (pgvector)", "pgcrypto"],
-      "schema_version": "0002_skill_overhaul",
+      "schema_version": "0005_scan_page_count_pdf",
       "rls_enabled": true,
       "tier": "Free"
     },
@@ -45,10 +45,10 @@
       "workflow": ".github/workflows/ci.yml",
       "stages": [
         "lint (ruff)",
-        "test 3.11 + 3.12 (pytest, 145 tests)",
+        "test 3.11 + 3.12 (pytest, 192 tests)",
         "build & push Docker (GHCR)",
         "deploy → staging (Railway)",
-        "deploy → production (DISABLED — if: false)"
+        "manual Railway production deploy from develop"
       ],
       "smoke_test_after_deploy": true,
       "uptime_check": ".github/workflows/uptime.yml — every 5 min"
@@ -110,14 +110,16 @@
         { "method": "GET", "path": "/limits?scan_id=<uuid>", "auth": true, "purpose": "+chat questions used for that scan" }
       ],
       "scans": [
-        { "method": "POST", "path": "/scans", "auth": true, "body": "{image_paths: string[], language?: string}", "pipeline_seconds": "5-20" },
+        { "method": "POST", "path": "/scans", "auth": true, "body": "{image_paths: string[], language?: string}", "pipeline_seconds": "5-20", "supports": ["jpeg", "png", "gif", "webp", "pdf"] },
+        { "method": "POST", "path": "/scans/stream", "auth": true, "body": "{image_paths: string[], language?: string}", "purpose": "SSE scan progress: preparing_inputs, ocr, rag, analysis, saving, done" },
         { "method": "GET", "path": "/scans?limit&offset", "auth": true },
         { "method": "GET", "path": "/scans/{scan_id}", "auth": true },
         { "method": "DELETE", "path": "/scans/{scan_id}", "auth": true, "cascade": "scan_messages deleted, deadlines kept (scan_id → null)" }
       ],
       "chat": [
         { "method": "GET", "path": "/scans/{scan_id}/chat", "auth": true, "purpose": "thread history (image, result_card, text Q&A)" },
-        { "method": "POST", "path": "/scans/{scan_id}/chat", "auth": true, "pro_only": true, "max_per_scan": 10, "response_seconds": "3-8" }
+        { "method": "POST", "path": "/scans/{scan_id}/chat", "auth": true, "pro_only": true, "max_per_scan": 10, "response_seconds": "3-8" },
+        { "method": "POST", "path": "/scans/{scan_id}/chat/stream", "auth": true, "pro_only": true, "purpose": "SSE token streaming for gradual GPT answer" }
       ],
       "deadlines": [
         { "method": "GET", "path": "/deadlines?only_active=bool", "auth": true },
@@ -130,8 +132,8 @@
     "services": {
       "classifier": "GPT-4o Vision, multi-page (1-10), detail:high, OCR + classification",
       "analyzer": "GPT-4o or GPT-4o-mini routed by category (escalation: danove/cizinecka/soudni)",
-      "chat": "GPT-4o-mini, full history replay, 10 questions/scan limit",
-      "rag": "pgvector top-5 chunks, similarity > 0.65, filter by category",
+      "chat": "GPT-4o-mini, full history replay, scan OCR/result/history included, 10 questions/scan limit",
+      "rag": "pgvector top-5 chunks + keyword exact-address fallback, similarity > 0.50, filter by category, preferred language ordering for chat",
       "embeddings": "text-embedding-3-small (1536 dims)",
       "model_router": "ESCALATION_CATEGORIES = {danove, cizinecka, soudni}",
       "validator": "drops past dates, > 3y dates, invalid types, empty descriptions",
@@ -164,14 +166,18 @@
         "usage_limits": ["user_id", "month(YYYY-MM)", "scans_count", "questions_per_scan(jsonb)", "PK(user_id, month)"],
         "knowledge_chunks": ["id", "content", "metadata(jsonb)", "embedding(vector(1536))"]
       },
-      "rpc_functions": ["match_knowledge_chunks(query_embedding, filter_category, threshold, count)"],
+      "rpc_functions": [
+        "match_knowledge_chunks(query_embedding, filter_category, threshold, count)",
+        "increment_scan_count(p_user_id, p_month)",
+        "increment_chat_count(p_user_id, p_scan_id, p_month)"
+      ],
       "triggers": ["on_auth_user_created (auto-create profile)", "profiles_touch (updated_at)"]
     },
     "testing": {
       "unit_tests": {
         "framework": "pytest + pytest-asyncio",
-        "count": 145,
-        "passing": 145,
+        "count": 192,
+        "passing": 192,
         "coverage_percent": 87,
         "test_files": [
           "test_auth.py", "test_embeddings.py", "test_explain.py",
@@ -294,12 +300,13 @@
     { "id": "be-3", "title": "Profile CRUD + auto-create on signup", "status": "done" },
     { "id": "be-4", "title": "Multi-page scan pipeline (image_paths array)", "status": "done" },
     { "id": "be-5", "title": "GPT-4o Vision OCR + 10-category classifier", "status": "done" },
-    { "id": "be-6", "title": "RAG with pgvector (top-5, similarity > 0.65, category filter)", "status": "done" },
+    { "id": "be-6", "title": "RAG with pgvector (top-5, similarity > 0.50, category filter)", "status": "done" },
     { "id": "be-7", "title": "Two-step LLM flow (classifier → router → analyzer)", "status": "done" },
     { "id": "be-8", "title": "Escalation routing (danove/cizinecka/soudni → gpt-4o)", "status": "done" },
     { "id": "be-9", "title": "Deadline validator (no past, < 3y, valid type)", "status": "done" },
     { "id": "be-10", "title": "Auto-deadlines from scan analysis", "status": "done" },
     { "id": "be-11", "title": "Chat Q&A on scan (Pro, max 10/scan)", "status": "done" },
+    { "id": "be-11a", "title": "Streaming chat endpoint (/scans/{scan_id}/chat/stream)", "status": "done" },
     { "id": "be-12", "title": "scan_messages thread (image + result_card + text)", "status": "done" },
     { "id": "be-13", "title": "Free/Pro plan limits enforcement", "status": "done" },
     { "id": "be-14", "title": "/limits endpoint for mobile UI gating", "status": "done" },
@@ -314,10 +321,14 @@
     { "id": "infra-3", "title": "GHCR Docker image push on every main commit", "status": "done" },
     { "id": "infra-4", "title": "GitHub Actions uptime cron (5 min, /health/deep)", "status": "done" },
     { "id": "infra-5", "title": "UptimeRobot keyword monitor (5 min, status:ok)", "status": "done" },
-    { "id": "infra-6", "title": "Supabase migrations 0001 + 0002", "status": "done" },
+    { "id": "infra-6", "title": "Supabase migrations 0001-0005", "status": "done" },
     { "id": "infra-7", "title": "Postman collection (26 requests, 7 folders)", "status": "done" },
-    { "id": "infra-8", "title": "145 unit tests passing, 87% coverage", "status": "done" },
-    { "id": "infra-9", "title": "E2E tested against live with real document", "status": "done" }
+    { "id": "infra-8", "title": "192 unit tests passing", "status": "done" },
+    { "id": "infra-9", "title": "E2E tested against live with real document", "status": "done" },
+    { "id": "be-21", "title": "PDF scan input support (render PDF pages to images before OpenAI Vision)", "status": "done" },
+    { "id": "be-22", "title": "Streaming scan endpoint (/scans/stream) with progressive status events", "status": "done" },
+    { "id": "rag-1", "title": "cizinecka RAG loaded with OAMP office addresses/hours in cs/en/ru/uk", "status": "done" },
+    { "id": "rag-2", "title": "Chat RAG exact-address retrieval with language priority", "status": "done" }
   ],
 
   "pending": {
@@ -360,18 +371,11 @@
     ],
     "backend_features": [
       {
-        "id": "be-todo-1",
-        "title": "Knowledge base loader script",
-        "priority": "high",
-        "estimated_effort_hours": 2,
-        "details": "scripts/load_knowledge.py: read markdown from knowledge/<category>/, chunk it, embed, insert into knowledge_chunks. Without this, RAG returns empty for all scans (current state)."
-      },
-      {
         "id": "be-todo-2",
-        "title": "Knowledge base content (Czech markdown)",
+        "title": "Complete knowledge base content beyond cizinecka",
         "priority": "high",
         "estimated_effort_hours": 20,
-        "details": "Write knowledge/danove/*.md, knowledge/cizinecka/*.md etc. Real bureaucracy rules, deadlines, fees. ~5-10 docs per category for MVP."
+        "details": "cizinecka has loaded OAMP office/address/hour data and broader RAG content. Remaining categories still need production-grade knowledge: danove, ucty, socialni, zdravotni, smlouvy, soudni, urad_prace, skolstvi."
       },
       {
         "id": "be-todo-3",
@@ -466,10 +470,10 @@
     },
     {
       "id": "issue-2",
-      "severity": "info",
-      "title": "RAG returns empty (no knowledge_chunks loaded)",
-      "impact": "Analyzer relies only on OCR + base knowledge in prompts. Quality degraded for edge cases.",
-      "fix": "be-todo-1 + be-todo-2"
+      "severity": "medium",
+      "title": "RAG coverage is uneven outside cizinecka",
+      "impact": "cizinecka has loaded OAMP contacts and broader knowledge; other categories still need curated production data.",
+      "fix": "be-todo-2"
     },
     {
       "id": "issue-3",
@@ -511,8 +515,8 @@
       "2. Cleanup stale branches (1 min)",
       "3. Switch SMTP to Resend (15 min) — unblocks user signups",
       "4. Sentry for error tracking (1 hour)",
-      "5. Knowledge base loader script (2 hours)",
-      "6. Write 10-15 knowledge markdown files for top-3 categories: danove, cizinecka, ucty (8 hours)",
+      "5. Complete RAG content for danove and ucty",
+      "6. Add retrieval quality tests for address/hour and category-specific knowledge",
       "7. RevenueCat webhook (2 hours)",
       "8. Push notification scheduler (4 hours)",
       "9. Production Railway project (2 hours)"
@@ -521,7 +525,7 @@
       "infra-todo-3 (Resend SMTP)",
       "be-todo-3 (RevenueCat webhook)",
       "be-todo-4 (push scheduler)",
-      "be-todo-1 + be-todo-2 (knowledge base)"
+      "be-todo-2 (knowledge base for non-cizinecka categories)"
     ]
   }
 }

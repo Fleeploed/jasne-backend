@@ -114,7 +114,7 @@ create index if not exists knowledge_chunks_category_idx
 create or replace function public.match_knowledge_chunks(
   query_embedding vector(1536),
   filter_category text,
-  match_threshold float default 0.65,
+  match_threshold float default 0.50,
   match_count int default 5
 )
 returns table (

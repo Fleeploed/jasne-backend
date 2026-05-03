@@ -6,6 +6,8 @@ conversation depth — limits service caps it at 10 questions per scan.
 """
 
 import logging
+import re
+from collections.abc import AsyncIterator
 from typing import Any
 from uuid import UUID
 
@@ -15,6 +17,79 @@ from app.prompts import CHAT_SYSTEM_PROMPT
 from app.services.embeddings import get_openai_client
 
 logger = logging.getLogger(__name__)
+
+_FEE_TERMS = (
+    "poplatek",
+    "poplatku",
+    "kolk",
+    "kolku",
+    "kolky",
+    "uhradit",
+    "zaplatit",
+    "fee",
+    "payment",
+    "stamp",
+    "оплат",
+    "платеж",
+    "платіж",
+    "колк",
+)
+
+
+def _ascii_fold(text: str) -> str:
+    replacements = str.maketrans(
+        {
+            "á": "a",
+            "č": "c",
+            "ď": "d",
+            "é": "e",
+            "ě": "e",
+            "í": "i",
+            "ň": "n",
+            "ó": "o",
+            "ř": "r",
+            "š": "s",
+            "ť": "t",
+            "ú": "u",
+            "ů": "u",
+            "ý": "y",
+            "ž": "z",
+        }
+    )
+    return text.lower().translate(replacements)
+
+
+def _looks_like_card_pickup_notice(scan_row: dict[str, Any]) -> bool:
+    doc_type = _ascii_fold(str(scan_row.get("doc_type") or ""))
+    ocr = _ascii_fold(str(scan_row.get("ocr_text") or ""))
+    return (
+        "vyzva_k_prevzeti_prukazu" in doc_type
+        or "vyzva k prevzeti prukazu" in ocr
+        or "prevzeti prukazu o povoleni k dlouhodobemu pobytu" in ocr
+    )
+
+
+def _has_checked_positive_fee(ocr_text: str) -> bool:
+    text = _ascii_fold(ocr_text)
+    checked = r"(?:\[x\]|\(x\)|☒|✅|✓|✔|x)"
+    amount = r"(?:300|1\s*000|1000|2\s*500|2500)\s*(?:kc|kč)"
+    return bool(re.search(rf"(?:{checked}\s*{amount})|(?:{amount}\s*{checked})", text))
+
+
+def _should_suppress_fee_guidance(scan_row: dict[str, Any]) -> bool:
+    if not _looks_like_card_pickup_notice(scan_row):
+        return False
+    return not _has_checked_positive_fee(str(scan_row.get("ocr_text") or ""))
+
+
+def _mentions_fee(text: str) -> bool:
+    folded = _ascii_fold(text)
+    lowered = text.lower()
+    return any(term in folded or term in lowered for term in _FEE_TERMS)
+
+
+def _filter_fee_items(items: list[Any]) -> list[Any]:
+    return [item for item in items if not _mentions_fee(str(item))]
 
 
 def _build_scan_context_message(scan_row: dict[str, Any]) -> str:
@@ -27,6 +102,13 @@ def _build_scan_context_message(scan_row: dict[str, Any]) -> str:
     deadlines = result.get("deadlines") or []
     actions = result.get("actions_required") or []
     penalty = result.get("penalty") or "(neuvedeno)"
+    office_hours = result.get("office_hours") or "(neuvedeno)"
+    documents_needed = result.get("documents_needed") or []
+
+    suppress_fee_guidance = _should_suppress_fee_guidance(scan_row)
+    if suppress_fee_guidance:
+        actions = _filter_fee_items(actions)
+        documents_needed = _filter_fee_items(documents_needed)
 
     deadlines_str = (
         "\n".join(f"- {d.get('date')}: {d.get('description')} ({d.get('type')})" for d in deadlines)
@@ -34,16 +116,29 @@ def _build_scan_context_message(scan_row: dict[str, Any]) -> str:
         else "(žádné lhůty)"
     )
     actions_str = "\n".join(f"- {a}" for a in actions) if actions else "(žádné akce)"
+    documents_needed_str = (
+        "\n".join(f"- {doc}" for doc in documents_needed) if documents_needed else "(žádné dokumenty)"
+    )
+    fee_guard = (
+        "\nPOPLATEK/KOLKY: V OCR není jednoznačně vybraná částka větší než 0 Kč. "
+        "Neříkej uživateli, že má platit nebo připravit kolky, pokud se ptá na tento dokument.\n"
+        if suppress_fee_guidance
+        else ""
+    )
 
     return (
         "KONTEXT DOKUMENTU (z předchozí analýzy):\n\n"
+        f"JAZYK SKENU: {scan_row.get('language') or '(neznámý)'}\n"
         f"KATEGORIE: {scan_row.get('category')}\n"
         f"TYP: {scan_row.get('doc_type')}\n"
         f"ODESÍLATEL: {(result.get('sender')) or '(neznámý)'}\n\n"
         f"SUMMARY:\n{summary}\n\n"
         f"LHŮTY:\n{deadlines_str}\n\n"
         f"AKCE:\n{actions_str}\n\n"
+        f"DOKUMENTY POTŘEBNÉ:\n{documents_needed_str}\n\n"
         f"SANKCE:\n{penalty}\n\n"
+        f"ÚŘEDNÍ HODINY:\n{office_hours}\n\n"
+        f"{fee_guard}"
         "OCR TEXT (přesný přepis dokumentu):\n"
         "---\n"
         f"{ocr}\n"
@@ -51,11 +146,69 @@ def _build_scan_context_message(scan_row: dict[str, Any]) -> str:
     )
 
 
+def _build_knowledge_context_message(rag_chunks: list[str] | None) -> str:
+    if not rag_chunks:
+        return (
+            "BÁZE ZNALOSTÍ (RAG): Pro tuto otázku nebyly nalezeny žádné relevantní "
+            "chunky. Pokud odpověď není v OCR/result/history, řekni, že ji v kontextu nemáš."
+        )
+
+    chunks = "\n\n".join(f"[RAG {index}]\n{chunk}" for index, chunk in enumerate(rag_chunks, start=1))
+    return (
+        "BÁZE ZNALOSTÍ (RAG) PRO AKTUÁLNÍ OTÁZKU:\n"
+        "Použij tyto chunky, pokud odpovídají otázce uživatele. Hodí se hlavně pro "
+        "obecné informace, adresy, kontakty, úřední hodiny a postupy. "
+        "Když se uživatel ptá na hodiny práce / úřední hodiny / opening hours "
+        "a RAG obsahuje hodiny pro adresu z dokumentu, odpověz z RAG; neříkej, "
+        "že hodiny nejsou v dokumentu. "
+        "Pokud se chunky liší, preferuj dříve uvedený chunk s přesnou adresou "
+        "nebo konkrétní kontaktní kartou. "
+        "Konkrétní lhůty, částky a povinnosti z dokumentu ber z OCR/result, ne z RAG.\n\n"
+        f"{chunks}"
+    )
+
+
+def _build_chat_messages(
+    scan_row: dict[str, Any],
+    history: list[dict[str, str]],
+    question: str,
+    language: UserLanguage,
+    rag_chunks: list[str] | None = None,
+) -> list[dict[str, str]]:
+    history_context = (
+        "HISTORIE CHATU: Následující user/assistant zprávy jsou skutečná "
+        "dosavadní historie tohoto chatu. Použij je pro návazné otázky."
+        if history
+        else "HISTORIE CHATU: Zatím žádná předchozí textová historie."
+    )
+    return [
+        {
+            "role": "system",
+            "content": CHAT_SYSTEM_PROMPT.format(language=language, scan_language=scan_row.get("language")),
+        },
+        {
+            "role": "system",
+            "content": _build_scan_context_message(scan_row),
+        },
+        {
+            "role": "system",
+            "content": _build_knowledge_context_message(rag_chunks),
+        },
+        {
+            "role": "system",
+            "content": history_context,
+        },
+        *history,
+        {"role": "user", "content": question},
+    ]
+
+
 async def answer_question(
     scan_row: dict[str, Any],
     history: list[dict[str, str]],
     question: str,
     language: UserLanguage,
+    rag_chunks: list[str] | None = None,
 ) -> str:
     """Run the chat LLM and return assistant's text answer.
 
@@ -66,24 +219,11 @@ async def answer_question(
     settings = get_settings()
     client = get_openai_client()
 
-    messages: list[dict[str, str]] = [
-        {
-            "role": "system",
-            "content": CHAT_SYSTEM_PROMPT.format(language=language),
-        },
-        {
-            "role": "system",
-            "content": _build_scan_context_message(scan_row),
-        },
-        *history,
-        {"role": "user", "content": question},
-    ]
-
     response = await client.chat.completions.create(
         model=settings.openai_chat_model,
         temperature=0.3,
         max_tokens=settings.openai_max_output_tokens,
-        messages=messages,  # type: ignore[arg-type]
+        messages=_build_chat_messages(scan_row, history, question, language, rag_chunks),  # type: ignore[arg-type]
     )
 
     answer = (response.choices[0].message.content or "").strip()
@@ -101,6 +241,44 @@ async def answer_question(
     return answer
 
 
+async def stream_answer_chunks(
+    scan_row: dict[str, Any],
+    history: list[dict[str, str]],
+    question: str,
+    language: UserLanguage,
+    rag_chunks: list[str] | None = None,
+) -> AsyncIterator[str]:
+    """Yield assistant answer chunks as OpenAI streams them."""
+    settings = get_settings()
+    client = get_openai_client()
+
+    stream = await client.chat.completions.create(
+        model=settings.openai_chat_model,
+        temperature=0.3,
+        max_tokens=settings.openai_max_output_tokens,
+        stream=True,
+        messages=_build_chat_messages(scan_row, history, question, language, rag_chunks),  # type: ignore[arg-type]
+    )
+
+    chunk_count = 0
+    async for event in stream:
+        if not event.choices:
+            continue
+        delta = event.choices[0].delta.content or ""
+        if not delta:
+            continue
+        chunk_count += 1
+        yield delta
+
+    logger.info(
+        "Chat streamed scan_id=%s history=%d question_len=%d chunks=%d",
+        scan_row.get("id"),
+        len(history),
+        len(question),
+        chunk_count,
+    )
+
+
 async def fetch_scan_history(scan_id: UUID, user_id: UUID) -> list[dict[str, str]]:
     """Load all chat messages for a scan, oldest first, formatted for OpenAI."""
     from app.services.rag import get_supabase
@@ -108,10 +286,11 @@ async def fetch_scan_history(scan_id: UUID, user_id: UUID) -> list[dict[str, str
     supabase = await get_supabase()
     result = (
         await supabase.table("scan_messages")
-        .select("role,content,message_type,created_at")
+        .select("id,role,content,message_type,created_at")
         .eq("scan_id", str(scan_id))
         .eq("user_id", str(user_id))
         .order("created_at")
+        .order("id")
         .execute()
     )
 

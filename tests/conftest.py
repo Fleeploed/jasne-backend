@@ -174,6 +174,45 @@ class FakeSupabase:
         q = _FakeQuery(_FakeTable(f"rpc:{name}"))
 
         async def _execute():
+            if name == "increment_scan_count":
+                user_id = str(params["p_user_id"])
+                month = params["p_month"]
+                table = self.table("usage_limits")
+                for row in table.rows:
+                    if str(row.get("user_id")) == user_id and row.get("month") == month:
+                        row["scans_count"] = int(row.get("scans_count") or 0) + 1
+                        return _FakeResponse([row["scans_count"]])
+                table.rows.append(
+                    {
+                        "user_id": user_id,
+                        "month": month,
+                        "scans_count": 1,
+                        "questions_per_scan": {},
+                    }
+                )
+                return _FakeResponse([1])
+
+            if name == "increment_chat_count":
+                user_id = str(params["p_user_id"])
+                month = params["p_month"]
+                scan_id = str(params["p_scan_id"])
+                table = self.table("usage_limits")
+                for row in table.rows:
+                    if str(row.get("user_id")) == user_id and row.get("month") == month:
+                        qmap = dict(row.get("questions_per_scan") or {})
+                        qmap[scan_id] = int(qmap.get(scan_id, 0)) + 1
+                        row["questions_per_scan"] = qmap
+                        return _FakeResponse([qmap[scan_id]])
+                table.rows.append(
+                    {
+                        "user_id": user_id,
+                        "month": month,
+                        "scans_count": 0,
+                        "questions_per_scan": {scan_id: 1},
+                    }
+                )
+                return _FakeResponse([1])
+
             return _FakeResponse(list(self.rpc_result))
 
         q.execute = _execute  # type: ignore[assignment]
@@ -309,6 +348,13 @@ def client(fake_supabase, monkeypatch):
     monkeypatch.setattr("app.routers.deadlines.get_supabase", fake_get_supabase)
     monkeypatch.setattr("app.services.limits.get_supabase", fake_get_supabase)
     monkeypatch.setattr("app.services.chat.get_supabase", fake_get_supabase, raising=False)
+
+    async def fake_retrieve_chat_chunks(
+        question: str, category: str, preferred_language: str | None = None
+    ) -> list[str]:
+        return []
+
+    monkeypatch.setattr("app.routers.chat.retrieve_chat_chunks", fake_retrieve_chat_chunks)
     monkeypatch.setattr("app.main.init_supabase", fake_init_supabase)
     monkeypatch.setattr("app.main.close_supabase", fake_close_supabase)
     monkeypatch.setattr("app.main.get_supabase", fake_get_supabase)
