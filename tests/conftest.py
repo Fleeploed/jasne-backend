@@ -225,10 +225,12 @@ class FakeSupabase:
                     ts = str(m.get("created_at", ""))
                     if sid and (sid not in msg_by_scan or ts > msg_by_scan[sid]):
                         msg_by_scan[sid] = ts
+
                 def _activity(r: dict) -> str:
                     return msg_by_scan.get(str(r["id"]), str(r.get("created_at", "")))
+
                 scans = sorted(scans, key=_activity, reverse=True)
-                page = scans[offset: offset + limit]
+                page = scans[offset : offset + limit]
                 rows = [{**r, "last_message_at": msg_by_scan.get(str(r["id"]))} for r in page]
                 return _FakeResponse(rows)
 
