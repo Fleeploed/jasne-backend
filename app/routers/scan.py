@@ -336,9 +336,9 @@ async def create_scan(
     classifier = await classify_document(vision_inputs.urls)
     classifier = classifier.model_copy(update={"page_count": vision_inputs.page_count})
 
-    if classifier.confidence < settings.min_ocr_confidence or not classifier.ocr_text.strip():
+    if not classifier.ocr_text.strip():
         logger.warning(
-            "OCR quality gate failed user_id=%s confidence=%.2f error=%s",
+            "OCR quality gate failed (empty text) user_id=%s confidence=%.2f error=%s",
             user_id,
             classifier.confidence,
             classifier.error,
@@ -394,10 +394,10 @@ async def create_scan_stream(
                 },
             )
 
-            if classifier.confidence < settings.min_ocr_confidence or not classifier.ocr_text.strip():
+            if not classifier.ocr_text.strip():
                 detail = f"Could not read document — try a better photo. {classifier.error or ''}".strip()
                 logger.warning(
-                    "OCR quality gate failed user_id=%s confidence=%.2f error=%s",
+                    "OCR quality gate failed (empty text) user_id=%s confidence=%.2f error=%s",
                     user_id,
                     classifier.confidence,
                     classifier.error,
