@@ -455,14 +455,10 @@ async def list_scans(
     offset = max(0, offset)
 
     supabase = await get_supabase()
-    result = (
-        await supabase.table("scans")
-        .select("id,category,doc_type,result,page_count,image_paths,created_at")
-        .eq("user_id", str(user_id))
-        .order("created_at", desc=True)
-        .range(offset, offset + limit - 1)
-        .execute()
-    )
+    result = await supabase.rpc(
+        "list_scans_with_activity",
+        {"p_user_id": str(user_id), "p_limit": limit, "p_offset": offset},
+    ).execute()
     return [ScanListItem.from_row(row) for row in (result.data or [])]
 
 
