@@ -319,8 +319,6 @@ async def create_scan(
     body: ScanRequest,
     user_id: UUID = Depends(get_current_user_id),
 ) -> ScanResponse:
-    settings = get_settings()
-
     profile = await _ensure_profile(user_id)
     plan = profile.get("plan", "free")
     language: UserLanguage = body.language or profile.get("language", "cs")
@@ -367,7 +365,6 @@ async def create_scan_stream(
     body: ScanRequest,
     user_id: UUID = Depends(get_current_user_id),
 ) -> StreamingResponse:
-    settings = get_settings()
     profile = await _ensure_profile(user_id)
     plan = profile.get("plan", "free")
     language: UserLanguage = body.language or profile.get("language", "cs")
