@@ -163,6 +163,7 @@ class ScanListItem(_Base):
     confidence: float | None = None
     page_count: int = 1
     created_at: datetime
+    last_message_at: datetime | None = None
 
     @classmethod
     def from_row(cls, row: dict[str, Any]) -> ScanListItem:
@@ -176,6 +177,7 @@ class ScanListItem(_Base):
             confidence=result.get("confidence"),
             page_count=row.get("page_count") or len(row.get("image_paths") or []) or 1,
             created_at=row["created_at"],
+            last_message_at=row.get("last_message_at"),
         )
 
 
