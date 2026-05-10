@@ -213,6 +213,25 @@ class FakeSupabase:
                 )
                 return _FakeResponse([1])
 
+            if name == "list_scans_with_activity":
+                user_id = str(params["p_user_id"])
+                limit = int(params.get("p_limit", 20))
+                offset = int(params.get("p_offset", 0))
+                scans = [r for r in self.table("scans").rows if str(r.get("user_id")) == user_id]
+                messages = self.table("scan_messages").rows
+                msg_by_scan: dict[str, str] = {}
+                for m in messages:
+                    sid = str(m.get("scan_id", ""))
+                    ts = str(m.get("created_at", ""))
+                    if sid and (sid not in msg_by_scan or ts > msg_by_scan[sid]):
+                        msg_by_scan[sid] = ts
+                def _activity(r: dict) -> str:
+                    return msg_by_scan.get(str(r["id"]), str(r.get("created_at", "")))
+                scans = sorted(scans, key=_activity, reverse=True)
+                page = scans[offset: offset + limit]
+                rows = [{**r, "last_message_at": msg_by_scan.get(str(r["id"]))} for r in page]
+                return _FakeResponse(rows)
+
             return _FakeResponse(list(self.rpc_result))
 
         q.execute = _execute  # type: ignore[assignment]
