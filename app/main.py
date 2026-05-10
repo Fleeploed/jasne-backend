@@ -12,7 +12,7 @@ from fastapi.responses import JSONResponse
 
 from app.config import get_settings
 from app.models.schemas import DeepHealthResponse, DepStatus, HealthResponse
-from app.routers import chat, deadlines, limits, profile, scan
+from app.routers import chat, deadlines, limits, profile, scan, webhooks
 from app.services.embeddings import close_openai_client, get_openai_client
 from app.services.rag import close_supabase, get_supabase, init_supabase
 
@@ -79,6 +79,7 @@ app.include_router(chat.router)  # /scans/{scan_id}/chat (Pro Q&A)
 app.include_router(deadlines.router)
 app.include_router(profile.router)
 app.include_router(limits.router)  # /limits — usage vs plan caps
+app.include_router(webhooks.router)
 
 
 # ---------------------------------------------------------------------------
