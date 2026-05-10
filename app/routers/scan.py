@@ -319,8 +319,6 @@ async def create_scan(
     body: ScanRequest,
     user_id: UUID = Depends(get_current_user_id),
 ) -> ScanResponse:
-    settings = get_settings()
-
     profile = await _ensure_profile(user_id)
     plan = profile.get("plan", "free")
     language: UserLanguage = body.language or profile.get("language", "cs")
@@ -336,9 +334,9 @@ async def create_scan(
     classifier = await classify_document(vision_inputs.urls)
     classifier = classifier.model_copy(update={"page_count": vision_inputs.page_count})
 
-    if classifier.confidence < settings.min_ocr_confidence or not classifier.ocr_text.strip():
+    if not classifier.ocr_text.strip():
         logger.warning(
-            "OCR quality gate failed user_id=%s confidence=%.2f error=%s",
+            "OCR quality gate failed (empty text) user_id=%s confidence=%.2f error=%s",
             user_id,
             classifier.confidence,
             classifier.error,
@@ -367,7 +365,6 @@ async def create_scan_stream(
     body: ScanRequest,
     user_id: UUID = Depends(get_current_user_id),
 ) -> StreamingResponse:
-    settings = get_settings()
     profile = await _ensure_profile(user_id)
     plan = profile.get("plan", "free")
     language: UserLanguage = body.language or profile.get("language", "cs")
@@ -394,10 +391,10 @@ async def create_scan_stream(
                 },
             )
 
-            if classifier.confidence < settings.min_ocr_confidence or not classifier.ocr_text.strip():
+            if not classifier.ocr_text.strip():
                 detail = f"Could not read document — try a better photo. {classifier.error or ''}".strip()
                 logger.warning(
-                    "OCR quality gate failed user_id=%s confidence=%.2f error=%s",
+                    "OCR quality gate failed (empty text) user_id=%s confidence=%.2f error=%s",
                     user_id,
                     classifier.confidence,
                     classifier.error,
@@ -455,14 +452,10 @@ async def list_scans(
     offset = max(0, offset)
 
     supabase = await get_supabase()
-    result = (
-        await supabase.table("scans")
-        .select("id,category,doc_type,result,page_count,image_paths,created_at")
-        .eq("user_id", str(user_id))
-        .order("created_at", desc=True)
-        .range(offset, offset + limit - 1)
-        .execute()
-    )
+    result = await supabase.rpc(
+        "list_scans_with_activity",
+        {"p_user_id": str(user_id), "p_limit": limit, "p_offset": offset},
+    ).execute()
     return [ScanListItem.from_row(row) for row in (result.data or [])]
 
 

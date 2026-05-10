@@ -158,10 +158,12 @@ class ScanListItem(_Base):
     id: UUID
     category: DocumentCategory | None = None
     doc_type: str | None = None
+    document_type_cz: str | None = None
     summary: str | None = None
     confidence: float | None = None
     page_count: int = 1
     created_at: datetime
+    last_message_at: datetime | None = None
 
     @classmethod
     def from_row(cls, row: dict[str, Any]) -> ScanListItem:
@@ -170,10 +172,12 @@ class ScanListItem(_Base):
             id=row["id"],
             category=row.get("category"),
             doc_type=row.get("doc_type"),
+            document_type_cz=result.get("document_type_cz"),
             summary=result.get("summary"),
             confidence=result.get("confidence"),
             page_count=row.get("page_count") or len(row.get("image_paths") or []) or 1,
             created_at=row["created_at"],
+            last_message_at=row.get("last_message_at"),
         )
 
 
