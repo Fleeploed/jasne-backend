@@ -54,6 +54,17 @@ class Settings(BaseSettings):
     supabase_signed_url_ttl: int = 300  # seconds — Vision must fetch within this
 
     # =====================================================================
+    # RevenueCat
+    # =====================================================================
+    # Value of the Authorization header configured in RevenueCat Webhooks.
+    # Example: "Bearer rc_webhook_...". If unset, webhooks are rejected.
+    revenuecat_webhook_auth: str | None = None
+    # RevenueCat REST API key used to fetch canonical subscriber status.
+    revenuecat_api_key: str | None = None
+    revenuecat_entitlement_id: str = "pro"
+    revenuecat_api_base_url: str = "https://api.revenuecat.com/v1"
+
+    # =====================================================================
     # RAG
     # =====================================================================
     rag_top_k: int = 5

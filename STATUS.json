@@ -45,7 +45,7 @@
       "workflow": ".github/workflows/ci.yml",
       "stages": [
         "lint (ruff)",
-        "test 3.11 + 3.12 (pytest, 192 tests)",
+        "test 3.11 + 3.12 (pytest, 203 tests)",
         "build & push Docker (GHCR)",
         "deploy → staging (Railway)",
         "manual Railway production deploy from develop"
@@ -104,6 +104,9 @@
       "profile": [
         { "method": "GET", "path": "/profile", "auth": true },
         { "method": "PUT", "path": "/profile", "auth": true, "note": "plan field NOT updatable here (RevenueCat webhook)" }
+      ],
+      "webhooks": [
+        { "method": "POST", "path": "/webhooks/revenuecat", "auth": "RevenueCat Authorization header", "purpose": "sync RevenueCat entitlement to profiles.plan" }
       ],
       "limits": [
         { "method": "GET", "path": "/limits", "auth": true, "purpose": "current usage vs plan caps (mobile gates UI)" },
@@ -176,8 +179,8 @@
     "testing": {
       "unit_tests": {
         "framework": "pytest + pytest-asyncio",
-        "count": 192,
-        "passing": 192,
+        "count": 203,
+        "passing": 203,
         "coverage_percent": 87,
         "test_files": [
           "test_auth.py", "test_embeddings.py", "test_explain.py",
@@ -309,6 +312,7 @@
     { "id": "be-11a", "title": "Streaming chat endpoint (/scans/{scan_id}/chat/stream)", "status": "done" },
     { "id": "be-12", "title": "scan_messages thread (image + result_card + text)", "status": "done" },
     { "id": "be-13", "title": "Free/Pro plan limits enforcement", "status": "done" },
+    { "id": "be-13a", "title": "RevenueCat webhook syncs entitlement to profiles.plan", "status": "done" },
     { "id": "be-14", "title": "/limits endpoint for mobile UI gating", "status": "done" },
     { "id": "be-15", "title": "Czech system prompts (10 categories + base + classifier + chat)", "status": "done" },
     { "id": "be-16", "title": "Pydantic v2 schemas with protected_namespaces=()", "status": "done" },
@@ -323,7 +327,7 @@
     { "id": "infra-5", "title": "UptimeRobot keyword monitor (5 min, status:ok)", "status": "done" },
     { "id": "infra-6", "title": "Supabase migrations 0001-0005", "status": "done" },
     { "id": "infra-7", "title": "Postman collection (26 requests, 7 folders)", "status": "done" },
-    { "id": "infra-8", "title": "192 unit tests passing", "status": "done" },
+    { "id": "infra-8", "title": "203 unit tests passing", "status": "done" },
     { "id": "infra-9", "title": "E2E tested against live with real document", "status": "done" },
     { "id": "be-21", "title": "PDF scan input support (render PDF pages to images before OpenAI Vision)", "status": "done" },
     { "id": "be-22", "title": "Streaming scan endpoint (/scans/stream) with progressive status events", "status": "done" },
@@ -376,13 +380,6 @@
         "priority": "high",
         "estimated_effort_hours": 20,
         "details": "cizinecka has loaded OAMP office/address/hour data and broader RAG content. Remaining categories still need production-grade knowledge: danove, ucty, socialni, zdravotni, smlouvy, soudni, urad_prace, skolstvi."
-      },
-      {
-        "id": "be-todo-3",
-        "title": "RevenueCat webhook for plan updates",
-        "priority": "high (before mobile launch)",
-        "estimated_effort_hours": 2,
-        "details": "POST /webhooks/revenuecat — verify signature, update profiles.plan based on subscription event"
       },
       {
         "id": "be-todo-4",
@@ -517,13 +514,11 @@
       "4. Sentry for error tracking (1 hour)",
       "5. Complete RAG content for danove and ucty",
       "6. Add retrieval quality tests for address/hour and category-specific knowledge",
-      "7. RevenueCat webhook (2 hours)",
-      "8. Push notification scheduler (4 hours)",
-      "9. Production Railway project (2 hours)"
+      "7. Push notification scheduler (4 hours)",
+      "8. Production Railway project (2 hours)"
     ],
     "before_mobile_launch_must_have": [
       "infra-todo-3 (Resend SMTP)",
-      "be-todo-3 (RevenueCat webhook)",
       "be-todo-4 (push scheduler)",
       "be-todo-2 (knowledge base for non-cizinecka categories)"
     ]
