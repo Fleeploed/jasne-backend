@@ -494,6 +494,7 @@ async def get_scan(
 @router.get("/{scan_id}/image-urls", response_model=ScanImageUrlsResponse)
 async def get_scan_image_urls(
     scan_id: UUID,
+    render_pdf: bool = False,
     user_id: UUID = Depends(get_current_user_id),
 ) -> ScanImageUrlsResponse:
     """Return signed preview URLs for files attached to a scan owned by the user."""
@@ -511,8 +512,16 @@ async def get_scan_image_urls(
     urls = []
     for raw_path in result.data[0].get("image_paths") or []:
         path = _validate_storage_path(user_id, raw_path)
-        if _storage_suffix(path) in SUPPORTED_IMAGE_EXTENSIONS or _storage_suffix(path) == PDF_EXTENSION:
+        suffix = _storage_suffix(path)
+        if suffix in SUPPORTED_IMAGE_EXTENSIONS:
             urls.append(await _sign_storage_url(path))
+        elif suffix == PDF_EXTENSION:
+            signed_url = await _sign_storage_url(path)
+            if render_pdf:
+                pdf_bytes = await _download_signed_object(signed_url, path)
+                urls.extend(_render_pdf_to_png_data_urls(pdf_bytes, path))
+            else:
+                urls.append(signed_url)
 
     return ScanImageUrlsResponse(urls=urls)
 

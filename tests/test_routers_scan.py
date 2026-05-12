@@ -523,6 +523,34 @@ class TestGetScanImageUrls:
             f"https://fake-storage/{test_user_id}/page.jpg?ttl=300",
         ]
 
+    def test_can_render_pdf_previews(
+        self,
+        client,
+        fake_supabase,
+        auth_headers,
+        test_user_id,
+        monkeypatch,
+    ):
+        row = _seed_scan(fake_supabase, str(test_user_id), image_paths=[f"{test_user_id}/doc.pdf"])
+
+        async def fake_download(url: str, path: str) -> bytes:
+            assert url == f"https://fake-storage/{test_user_id}/doc.pdf?ttl=300"
+            assert path == f"{test_user_id}/doc.pdf"
+            return b"%PDF"
+
+        def fake_render(pdf_bytes: bytes, path: str) -> list[str]:
+            assert pdf_bytes == b"%PDF"
+            assert path == f"{test_user_id}/doc.pdf"
+            return ["data:image/png;base64,page1"]
+
+        monkeypatch.setattr("app.routers.scan._download_signed_object", fake_download)
+        monkeypatch.setattr("app.routers.scan._render_pdf_to_png_data_urls", fake_render)
+
+        r = client.get(f"/scans/{row['id']}/image-urls?render_pdf=true", headers=auth_headers)
+
+        assert r.status_code == 200
+        assert r.json()["urls"] == ["data:image/png;base64,page1"]
+
     def test_cant_access_others(self, client, fake_supabase, auth_headers):
         row = _seed_scan(fake_supabase, "99999999-9999-9999-9999-999999999999")
         r = client.get(f"/scans/{row['id']}/image-urls", headers=auth_headers)
