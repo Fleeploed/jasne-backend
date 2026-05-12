@@ -38,7 +38,7 @@ class TestClassifyDocument:
 
     @pytest.mark.asyncio
     async def test_happy_path_multi_page(self, openai_chat_mock):
-        openai_chat_mock(
+        mock_client = openai_chat_mock(
             {
                 "ocr_text": "page 1\n\npage 2\n\npage 3",
                 "category": "smlouvy",
@@ -56,6 +56,8 @@ class TestClassifyDocument:
 
         assert result.page_count == 3
         assert "page 2" in result.ocr_text
+        call_kwargs = mock_client.chat.completions.create.call_args.kwargs
+        assert call_kwargs["max_tokens"] == 8000
 
     @pytest.mark.asyncio
     async def test_empty_urls_returns_fallback(self):

@@ -49,7 +49,7 @@ async def classify_document(image_urls: list[str]) -> ClassifierResult:
     response = await client.chat.completions.create(
         model=settings.openai_classifier_model,
         temperature=0,
-        max_tokens=settings.openai_max_output_tokens,
+        max_tokens=settings.openai_classifier_max_output_tokens,
         response_format={"type": "json_object"},
         messages=[
             {"role": "system", "content": CLASSIFIER_SYSTEM_PROMPT},
