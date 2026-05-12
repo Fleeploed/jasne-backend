@@ -240,6 +240,15 @@ class DeadlineUpdate(_Base):
     deadline_type: DeadlineType | None = None
     status: DeadlineStatus | None = None
 
+    @field_validator("reminder_days")
+    @classmethod
+    def reminder_days_positive(cls, v: list[int] | None) -> list[int] | None:
+        if v is None:
+            return v
+        if any(d < 0 for d in v):
+            raise ValueError("reminder_days must be non-negative")
+        return sorted(set(v), reverse=True)
+
 
 class DeadlineResponse(_Base):
     id: UUID

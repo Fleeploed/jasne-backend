@@ -66,6 +66,18 @@ class _FakeQuery:
         self._op_payload = payload
         return self
 
+    def upsert(
+        self,
+        payload: Any,
+        on_conflict: str | None = None,
+        ignore_duplicates: bool = False,
+    ) -> _FakeQuery:
+        self._op = "upsert"
+        self._op_payload = payload
+        self._upsert_on_conflict = on_conflict
+        self._upsert_ignore_duplicates = ignore_duplicates
+        return self
+
     def update(self, payload: Any) -> _FakeQuery:
         self._op = "update"
         self._op_payload = payload
@@ -121,6 +133,31 @@ class _FakeQuery:
                 updated.append(row)
             return _FakeResponse(updated)
 
+        if self._op == "upsert":
+            payloads = self._op_payload if isinstance(self._op_payload, list) else [self._op_payload]
+            conflict_cols = [c.strip() for c in (self._upsert_on_conflict or "").split(",") if c.strip()]
+            result_rows: list[dict[str, Any]] = []
+            for p in payloads:
+                existing = None
+                if conflict_cols:
+                    for row in self._table.rows:
+                        if all(str(row.get(col)) == str(p.get(col)) for col in conflict_cols):
+                            existing = row
+                            break
+                if existing is not None:
+                    if not self._upsert_ignore_duplicates:
+                        existing.update(p)
+                        existing["updated_at"] = datetime.now(UTC).isoformat()
+                        result_rows.append(existing)
+                    continue
+                row = dict(p)
+                row.setdefault("id", str(uuid4()))
+                row.setdefault("created_at", datetime.now(UTC).isoformat())
+                row.setdefault("updated_at", datetime.now(UTC).isoformat())
+                self._table.rows.append(row)
+                result_rows.append(row)
+            return _FakeResponse(result_rows)
+
         if self._op == "delete":
             ids_to_remove = {id(r) for r in rows}
             self._table.rows = [r for r in self._table.rows if id(r) not in ids_to_remove]
@@ -139,6 +176,14 @@ class _FakeTable:
 
     def insert(self, payload: Any) -> _FakeQuery:
         return _FakeQuery(self).insert(payload)
+
+    def upsert(
+        self,
+        payload: Any,
+        on_conflict: str | None = None,
+        ignore_duplicates: bool = False,
+    ) -> _FakeQuery:
+        return _FakeQuery(self).upsert(payload, on_conflict=on_conflict, ignore_duplicates=ignore_duplicates)
 
     def update(self, payload: Any) -> _FakeQuery:
         return _FakeQuery(self).update(payload)

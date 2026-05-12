@@ -300,8 +300,20 @@ async def _persist_completed_scan(
     scan_id = UUID(scan_data["id"])
 
     await increment_scan_count(user_id)
-    deadlines_created = await _create_deadlines(user_id, scan_id, analysis.deadlines)
-    await _seed_chat_thread(user_id, scan_id, body.image_paths, analysis.summary)
+
+    # Side-effects below must not fail the scan — the row is already committed.
+    # We log and continue so the user gets their analysis back even if reminders
+    # or the chat seed transiently fail.
+    try:
+        deadlines_created = await _create_deadlines(user_id, scan_id, analysis.deadlines)
+    except Exception:
+        logger.exception("Failed to create deadlines scan_id=%s", scan_id)
+        deadlines_created = 0
+
+    try:
+        await _seed_chat_thread(user_id, scan_id, body.image_paths, analysis.summary)
+    except Exception:
+        logger.exception("Failed to seed chat thread scan_id=%s", scan_id)
 
     logger.info(
         "Scan created scan_id=%s pages=%d category=%s model=%s ocr_conf=%.2f deadlines=%d",

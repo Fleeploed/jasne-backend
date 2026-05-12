@@ -109,9 +109,16 @@ async def fetch_revenuecat_plan(app_user_id: str) -> UserPlan:
 
 
 async def set_profile_plan(user_id: UUID, plan: UserPlan) -> None:
+    from app.routers.profile import _ensure_profile
+
+    # The webhook may arrive before the Postgres auth trigger has created the
+    # profile row. Bootstrap a default profile so the plan update lands instead
+    # of silently being dropped.
+    await _ensure_profile(user_id)
+
     supabase = await get_supabase()
     result = await supabase.table("profiles").update({"plan": plan}).eq("id", str(user_id)).execute()
     if not result.data:
-        logger.warning("RevenueCat webhook could not update missing profile user_id=%s", user_id)
+        logger.error("RevenueCat webhook could not update profile user_id=%s plan=%s", user_id, plan)
         return
     logger.info("RevenueCat synced user_id=%s plan=%s", user_id, plan)
