@@ -19,6 +19,7 @@ from app.models.schemas import (
     AnalysisResult,
     ClassifierResult,
     DeadlineItem,
+    ScanImageUrlsResponse,
     ScanListItem,
     ScanRequest,
     ScanResponse,
@@ -476,6 +477,32 @@ async def get_scan(
     if not result.data:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Scan not found")
     return ScanResponse.model_validate(result.data[0])
+
+
+@router.get("/{scan_id}/image-urls", response_model=ScanImageUrlsResponse)
+async def get_scan_image_urls(
+    scan_id: UUID,
+    user_id: UUID = Depends(get_current_user_id),
+) -> ScanImageUrlsResponse:
+    """Return signed preview URLs for images attached to a scan owned by the user."""
+    supabase = await get_supabase()
+    result = (
+        await supabase.table("scans")
+        .select("image_paths")
+        .eq("id", str(scan_id))
+        .eq("user_id", str(user_id))
+        .execute()
+    )
+    if not result.data:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Scan not found")
+
+    urls = []
+    for raw_path in result.data[0].get("image_paths") or []:
+        path = _validate_storage_path(user_id, raw_path)
+        if _storage_suffix(path) in SUPPORTED_IMAGE_EXTENSIONS:
+            urls.append(await _sign_storage_url(path))
+
+    return ScanImageUrlsResponse(urls=urls)
 
 
 @router.delete("/{scan_id}", status_code=status.HTTP_204_NO_CONTENT)

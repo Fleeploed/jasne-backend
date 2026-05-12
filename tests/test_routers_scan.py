@@ -492,6 +492,40 @@ class TestGetScan:
         assert r.status_code == 404
 
 
+class TestGetScanImageUrls:
+    def test_returns_signed_image_urls(self, client, fake_supabase, auth_headers, test_user_id):
+        row = _seed_scan(
+            fake_supabase,
+            str(test_user_id),
+            image_paths=[f"{test_user_id}/p1.jpg", f"{test_user_id}/p2.png"],
+        )
+
+        r = client.get(f"/scans/{row['id']}/image-urls", headers=auth_headers)
+
+        assert r.status_code == 200
+        assert r.json()["urls"] == [
+            f"https://fake-storage/{test_user_id}/p1.jpg?ttl=300",
+            f"https://fake-storage/{test_user_id}/p2.png?ttl=300",
+        ]
+
+    def test_skips_pdf_paths(self, client, fake_supabase, auth_headers, test_user_id):
+        row = _seed_scan(
+            fake_supabase,
+            str(test_user_id),
+            image_paths=[f"{test_user_id}/doc.pdf", f"{test_user_id}/page.jpg"],
+        )
+
+        r = client.get(f"/scans/{row['id']}/image-urls", headers=auth_headers)
+
+        assert r.status_code == 200
+        assert r.json()["urls"] == [f"https://fake-storage/{test_user_id}/page.jpg?ttl=300"]
+
+    def test_cant_access_others(self, client, fake_supabase, auth_headers):
+        row = _seed_scan(fake_supabase, "99999999-9999-9999-9999-999999999999")
+        r = client.get(f"/scans/{row['id']}/image-urls", headers=auth_headers)
+        assert r.status_code == 404
+
+
 class TestDeleteScan:
     def test_delete(self, client, fake_supabase, auth_headers, test_user_id):
         row = _seed_scan(fake_supabase, str(test_user_id))

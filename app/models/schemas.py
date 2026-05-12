@@ -154,6 +154,10 @@ class ScanResponse(_Base):
     created_at: datetime
 
 
+class ScanImageUrlsResponse(_Base):
+    urls: list[str]
+
+
 class ScanListItem(_Base):
     id: UUID
     category: DocumentCategory | None = None
