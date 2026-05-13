@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "meta": {
     "project": "Jasně backend",
-    "snapshot_date": "2026-05-02",
+    "snapshot_date": "2026-05-12",
     "live_url": "https://jasne-backend-production.up.railway.app",
     "repo": "https://github.com/Fleeploed/jasne-backend",
     "default_branch": "develop",
@@ -45,7 +45,7 @@
       "workflow": ".github/workflows/ci.yml",
       "stages": [
         "lint (ruff)",
-        "test 3.11 + 3.12 (pytest, 203 tests)",
+        "test 3.11 + 3.12 (pytest, 206 tests)",
         "build & push Docker (GHCR)",
         "deploy → staging (Railway)",
         "manual Railway production deploy from develop"
@@ -179,8 +179,8 @@
     "testing": {
       "unit_tests": {
         "framework": "pytest + pytest-asyncio",
-        "count": 203,
-        "passing": 203,
+        "count": 206,
+        "passing": 206,
         "coverage_percent": 87,
         "test_files": [
           "test_auth.py", "test_embeddings.py", "test_explain.py",
@@ -327,12 +327,20 @@
     { "id": "infra-5", "title": "UptimeRobot keyword monitor (5 min, status:ok)", "status": "done" },
     { "id": "infra-6", "title": "Supabase migrations 0001-0005", "status": "done" },
     { "id": "infra-7", "title": "Postman collection (26 requests, 7 folders)", "status": "done" },
-    { "id": "infra-8", "title": "203 unit tests passing", "status": "done" },
+    { "id": "infra-8", "title": "206 unit tests passing", "status": "done" },
     { "id": "infra-9", "title": "E2E tested against live with real document", "status": "done" },
     { "id": "be-21", "title": "PDF scan input support (render PDF pages to images before OpenAI Vision)", "status": "done" },
     { "id": "be-22", "title": "Streaming scan endpoint (/scans/stream) with progressive status events", "status": "done" },
     { "id": "rag-1", "title": "cizinecka RAG loaded with OAMP office addresses/hours in cs/en/ru/uk", "status": "done" },
-    { "id": "rag-2", "title": "Chat RAG exact-address retrieval with language priority", "status": "done" }
+    { "id": "rag-2", "title": "Chat RAG exact-address retrieval with language priority", "status": "done" },
+    { "id": "be-23", "title": "Relax OCR quality gate — block only on empty text, not low confidence", "status": "done" },
+    { "id": "be-24", "title": "Isolate scan side-effects (deadlines + chat seed) so partial failure never fails the scan response", "status": "done" },
+    { "id": "be-25", "title": "Fix TOCTOU race in usage_limits init with upsert + ignore_duplicates", "status": "done" },
+    { "id": "be-26", "title": "RevenueCat webhook: call _ensure_profile before update so plan lands even before auth trigger fires", "status": "done" },
+    { "id": "be-27", "title": "Validate DeadlineUpdate.reminder_days (non-negative, deduplicated, sorted)", "status": "done" },
+    { "id": "be-28", "title": "Add _request_id_for helper and include request_id in all OpenAI exception handler responses", "status": "done" },
+    { "id": "be-29", "title": "Add upsert support to FakeSupabase in tests/conftest.py", "status": "done" },
+    { "id": "infra-10", "title": "Frontend repo created (Fleeploed/jasne-frontend) and all screens pushed to GitHub", "status": "done" }
   ],
 
   "pending": {
@@ -414,28 +422,32 @@
       {
         "id": "mobile-todo-1",
         "title": "Expo + EAS Build setup",
-        "priority": "blocked-by-mobile-team",
-        "details": "TypeScript + Expo Router + NativeWind + react-native-document-scanner-plugin"
+        "priority": "in-progress",
+        "details": "Repo live at Fleeploed/jasne-frontend. Core screens implemented. iOS simulator tested. EAS production build pending Apple Developer Program enrollment."
       },
       {
         "id": "mobile-todo-2",
         "title": "Chat-style UI (list of scans + thread per scan)",
-        "priority": "blocked-by-mobile-team"
+        "priority": "done",
+        "details": "ScanListScreen + ChatThreadScreen with SSE streaming, result card, document image preview."
       },
       {
         "id": "mobile-todo-3",
         "title": "Onboarding 6 screens (welcome → language → first scan → result → register → push)",
-        "priority": "blocked-by-mobile-team"
+        "priority": "high",
+        "details": "Auth screens done (email/password + Google OAuth + password reset). Full onboarding flow deferred."
       },
       {
         "id": "mobile-todo-4",
         "title": "RevenueCat client integration",
-        "priority": "blocked-by-mobile-team"
+        "priority": "medium",
+        "details": "PaywallSheet component scaffolded. RevenueCat SDK wiring and offering fetch pending."
       },
       {
         "id": "mobile-todo-5",
         "title": "Expo Notifications wiring (token saved to profile, foreground handling)",
-        "priority": "blocked-by-mobile-team"
+        "priority": "high",
+        "details": "Depends on be-todo-4 (push scheduler). Token registration and foreground handler not yet wired."
       }
     ],
     "monetization": [
