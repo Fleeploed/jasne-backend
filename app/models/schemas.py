@@ -58,6 +58,11 @@ class ProfileResponse(_Base):
     language: UserLanguage
     has_datova_schranka: bool
     plan: UserPlan = "free"
+    # Subscription details mirrored from RevenueCat. Populated by the
+    # webhook handler; `None` for users who never subscribed.
+    subscription_product_id: str | None = None
+    subscription_expires_at: datetime | None = None
+    subscription_will_renew: bool = False
     created_at: datetime
     updated_at: datetime
 
