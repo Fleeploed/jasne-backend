@@ -1,0 +1,166 @@
+# UI shell strings — not content, but localized labels for fixed UI elements
+# that don't belong in any individual category/guide YAML.
+#
+# Adding a new quick_action / useful_action key means a new entry here +
+# a new key in the router's hardcoded list of supported keys.
+
+translations:
+  cs:
+    quick_actions:
+      check_status:
+        title: "Zkontrolovat stav řízení"
+        subtitle: "OAMP, finanční úřad, soud"
+      prepare_documents:
+        title: "Jaké dokumenty si připravit"
+        subtitle: "Pro úřady, banku, lékaře"
+      understand_letter:
+        title: "Co znamená tento dopis?"
+        subtitle: "Vyfoťte ho, vysvětlíme krok za krokem"
+    scan_cta:
+      title: "Máte dokument v ruce?"
+      subtitle: "Vyfoťte ho a Jasně vám vysvětlí, co dělat dál — krok za krokem."
+      primary_button: "Skenovat dokument"
+      helper_text: "Funguje pro úřední dopisy, smlouvy, faktury a další."
+      pro_hint: "S Pro vám Jasně připomene 30 / 14 / 7 / 1 den před termínem."
+    useful_actions:
+      scan_oamp_letter:
+        title: "Naskenovat dopis z OAMP"
+        subtitle: "Získat vysvětlení během minuty"
+      add_deadline_manual:
+        title: "Přidat termín ručně"
+        subtitle: "Pokud ho zatím nemáte v dokumentu"
+      open_deadlines:
+        title: "Otevřít moje termíny"
+        subtitle: "Vše, co je v plánu"
+      scan_tax_letter:
+        title: "Naskenovat dopis z FÚ"
+        subtitle: "Pochopte termín a sumu"
+      scan_bill:
+        title: "Naskenovat fakturu"
+        subtitle: "Termín a kontrola sumy"
+      scan_contract:
+        title: "Naskenovat smlouvu"
+        subtitle: "Klíčové termíny a rizika"
+      open_help_center:
+        title: "Otevřít centrum nápovědy"
+        subtitle: "Procházet všechny návody"
+
+  ru:
+    quick_actions:
+      check_status:
+        title: "Проверить статус заявления"
+        subtitle: "OAMP, налоговая, суд"
+      prepare_documents:
+        title: "Какие документы подготовить"
+        subtitle: "Для ведомств, банка, врача"
+      understand_letter:
+        title: "Что значит это письмо?"
+        subtitle: "Сфотографируйте, объясним по шагам"
+    scan_cta:
+      title: "Есть документ на руках?"
+      subtitle: "Сфотографируйте — Jasně объяснит, что делать дальше, шаг за шагом."
+      primary_button: "Сканировать документ"
+      helper_text: "Работает для официальных писем, договоров, счетов и других."
+      pro_hint: "С Pro Jasně напомнит за 30 / 14 / 7 / 1 день."
+    useful_actions:
+      scan_oamp_letter:
+        title: "Сканировать письмо OAMP"
+        subtitle: "Получить объяснение за минуту"
+      add_deadline_manual:
+        title: "Добавить срок вручную"
+        subtitle: "Если его пока нет в документе"
+      open_deadlines:
+        title: "Открыть мои сроки"
+        subtitle: "Всё что в плане"
+      scan_tax_letter:
+        title: "Сканировать письмо налоговой"
+        subtitle: "Понять срок и сумму"
+      scan_bill:
+        title: "Сканировать счёт"
+        subtitle: "Срок и проверка суммы"
+      scan_contract:
+        title: "Сканировать договор"
+        subtitle: "Ключевые сроки и риски"
+      open_help_center:
+        title: "Открыть центр помощи"
+        subtitle: "Просмотреть все гайды"
+
+  en:
+    quick_actions:
+      check_status:
+        title: "Check application status"
+        subtitle: "OAMP, tax office, court"
+      prepare_documents:
+        title: "What documents to prepare"
+        subtitle: "For offices, bank, doctor"
+      understand_letter:
+        title: "What does this letter mean?"
+        subtitle: "Photograph it, we'll explain step by step"
+    scan_cta:
+      title: "Have a document in hand?"
+      subtitle: "Take a photo — Jasně will explain what to do next, step by step."
+      primary_button: "Scan document"
+      helper_text: "Works for official letters, contracts, invoices and more."
+      pro_hint: "With Pro, Jasně reminds you 30 / 14 / 7 / 1 day in advance."
+    useful_actions:
+      scan_oamp_letter:
+        title: "Scan an OAMP letter"
+        subtitle: "Get an explanation in a minute"
+      add_deadline_manual:
+        title: "Add a deadline manually"
+        subtitle: "If it isn't on a document yet"
+      open_deadlines:
+        title: "Open my deadlines"
+        subtitle: "Everything that's scheduled"
+      scan_tax_letter:
+        title: "Scan a tax-office letter"
+        subtitle: "Understand the deadline and amount"
+      scan_bill:
+        title: "Scan an invoice"
+        subtitle: "Deadline and amount check"
+      scan_contract:
+        title: "Scan a contract"
+        subtitle: "Key dates and risks"
+      open_help_center:
+        title: "Open the Help center"
+        subtitle: "Browse all guides"
+
+  uk:
+    quick_actions:
+      check_status:
+        title: "Перевірити статус заяви"
+        subtitle: "OAMP, податкова, суд"
+      prepare_documents:
+        title: "Які документи підготувати"
+        subtitle: "Для установ, банку, лікаря"
+      understand_letter:
+        title: "Що означає цей лист?"
+        subtitle: "Сфотографуйте — пояснимо покроково"
+    scan_cta:
+      title: "Маєте документ у руках?"
+      subtitle: "Сфотографуйте — Jasně пояснить, що робити далі, покроково."
+      primary_button: "Сканувати документ"
+      helper_text: "Працює для офіційних листів, договорів, рахунків та інших."
+      pro_hint: "З Pro Jasně нагадає за 30 / 14 / 7 / 1 день до терміну."
+    useful_actions:
+      scan_oamp_letter:
+        title: "Сканувати лист OAMP"
+        subtitle: "Отримати пояснення за хвилину"
+      add_deadline_manual:
+        title: "Додати термін вручну"
+        subtitle: "Якщо його ще немає в документі"
+      open_deadlines:
+        title: "Відкрити мої терміни"
+        subtitle: "Все, що заплановано"
+      scan_tax_letter:
+        title: "Сканувати лист податкової"
+        subtitle: "Зрозуміти термін і суму"
+      scan_bill:
+        title: "Сканувати рахунок"
+        subtitle: "Термін та перевірка суми"
+      scan_contract:
+        title: "Сканувати договір"
+        subtitle: "Ключові терміни та ризики"
+      open_help_center:
+        title: "Відкрити центр допомоги"
+        subtitle: "Переглянути всі інструкції"

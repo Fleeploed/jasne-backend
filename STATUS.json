@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "meta": {
     "project": "Jasně backend",
-    "snapshot_date": "2026-05-12",
+    "snapshot_date": "2026-05-17",
     "live_url": "https://jasne-backend-production.up.railway.app",
     "repo": "https://github.com/Fleeploed/jasne-backend",
     "default_branch": "develop",
@@ -106,7 +106,7 @@
         { "method": "PUT", "path": "/profile", "auth": true, "note": "plan field NOT updatable here (RevenueCat webhook)" }
       ],
       "webhooks": [
-        { "method": "POST", "path": "/webhooks/revenuecat", "auth": "RevenueCat Authorization header", "purpose": "sync RevenueCat entitlement to profiles.plan" }
+        { "method": "POST", "path": "/webhooks/revenuecat", "auth": "RevenueCat Authorization header", "purpose": "sync RevenueCat entitlement → profiles.plan + subscription_product_id/expires_at/will_renew; dedupes by event_id in revenuecat_events; handles TEST/TRANSFER/REFUND/SUBSCRIPTION_PAUSED/CANCELLATION/BILLING_ISSUE" }
       ],
       "limits": [
         { "method": "GET", "path": "/limits", "auth": true, "purpose": "current usage vs plan caps (mobile gates UI)" },

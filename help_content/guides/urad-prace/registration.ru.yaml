@@ -1,0 +1,22 @@
+slug: registration
+category: urad-prace
+language: ru
+published: true
+title: "Регистрация на Úřad práce"
+subtitle: "Как стать соискателем работы"
+short_summary: "Что нужно для постановки на учёт после потери работы или окончания контракта."
+keywords:
+  - úřad práce
+  - регистрация
+  - безработица
+  - nezaměstnanost
+sections:
+  - type: text
+    title: "Когда регистрироваться"
+    body: "В течение 3 рабочих дней после окончания трудового договора, чтобы получить право на podpora v nezaměstnanosti с первого дня без перерыва в страховке."
+
+  - type: cta
+    title: "Что дальше"
+    actions:
+      - add_deadline_manual
+      - open_help_center

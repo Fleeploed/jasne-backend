@@ -1,0 +1,23 @@
+slug: danove-priznani-basics
+category: taxes
+language: ru
+published: true
+title: "Daňové přiznání: основы"
+subtitle: "Кто, когда и как подаёт"
+short_summary: "Главное о подаче налоговой декларации в Чехии для физлиц и OSVČ."
+keywords:
+  - daně
+  - daňové přiznání
+  - декларация
+  - OSVČ
+  - finanční úřad
+sections:
+  - type: text
+    title: "Кто обязан подавать"
+    body: "OSVČ — обязательно каждый год. Сотрудники с одним работодателем обычно нет (работодатель делает roční zúčtování). Если был доход больше 6 000 Kč из других источников за год — обязательно."
+
+  - type: cta
+    title: "Что дальше"
+    actions:
+      - scan_tax_letter
+      - open_help_center

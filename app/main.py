@@ -12,8 +12,9 @@ from fastapi.responses import JSONResponse
 
 from app.config import get_settings
 from app.models.schemas import DeepHealthResponse, DepStatus, HealthResponse
-from app.routers import chat, deadlines, limits, profile, scan, webhooks
+from app.routers import chat, deadlines, help as help_router, limits, profile, scan, webhooks
 from app.services.embeddings import close_openai_client, get_openai_client
+from app.services.help_loader import load_help_content
 from app.services.rag import close_supabase, get_supabase, init_supabase
 
 settings = get_settings()
@@ -29,6 +30,9 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     # --- startup
     logger.info("Starting Jasně API env=%s", settings.environment)
+    # Help content is loaded before Supabase init so a bad YAML aborts the
+    # deploy with a clear error before any DB connections are opened.
+    load_help_content()
     await init_supabase()
     yield
     # --- shutdown
@@ -80,6 +84,7 @@ app.include_router(deadlines.router)
 app.include_router(profile.router)
 app.include_router(limits.router)  # /limits — usage vs plan caps
 app.include_router(webhooks.router)
+app.include_router(help_router.router)  # /help — static content from YAML
 
 
 # ---------------------------------------------------------------------------
