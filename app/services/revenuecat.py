@@ -289,16 +289,20 @@ async def record_event(
     (returns silently — the PK constraint protects us)."""
     supabase = await get_supabase()
     try:
-        await supabase.table("revenuecat_events").insert(
-            {
-                "event_id": event_id,
-                "event_type": event_type,
-                "user_id": str(user_id) if user_id else None,
-                "app_user_id": app_user_id,
-                "raw_payload": raw_payload,
-                "resulting_plan": resulting_plan,
-            }
-        ).execute()
+        await (
+            supabase.table("revenuecat_events")
+            .insert(
+                {
+                    "event_id": event_id,
+                    "event_type": event_type,
+                    "user_id": str(user_id) if user_id else None,
+                    "app_user_id": app_user_id,
+                    "raw_payload": raw_payload,
+                    "resulting_plan": resulting_plan,
+                }
+            )
+            .execute()
+        )
     except Exception:  # noqa: BLE001 — log and continue, dedup is best-effort
         logger.warning("Failed to record revenuecat_event event_id=%s", event_id, exc_info=True)
 

@@ -13,7 +13,6 @@ import pytest
 
 from app.services.help_loader import HelpContentError, load_help_content
 
-
 # ---------------------------------------------------------------------------
 # Helpers — build a valid minimal content tree, then mutate
 # ---------------------------------------------------------------------------
@@ -67,7 +66,13 @@ VALID_GUIDE = dedent(
 )
 
 
-def _build_tree(root: Path, *, categories: str = VALID_CATEGORIES, ui: str = VALID_UI_STRINGS, guides: dict[str, str] | None = None) -> Path:
+def _build_tree(
+    root: Path,
+    *,
+    categories: str = VALID_CATEGORIES,
+    ui: str = VALID_UI_STRINGS,
+    guides: dict[str, str] | None = None,
+) -> Path:
     """Write a content tree under `root` and return root."""
     (root / "categories.yaml").write_text(categories, encoding="utf-8")
     (root / "help_ui_strings.yaml").write_text(ui, encoding="utf-8")

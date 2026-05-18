@@ -333,9 +333,7 @@ class TestRevenueCatWebhook:
 
         assert r.status_code == 502
 
-    def test_refund_event_drops_plan_to_free(
-        self, client, fake_supabase, test_user_id, monkeypatch
-    ):
+    def test_refund_event_drops_plan_to_free(self, client, fake_supabase, test_user_id, monkeypatch):
         _seed_profile(fake_supabase, str(test_user_id), plan="pro")
         monkeypatch.setattr("app.routers.webhooks.get_settings", lambda: _settings())
         _patch_dedup(monkeypatch)

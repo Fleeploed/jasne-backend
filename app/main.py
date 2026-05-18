@@ -12,7 +12,8 @@ from fastapi.responses import JSONResponse
 
 from app.config import get_settings
 from app.models.schemas import DeepHealthResponse, DepStatus, HealthResponse
-from app.routers import chat, deadlines, help as help_router, limits, profile, scan, webhooks
+from app.routers import chat, deadlines, limits, profile, scan, webhooks
+from app.routers import help as help_router
 from app.services.embeddings import close_openai_client, get_openai_client
 from app.services.help_loader import load_help_content
 from app.services.rag import close_supabase, get_supabase, init_supabase

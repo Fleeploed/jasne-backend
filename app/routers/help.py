@@ -275,9 +275,7 @@ def _ordered_guide_cards(order: list[str], guides) -> list[HelpGuideCard]:
     return out
 
 
-def _resolve_useful_actions(
-    content: HelpContent, override, language: HelpLanguage
-) -> list[HelpUsefulAction]:
+def _resolve_useful_actions(content: HelpContent, override, language: HelpLanguage) -> list[HelpUsefulAction]:
     """Per-category override wins; otherwise the default block in code."""
     ui = _resolve_ui(content, language)
     raw_actions: list[dict[str, object]] = (
@@ -291,9 +289,7 @@ def _resolve_useful_actions(
         key = str(entry["key"])
         strings = ui.useful_actions.get(key)
         if strings is None:
-            logger.warning(
-                "Useful action '%s' has no string for language=%s — skipped", key, language
-            )
+            logger.warning("Useful action '%s' has no string for language=%s — skipped", key, language)
             continue
         out.append(
             HelpUsefulAction(

@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from app.models.help_schemas import (
     HelpCategory,
     HelpCategoryFallback,
@@ -18,7 +16,6 @@ from app.models.help_schemas import (
 )
 from app.services.help_loader import HelpContent
 from app.services.help_search import normalize, search
-
 
 # ---------------------------------------------------------------------------
 # Fixture factory
@@ -121,9 +118,7 @@ def test_title_substring_match():
 
 
 def test_keyword_match():
-    content = _content_with(
-        _guide("g1", "visa-pobyt", title="Что-то другое", keywords=["OAMP", "pobyt"])
-    )
+    content = _content_with(_guide("g1", "visa-pobyt", title="Что-то другое", keywords=["OAMP", "pobyt"]))
     results = search(content, "oamp", "ru")
     assert len(results) == 1
     assert results[0].slug == "g1"
@@ -232,10 +227,7 @@ def test_results_capped_at_max():
     """20 result limit."""
     from app.services.help_search import MAX_RESULTS
 
-    guides = [
-        _guide(f"g{i}", "visa-pobyt", title=f"Pobyt {i}", keywords=["pobyt"])
-        for i in range(30)
-    ]
+    guides = [_guide(f"g{i}", "visa-pobyt", title=f"Pobyt {i}", keywords=["pobyt"]) for i in range(30)]
     content = _content_with(*guides)
     results = search(content, "pobyt", "ru")
     # 30 guides + 1 category that has pobyt in title = up to 31; capped at 20

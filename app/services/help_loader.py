@@ -76,12 +76,10 @@ class HelpContent:
                     break  # one slot per slug — same guide in other langs
         return out
 
-    def published_guides_in_language(
-        self, category_slug: str, language: HelpLanguage
-    ) -> list[HelpGuide]:
+    def published_guides_in_language(self, category_slug: str, language: HelpLanguage) -> list[HelpGuide]:
         """Published guides in the requested language only. No fallback to cs."""
         out: list[HelpGuide] = []
-        for slug, langs in self.guides_by_slug.items():
+        for _slug, langs in self.guides_by_slug.items():
             guide = langs.get(language)
             if guide and guide.category == category_slug and guide.published:
                 out.append(guide)
@@ -98,8 +96,7 @@ _help_content: HelpContent | None = None
 def get_help_content() -> HelpContent:
     if _help_content is None:
         raise RuntimeError(
-            "Help content has not been loaded. "
-            "Did the FastAPI lifespan run load_help_content()?"
+            "Help content has not been loaded. Did the FastAPI lifespan run load_help_content()?"
         )
     return _help_content
 
@@ -157,8 +154,7 @@ def load_help_content(root: Path | None = None) -> HelpContent:
             langs = guides_by_slug.setdefault(guide.slug, {})
             if guide.language in langs:
                 raise HelpContentError(
-                    f"Duplicate guide '{guide.slug}' in language '{guide.language}' "
-                    f"({guide_file})."
+                    f"Duplicate guide '{guide.slug}' in language '{guide.language}' ({guide_file})."
                 )
             langs[guide.language] = guide
 
@@ -190,9 +186,7 @@ def _read_yaml(path: Path) -> Any:
 def _load_categories(path: Path) -> list[HelpCategory]:
     raw = _read_yaml(path)
     if not isinstance(raw, list):
-        raise HelpContentError(
-            f"categories.yaml must be a top-level list, got {type(raw).__name__}"
-        )
+        raise HelpContentError(f"categories.yaml must be a top-level list, got {type(raw).__name__}")
 
     out: list[HelpCategory] = []
     seen_slugs: set[str] = set()
@@ -208,13 +202,9 @@ def _load_categories(path: Path) -> list[HelpCategory]:
 
         # cs is the canonical fallback — every category needs it.
         if "cs" not in category.translations:
-            raise HelpContentError(
-                f"Category '{category.slug}' is missing the required 'cs' translation."
-            )
+            raise HelpContentError(f"Category '{category.slug}' is missing the required 'cs' translation.")
         if "cs" not in category.fallback:
-            raise HelpContentError(
-                f"Category '{category.slug}' is missing the required 'cs' fallback."
-            )
+            raise HelpContentError(f"Category '{category.slug}' is missing the required 'cs' fallback.")
         out.append(category)
     return out
 
@@ -241,18 +231,12 @@ def _load_guide(path: Path, category_slugs: set[str]) -> HelpGuide:
     # Filename convention: <slug>.<lang>.yaml — verify language matches.
     name_parts = path.stem.split(".")
     if len(name_parts) != 2:
-        raise HelpContentError(
-            f"Guide filename must be '<slug>.<lang>.yaml', got '{path.name}'"
-        )
+        raise HelpContentError(f"Guide filename must be '<slug>.<lang>.yaml', got '{path.name}'")
     file_slug, file_lang = name_parts
     if file_slug != guide.slug:
-        raise HelpContentError(
-            f"Guide slug mismatch: file '{path.name}' has slug='{guide.slug}'"
-        )
+        raise HelpContentError(f"Guide slug mismatch: file '{path.name}' has slug='{guide.slug}'")
     if file_lang != guide.language:
-        raise HelpContentError(
-            f"Guide language mismatch: file '{path.name}' has language='{guide.language}'"
-        )
+        raise HelpContentError(f"Guide language mismatch: file '{path.name}' has language='{guide.language}'")
 
     if guide.category not in category_slugs:
         raise HelpContentError(

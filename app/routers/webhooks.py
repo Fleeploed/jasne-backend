@@ -34,7 +34,7 @@ def _parse_user_id(app_user_id: str | None) -> UUID | None:
 
 
 @router.post("/revenuecat", status_code=status.HTTP_200_OK)
-async def revenuecat_webhook(
+async def revenuecat_webhook(  # noqa: C901
     request: Request,
     authorization: str | None = Header(default=None),
 ) -> dict[str, str]:
@@ -100,7 +100,11 @@ async def revenuecat_webhook(
                 raw_payload=payload,
                 resulting_plan=None,
             )
-        return {"status": "ok", "transferred_from": str(len(transferred_from)), "transferred_to": str(len(transferred_to))}
+        return {
+            "status": "ok",
+            "transferred_from": str(len(transferred_from)),
+            "transferred_to": str(len(transferred_to)),
+        }
 
     # ---------- 5. Standard events ----------
     if not app_user_id:

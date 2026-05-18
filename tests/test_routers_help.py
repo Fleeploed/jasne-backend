@@ -27,7 +27,6 @@ from app.models.help_schemas import (
 )
 from app.services.help_loader import HelpContent
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -300,8 +299,6 @@ def test_search_empty_returns_empty_results(client, auth_headers):
 
 
 def test_search_no_matches_returns_zero(client, auth_headers):
-    r = client.get(
-        "/help/search?q=definitelynothingmatchesthis&language=ru", headers=auth_headers
-    )
+    r = client.get("/help/search?q=definitelynothingmatchesthis&language=ru", headers=auth_headers)
     assert r.status_code == 200
     assert r.json()["results_count"] == 0

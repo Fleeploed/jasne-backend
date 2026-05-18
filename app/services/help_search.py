@@ -8,7 +8,7 @@ that. Diacritic-insensitive ("rizeni" matches "řízení").
 from __future__ import annotations
 
 import unicodedata
-from typing import Iterable
+from collections.abc import Iterable
 
 from app.models.help_schemas import (
     HelpCategory,
