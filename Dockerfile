@@ -33,6 +33,7 @@ COPY --from=builder /install /usr/local
 
 # Copy source
 COPY --chown=app:app app ./app
+COPY --chown=app:app help_content ./help_content
 COPY --chown=app:app supabase ./supabase
 
 USER app
