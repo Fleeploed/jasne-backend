@@ -1,0 +1,139 @@
+# Help categories — ordered list. Position here = display order in mobile UI.
+# Each category needs at minimum a `cs` translation and `cs` fallback.
+# `ru` provided alongside since MVP launches in Russian-speaking community.
+# Other languages fall back to `cs`.
+
+- slug: visa-pobyt
+  icon: passport
+  guides_order:
+    - check-status
+    - extend-pobyt
+  translations:
+    cs:
+      title: "Vízum a pobyt"
+      subtitle: "OAMP, prodloužení, povolení"
+      badge: "Nejčastější"
+      hero_title: "Pobyt v Česku"
+      hero_text: "Praktické návody pro práci s OAMP — od kontroly stavu řízení po prodloužení povolení."
+    ru:
+      title: "Виза и pobyt"
+      subtitle: "OAMP, продление, разрешения"
+      badge: "Самое частое"
+      hero_title: "Жизнь в Чехии"
+      hero_text: "Гайды по работе с OAMP — от проверки статуса заявления до продления pobyt."
+  fallback:
+    cs:
+      title: "Zatím prázdné"
+      text: "Návody k OAMP a pobytu připravujeme."
+    ru:
+      title: "Раздел в работе"
+      text: "Гайды по визе и pobyt мы добавим в ближайшее время."
+
+- slug: taxes
+  icon: receipt
+  guides_order:
+    - danove-priznani-basics
+  translations:
+    cs:
+      title: "Daně"
+      subtitle: "Daňové přiznání, DPH, OSVČ"
+      hero_title: "Daňové povinnosti"
+      hero_text: "Co dělat s dopisy z finančního úřadu — termíny, pokuty, postupy."
+    ru:
+      title: "Налоги"
+      subtitle: "Декларация, НДС, OSVČ"
+      hero_title: "Налоговые обязательства"
+      hero_text: "Что делать с письмами от налоговой — сроки, штрафы, действия."
+  fallback:
+    cs:
+      title: "Zatím prázdné"
+      text: "Návody k daním připravujeme."
+    ru:
+      title: "Раздел в работе"
+      text: "Гайды по налогам мы добавим в ближайшее время."
+
+- slug: bills
+  icon: zap
+  translations:
+    cs:
+      title: "Účty a faktury"
+      subtitle: "Elektřina, plyn, voda, internet"
+      hero_title: "Platby za bydlení"
+      hero_text: "Jak číst vyúčtování, řešit upomínky a porovnávat tarify."
+    ru:
+      title: "Счета и платежи"
+      subtitle: "Электричество, газ, вода, интернет"
+      hero_title: "Платежи за жильё"
+      hero_text: "Как читать счета, разбираться с долгами и сравнивать тарифы."
+  fallback:
+    cs:
+      title: "Zatím prázdné"
+      text: "Návody ke službám a fakturám připravujeme."
+    ru:
+      title: "Раздел в работе"
+      text: "Гайды по счетам и тарифам мы добавим в ближайшее время."
+
+- slug: contracts
+  icon: doc
+  translations:
+    cs:
+      title: "Smlouvy"
+      subtitle: "Pronájem, práce, služby"
+      hero_title: "Smlouvy a dohody"
+      hero_text: "Klíčové body smluv — termíny výpovědi, povinnosti, rizika."
+    ru:
+      title: "Договоры"
+      subtitle: "Аренда, работа, услуги"
+      hero_title: "Договоры и соглашения"
+      hero_text: "Ключевые пункты договоров — сроки, расторжение, обязательства."
+  fallback:
+    cs:
+      title: "Zatím prázdné"
+      text: "Návody ke smlouvám připravujeme."
+    ru:
+      title: "Раздел в работе"
+      text: "Гайды по договорам мы добавим в ближайшее время."
+
+- slug: urad-prace
+  icon: briefcase
+  guides_order:
+    - registration
+  translations:
+    cs:
+      title: "Úřad práce"
+      subtitle: "Nezaměstnanost, dávky, podpora"
+      hero_title: "Úřad práce ČR"
+      hero_text: "Registrace, dávky, povinnosti uchazečů o zaměstnání."
+    ru:
+      title: "Биржа труда"
+      subtitle: "Безработица, пособия, поддержка"
+      hero_title: "Úřad práce ČR"
+      hero_text: "Регистрация, пособия и обязанности соискателей."
+  fallback:
+    cs:
+      title: "Zatím prázdné"
+      text: "Návody pro Úřad práce připravujeme."
+    ru:
+      title: "Раздел в работе"
+      text: "Гайды по Úřad práce мы добавим в ближайшее время."
+
+- slug: health-insurance
+  icon: shield
+  translations:
+    cs:
+      title: "Zdravotní pojištění"
+      subtitle: "VZP, pojišťovny, povinnosti"
+      hero_title: "Zdravotní pojištění v ČR"
+      hero_text: "Změna pojišťovny, hlášení změn, povinnosti OSVČ a cizinců."
+    ru:
+      title: "Медстраховка"
+      subtitle: "VZP, страховые, обязанности"
+      hero_title: "Медстраховка в Чехии"
+      hero_text: "Смена страховой, обязательные взносы, особенности для OSVČ и иностранцев."
+  fallback:
+    cs:
+      title: "Zatím prázdné"
+      text: "Návody ke zdravotnímu pojištění připravujeme."
+    ru:
+      title: "Раздел в работе"
+      text: "Гайды по медстраховке мы добавим в ближайшее время."

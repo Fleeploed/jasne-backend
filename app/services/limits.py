@@ -65,35 +65,39 @@ async def _read_row(user_id: UUID, month: str) -> dict | None:
 
 
 async def get_or_init_usage(user_id: UUID, month: str | None = None) -> dict:
-    """Read the current month's row, creating it if missing."""
+    """Read the current month's row, creating it if missing.
+
+    Uses upsert with ignore_duplicates to avoid PK-violation races when two
+    requests arrive before the month's row exists.
+    """
     month = month or current_month()
     row = await _read_row(user_id, month)
     if row is not None:
         return row
 
     supabase = await get_supabase()
-    inserted = (
-        await supabase.table("usage_limits")
-        .insert(
-            {
-                "user_id": str(user_id),
-                "month": month,
-                "scans_count": 0,
-                "questions_per_scan": {},
-            }
+    default_row = {
+        "user_id": str(user_id),
+        "month": month,
+        "scans_count": 0,
+        "questions_per_scan": {},
+    }
+    try:
+        upserted = (
+            await supabase.table("usage_limits")
+            .upsert(default_row, on_conflict="user_id,month", ignore_duplicates=True)
+            .execute()
         )
-        .execute()
-    )
-    return (
-        inserted.data[0]
-        if inserted.data
-        else {
-            "user_id": str(user_id),
-            "month": month,
-            "scans_count": 0,
-            "questions_per_scan": {},
-        }
-    )
+    except Exception:
+        logger.exception("upsert usage_limits failed user_id=%s month=%s", user_id, month)
+        upserted = None
+
+    if upserted and upserted.data:
+        return upserted.data[0]
+
+    # A concurrent request inserted the row first — read it back.
+    row = await _read_row(user_id, month)
+    return row if row is not None else default_row
 
 
 def _looks_like_missing_rpc(exc: Exception, function_name: str) -> bool:

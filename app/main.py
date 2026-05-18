@@ -12,8 +12,9 @@ from fastapi.responses import JSONResponse
 
 from app.config import get_settings
 from app.models.schemas import DeepHealthResponse, DepStatus, HealthResponse
-from app.routers import chat, deadlines, limits, profile, scan, webhooks
+from app.routers import chat, deadlines, help as help_router, limits, profile, scan, webhooks
 from app.services.embeddings import close_openai_client, get_openai_client
+from app.services.help_loader import load_help_content
 from app.services.rag import close_supabase, get_supabase, init_supabase
 
 settings = get_settings()
@@ -29,6 +30,9 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     # --- startup
     logger.info("Starting Jasně API env=%s", settings.environment)
+    # Help content is loaded before Supabase init so a bad YAML aborts the
+    # deploy with a clear error before any DB connections are opened.
+    load_help_content()
     await init_supabase()
     yield
     # --- shutdown
@@ -80,6 +84,7 @@ app.include_router(deadlines.router)
 app.include_router(profile.router)
 app.include_router(limits.router)  # /limits — usage vs plan caps
 app.include_router(webhooks.router)
+app.include_router(help_router.router)  # /help — static content from YAML
 
 
 # ---------------------------------------------------------------------------
@@ -87,9 +92,16 @@ app.include_router(webhooks.router)
 # ---------------------------------------------------------------------------
 
 
+def _request_id_for(request: Request) -> str | None:
+    return getattr(request.state, "request_id", None) or request.headers.get("X-Request-ID")
+
+
 @app.exception_handler(RequestValidationError)
 async def validation_handler(request: Request, exc: RequestValidationError):
-    return JSONResponse(status_code=422, content={"detail": exc.errors()})
+    return JSONResponse(
+        status_code=422,
+        content={"detail": exc.errors(), "request_id": _request_id_for(request)},
+    )
 
 
 @app.exception_handler(openai.RateLimitError)
@@ -97,45 +109,60 @@ async def openai_rate_limit_handler(request: Request, exc: openai.RateLimitError
     logger.error("OpenAI rate limit: %s", exc)
     return JSONResponse(
         status_code=429,
-        content={"detail": "OpenAI quota exceeded — check billing at platform.openai.com"},
+        content={
+            "detail": "OpenAI quota exceeded — check billing at platform.openai.com",
+            "request_id": _request_id_for(request),
+        },
     )
 
 
 @app.exception_handler(openai.APIStatusError)
 async def openai_api_error_handler(request: Request, exc: openai.APIStatusError):
     logger.error("OpenAI API error %s: %s", exc.status_code, exc.message)
-    return JSONResponse(status_code=502, content={"detail": f"OpenAI error: {exc.message}"})
+    return JSONResponse(
+        status_code=502,
+        content={"detail": f"OpenAI error: {exc.message}", "request_id": _request_id_for(request)},
+    )
 
 
 @app.exception_handler(openai.APIConnectionError)
 async def openai_connection_handler(request: Request, exc: openai.APIConnectionError):
     logger.error("OpenAI connection error: %s", exc)
     return JSONResponse(
-        status_code=503, content={"detail": "Could not reach OpenAI — check internet connection"}
+        status_code=503,
+        content={
+            "detail": "Could not reach OpenAI — check internet connection",
+            "request_id": _request_id_for(request),
+        },
     )
 
 
 @app.exception_handler(openai.APITimeoutError)
 async def openai_timeout_handler(request: Request, exc: openai.APITimeoutError):
     logger.error("OpenAI timeout: %s", exc)
-    return JSONResponse(status_code=504, content={"detail": "OpenAI request timed out"})
+    return JSONResponse(
+        status_code=504,
+        content={"detail": "OpenAI request timed out", "request_id": _request_id_for(request)},
+    )
 
 
 @app.exception_handler(ValueError)
 async def value_error_handler(request: Request, exc: ValueError):
     logger.warning("ValueError: %s", exc)
-    return JSONResponse(status_code=422, content={"detail": str(exc)})
+    return JSONResponse(
+        status_code=422,
+        content={"detail": str(exc), "request_id": _request_id_for(request)},
+    )
 
 
 @app.exception_handler(Exception)
 async def unhandled_exception_handler(request: Request, exc: Exception):
     logger.exception("Unhandled error on %s %s", request.method, request.url.path)
-    request_id = getattr(request.state, "request_id", None) or request.headers.get("X-Request-ID")
     return JSONResponse(
         status_code=500,
         content={
             "detail": "Internal server error",
-            "request_id": request_id,
+            "request_id": _request_id_for(request),
         },
     )
 

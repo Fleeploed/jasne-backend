@@ -1,7 +1,9 @@
+import json
 from functools import lru_cache
+from typing import Annotated
 
 from pydantic import Field, field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -9,6 +11,7 @@ class Settings(BaseSettings):
         env_file=".env",
         case_sensitive=False,
         extra="ignore",
+        env_parse_none_str="",
     )
 
     # =====================================================================
@@ -38,6 +41,11 @@ class Settings(BaseSettings):
     # Embeddings for RAG.
     openai_embedding_model: str = "text-embedding-3-small"
     openai_embedding_dims: int = 1536
+
+    # Classifier must return full OCR text for every page. The shared 2k
+    # output cap is too small for normal 3+ page documents and can truncate
+    # JSON, which then looks like a false "unreadable photo" error.
+    openai_classifier_max_output_tokens: int = 8000
 
     # Shared OpenAI client tuning.
     openai_timeout_seconds: float = 60.0
@@ -82,13 +90,24 @@ class Settings(BaseSettings):
     # App
     # =====================================================================
     environment: str = "development"
-    allowed_origins: list[str] = Field(default_factory=lambda: ["*"])
+    allowed_origins: Annotated[list[str], NoDecode] = Field(default_factory=lambda: ["*"])
     log_level: str = "INFO"
 
     @field_validator("allowed_origins", mode="before")
     @classmethod
     def parse_origins(cls, v: object) -> list[str]:
+        if v is None:
+            return ["*"]
         if isinstance(v, str):
+            if not v.strip():
+                return ["*"]
+            if v.strip().startswith("["):
+                try:
+                    parsed = json.loads(v)
+                    if isinstance(parsed, list):
+                        return [str(x).strip() for x in parsed if str(x).strip()]
+                except (json.JSONDecodeError, ValueError):
+                    pass
             return [origin.strip() for origin in v.split(",") if origin.strip()]
         return v  # type: ignore[return-value]
 

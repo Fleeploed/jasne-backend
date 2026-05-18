@@ -58,6 +58,11 @@ class ProfileResponse(_Base):
     language: UserLanguage
     has_datova_schranka: bool
     plan: UserPlan = "free"
+    # Subscription details mirrored from RevenueCat. Populated by the
+    # webhook handler; `None` for users who never subscribed.
+    subscription_product_id: str | None = None
+    subscription_expires_at: datetime | None = None
+    subscription_will_renew: bool = False
     created_at: datetime
     updated_at: datetime
 
@@ -154,6 +159,10 @@ class ScanResponse(_Base):
     created_at: datetime
 
 
+class ScanImageUrlsResponse(_Base):
+    urls: list[str]
+
+
 class ScanListItem(_Base):
     id: UUID
     category: DocumentCategory | None = None
@@ -235,6 +244,15 @@ class DeadlineUpdate(_Base):
     reminder_days: list[int] | None = None
     deadline_type: DeadlineType | None = None
     status: DeadlineStatus | None = None
+
+    @field_validator("reminder_days")
+    @classmethod
+    def reminder_days_positive(cls, v: list[int] | None) -> list[int] | None:
+        if v is None:
+            return v
+        if any(d < 0 for d in v):
+            raise ValueError("reminder_days must be non-negative")
+        return sorted(set(v), reverse=True)
 
 
 class DeadlineResponse(_Base):
