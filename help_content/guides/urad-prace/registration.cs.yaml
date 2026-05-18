@@ -1,0 +1,22 @@
+slug: registration
+category: urad-prace
+language: cs
+published: true
+title: "Registrace na Úřadu práce"
+subtitle: "Jak se stát uchazečem o zaměstnání"
+short_summary: "Co připravit pro registraci po ztrátě práce nebo konci smlouvy."
+keywords:
+  - úřad práce
+  - registrace
+  - nezaměstnanost
+  - podpora
+sections:
+  - type: text
+    title: "Kdy se registrovat"
+    body: "Pokud chcete navázat podporu a zdravotní pojištění bez zbytečné mezery, řešte registraci co nejdříve po skončení práce. V praxi se často uvádí lhůta 3 pracovních dnů od konce zaměstnání."
+
+  - type: cta
+    title: "Co dál"
+    actions:
+      - add_deadline_manual
+      - open_help_center

@@ -1,0 +1,22 @@
+slug: danove-priznani-basics
+category: taxes
+language: cs
+published: true
+title: "Daňové přiznání: základy"
+subtitle: "Kdo, kdy a jak podává"
+short_summary: "Základní orientace v podání daňového přiznání v Česku pro fyzické osoby a OSVČ."
+keywords:
+  - daně
+  - daňové přiznání
+  - OSVČ
+  - finanční úřad
+sections:
+  - type: text
+    title: "Kdo obvykle podává"
+    body: "OSVČ podává daňové přiznání každý rok. Zaměstnanec s jedním zaměstnavatelem ho často nepodává, pokud mu zaměstnavatel dělá roční zúčtování. Pokud máte další příjmy, ověřte si povinnost podat přiznání u finančního úřadu nebo daňového poradce."
+
+  - type: cta
+    title: "Co dál"
+    actions:
+      - scan_tax_letter
+      - open_help_center

@@ -1,0 +1,22 @@
+slug: extend-pobyt
+category: visa-pobyt
+language: cs
+published: true
+title: "Jak prodloužit pobyt"
+subtitle: "Podání žádosti o prodloužení"
+short_summary: "Kdy podat žádost o prodloužení pobytu a jaké dokumenty si připravit."
+keywords:
+  - pobyt
+  - prodloužení
+  - OAMP
+  - žádost
+sections:
+  - type: text
+    title: "Kdy podat žádost"
+    body: "Žádost o prodloužení pobytu se obvykle podává nejdříve 120 dní a nejpozději 14 dní před koncem aktuálního povolení. Podání na poslední chvíli je možné, ale riskantní: pokud v dokumentech chybí příloha, může být málo času na opravu."
+
+  - type: cta
+    title: "Co dál"
+    actions:
+      - scan_oamp_letter
+      - open_help_center

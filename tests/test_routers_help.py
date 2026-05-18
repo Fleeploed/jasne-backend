@@ -245,12 +245,12 @@ def test_guide_returns_full_content(client, auth_headers):
     assert any(s["type"] == "warning" for s in body["sections"])
 
 
-def test_guide_falls_back_to_seed_guide_language(client, auth_headers):
+def test_guide_returns_seed_czech_content(client, auth_headers):
     r = client.get("/help/guides/check-status?language=cs", headers=auth_headers)
     assert r.status_code == 200, r.text
     body = r.json()
-    assert body["language"] == "ru"
-    assert body["fallback_language"] == "ru"
+    assert body["language"] == "cs"
+    assert body["fallback_language"] is None
 
 
 def test_guide_falls_back_to_other_language(client, auth_headers, patched_content):

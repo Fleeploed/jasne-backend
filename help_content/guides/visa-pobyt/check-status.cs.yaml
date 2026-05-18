@@ -1,0 +1,53 @@
+slug: check-status
+category: visa-pobyt
+language: cs
+published: true
+title: "Jak zkontrolovat stav žádosti (OAMP)"
+subtitle: "Stav řízení u pobytu"
+short_summary: "Kde najít číslo žádosti, jak otevřít online kontrolu stavu řízení a co dělat, když se stav dlouho nemění."
+keywords:
+  - OAMP
+  - pobyt
+  - stav řízení
+  - výzva
+  - řízení
+  - povolení
+official_source_url: "https://frs.gov.cz/informace-o-stavu-rizeni"
+sections:
+  - type: text
+    title: "Stručně"
+    body: "OAMP (Odbor azylové a migrační politiky) je část Ministerstva vnitra ČR, která řeší žádosti o pobyt. Po podání žádosti si stav řízení můžete ověřit online podle čísla jednacího. Kontrola je zdarma a dostupná kdykoliv."
+
+  - type: steps
+    title: "Co udělat"
+    items:
+      - "Najděte číslo žádosti. Bývá na potvrzení o podání žádosti nebo na dokumentu k vízu či biometrii."
+      - "Otevřete frs.gov.cz a sekci Informace o stavu řízení."
+      - "Zadejte číslo ve formátu OAM-XXXXX-XX/AA-YYYY a datum narození."
+      - "Přečtěte aktuální stav: Přijato, V řízení, Přerušeno, Rozhodnuto nebo Doručeno."
+
+  - type: checklist
+    title: "Co si připravit"
+    items:
+      - "Pas"
+      - "Číslo žádosti nebo číslo jednací"
+      - "Přístup k internetu"
+
+  - type: text
+    title: "Co znamenají stavy"
+    body: "Přijato znamená, že žádost byla přijata. V řízení znamená, že se žádost zpracovává. Přerušeno obvykle znamená, že úřad čeká na doplnění dokumentů. Rozhodnuto znamená, že rozhodnutí už existuje. Doručeno znamená, že rozhodnutí bylo doručeno nebo je připravené k převzetí."
+
+  - type: warning
+    title: "Důležité"
+    body: "Jasně se nepřipojuje ke státním systémům a nemůže ověřit stav za vás. Ukazujeme, kde stav zkontrolovat a jak číst výsledek. Všechny oficiální žádosti a rozhodnutí zůstávají na straně OAMP."
+
+  - type: text
+    title: "Když se stav dlouho nemění"
+    body: "Typické lhůty se liší podle typu žádosti. Pokud se stav dlouho nemění nebo máte výzvu k doplnění dokumentů, zkontrolujte termín a postupujte podle dopisu. U složitých případů zvažte konzultaci s odborníkem na migrační právo."
+
+  - type: cta
+    title: "Co dál"
+    actions:
+      - scan_oamp_letter
+      - add_deadline_manual
+      - open_deadlines
