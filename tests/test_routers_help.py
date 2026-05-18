@@ -197,6 +197,13 @@ def test_category_returns_guides(client, auth_headers):
     assert len(body["useful_actions"]) >= 1
 
 
+def test_category_falls_back_to_seed_guide_language(client, auth_headers):
+    r = client.get("/help/categories/visa-pobyt?language=cs", headers=auth_headers)
+    assert r.status_code == 200, r.text
+    guide_slugs = {g["slug"] for g in r.json()["guides"]}
+    assert "check-status" in guide_slugs
+
+
 def test_category_with_no_guides_returns_fallback(client, auth_headers):
     """health-insurance has no guides in the MVP seed."""
     r = client.get("/help/categories/health-insurance?language=ru", headers=auth_headers)
@@ -236,6 +243,14 @@ def test_guide_returns_full_content(client, auth_headers):
     assert len(body["sections"]) >= 1
     assert any(s["type"] == "text" for s in body["sections"])
     assert any(s["type"] == "warning" for s in body["sections"])
+
+
+def test_guide_falls_back_to_seed_guide_language(client, auth_headers):
+    r = client.get("/help/guides/check-status?language=cs", headers=auth_headers)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["language"] == "ru"
+    assert body["fallback_language"] == "ru"
 
 
 def test_guide_falls_back_to_other_language(client, auth_headers, patched_content):

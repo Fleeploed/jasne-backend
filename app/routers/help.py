@@ -20,6 +20,7 @@ from app.models.help_schemas import (
     HelpCategoryHero,
     HelpCategoryResponse,
     HelpFallbackBlock,
+    HelpGuide,
     HelpGuideCard,
     HelpGuideCategoryRef,
     HelpGuideResponse,
@@ -57,6 +58,7 @@ _DEFAULT_USEFUL_ACTIONS: list[dict[str, object]] = [
 # Order in which categories appear in the Home screen "popular" carousel.
 # Falls back to file order if not listed here.
 _POPULAR_CATEGORY_ORDER: tuple[str, ...] = ("visa-pobyt", "taxes", "bills", "urad-prace")
+_GUIDE_FALLBACK_ORDER: tuple[HelpLanguage, ...] = ("cs", "ru", "en", "uk")
 
 
 # ---------------------------------------------------------------------------
@@ -118,19 +120,8 @@ async def help_category(
     translation = category.translations.get(language) or category.translations["cs"]
     fallback_translation = category.fallback.get(language) or category.fallback["cs"]
 
-    # Prefer guides in the requested language; if none in any language,
-    # show the fallback block.
-    guides_in_language = content.published_guides_in_language(slug, language)
-    if not guides_in_language:
-        # Try cs as a secondary fallback before declaring "empty".
-        guides_in_language = content.published_guides_in_language(slug, "cs")
-
-    # Any published guide in any language? If not — render fallback block.
-    has_any_published = any(
-        guide.category == slug and guide.published
-        for langs in content.guides_by_slug.values()
-        for guide in langs.values()
-    )
+    guides_in_language = _published_guides_with_fallback(content, slug, language)
+    has_any_published = bool(guides_in_language)
     is_completely_empty = not has_any_published
 
     ordered_cards = _ordered_guide_cards(category.guides_order, guides_in_language)
@@ -170,17 +161,10 @@ async def help_guide(
     if not langs:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Guide not found")
 
-    guide = langs.get(language)
-    fallback_language: HelpLanguage | None = None
-    if guide is None or not guide.published:
-        guide = langs.get("cs")
-        fallback_language = "cs" if guide else None
-        if guide is None or not guide.published:
-            # No usable version exists.
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Guide not available")
-        # If we fell back AND the language was already cs, no point flagging it.
-        if language == "cs":
-            fallback_language = None
+    guide = _published_guide_with_fallback(langs, language)
+    if guide is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Guide not available")
+    fallback_language: HelpLanguage | None = guide.language if guide.language != language else None
 
     category = content.find_category(guide.category)
     if category is None:
@@ -256,6 +240,35 @@ def _popular_categories(content: HelpContent, language: HelpLanguage) -> list[He
                 icon=category.icon,
             )
         )
+    return out
+
+
+def _language_fallback_order(language: HelpLanguage) -> tuple[HelpLanguage, ...]:
+    ordered: list[HelpLanguage] = [language]
+    for fallback in _GUIDE_FALLBACK_ORDER:
+        if fallback not in ordered:
+            ordered.append(fallback)
+    return tuple(ordered)
+
+
+def _published_guide_with_fallback(
+    langs: dict[HelpLanguage, HelpGuide], language: HelpLanguage
+) -> HelpGuide | None:
+    for candidate in _language_fallback_order(language):
+        guide = langs.get(candidate)
+        if guide and guide.published:
+            return guide
+    return None
+
+
+def _published_guides_with_fallback(
+    content: HelpContent, category_slug: str, language: HelpLanguage
+) -> list[HelpGuide]:
+    out: list[HelpGuide] = []
+    for langs in content.guides_by_slug.values():
+        guide = _published_guide_with_fallback(langs, language)
+        if guide and guide.category == category_slug:
+            out.append(guide)
     return out
 
 
