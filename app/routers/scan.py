@@ -126,9 +126,7 @@ async def _scan_stream_events(
         classifier_task = asyncio.create_task(classify_document(vision_inputs.urls))
         async for heartbeat in _yield_heartbeats_until_complete(classifier_task):
             yield heartbeat
-        classifier = classifier_task.result().model_copy(
-            update={"page_count": vision_inputs.page_count}
-        )
+        classifier = classifier_task.result().model_copy(update={"page_count": vision_inputs.page_count})
         yield _sse(
             "status",
             {
