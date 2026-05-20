@@ -1,5 +1,6 @@
 """POST /scans — multi-page scan: OCR → RAG → analyzer → persist + open chat thread."""
 
+import asyncio
 import base64
 import json
 import logging
@@ -50,6 +51,28 @@ class PreparedVisionInputs:
 
 def _sse(event: str, payload: dict[str, Any]) -> str:
     return f"event: {event}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+
+# iOS NSURLSession-backed XHR drops the connection after ~60s of silence.
+# Heartbeats are SSE comment lines (ignored by parsers) keeping the socket alive
+# during long blocking calls (10-page GPT-4o Vision can take 30-60+ seconds).
+SSE_HEARTBEAT_INTERVAL = 10.0
+SSE_HEARTBEAT = ":keep-alive\n\n"
+
+
+async def _yield_heartbeats_until_complete(
+    task: asyncio.Task[Any], interval: float = SSE_HEARTBEAT_INTERVAL
+) -> AsyncIterator[str]:
+    """Yield SSE heartbeat lines until `task` finishes. Task exceptions are not re-raised here —
+    the caller must inspect `task.result()` after this iterator exits."""
+    while not task.done():
+        try:
+            await asyncio.wait_for(asyncio.shield(task), timeout=interval)
+        except asyncio.TimeoutError:
+            yield SSE_HEARTBEAT
+        except BaseException:
+            # Task failed — let caller handle via task.exception()/result().
+            return
 
 
 def _storage_suffix(path: str) -> str:
@@ -392,7 +415,10 @@ async def create_scan_stream(
             await _check_scan_quota_or_402(user_id, plan, page_count=vision_inputs.page_count)
 
             yield _sse("status", {"step": "ocr", "message": "Reading document text"})
-            classifier = await classify_document(vision_inputs.urls)
+            classifier_task = asyncio.create_task(classify_document(vision_inputs.urls))
+            async for heartbeat in _yield_heartbeats_until_complete(classifier_task):
+                yield heartbeat
+            classifier = classifier_task.result()
             classifier = classifier.model_copy(update={"page_count": vision_inputs.page_count})
             yield _sse(
                 "status",
@@ -421,12 +447,20 @@ async def create_scan_stream(
             yield _sse("status", {"step": "analysis", "message": "Finding summary, actions, and risks"})
             analysis: AnalysisResult | None = None
             model_used: str | None = None
-            async for item in stream_analyze_document(
+            analyzer_iter = stream_analyze_document(
                 classifier=classifier,
                 rag_chunks=rag_chunks,
                 language=language,
                 has_datova_schranka=has_datova_schranka,
-            ):
+            ).__aiter__()
+            while True:
+                next_task = asyncio.create_task(analyzer_iter.__anext__())
+                async for heartbeat in _yield_heartbeats_until_complete(next_task):
+                    yield heartbeat
+                try:
+                    item = next_task.result()
+                except StopAsyncIteration:
+                    break
                 if item["type"] == "field":
                     yield _sse("field", {"field": item["field"], "value": item["value"]})
                 elif item["type"] == "done":
