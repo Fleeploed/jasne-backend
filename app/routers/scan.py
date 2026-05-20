@@ -68,11 +68,110 @@ async def _yield_heartbeats_until_complete(
     while not task.done():
         try:
             await asyncio.wait_for(asyncio.shield(task), timeout=interval)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             yield SSE_HEARTBEAT
         except BaseException:
             # Task failed — let caller handle via task.exception()/result().
             return
+
+
+async def _stream_analyzer_phase(
+    classifier: ClassifierResult,
+    rag_chunks: list[str],
+    language: UserLanguage,
+    has_datova_schranka: bool,
+) -> AsyncIterator[Any]:
+    """Stream analyzer fields with heartbeats. Yields SSE strings; final yield is the
+    (analysis, model_used) tuple. Raises RuntimeError if the stream ends without a result."""
+    analyzer_iter = stream_analyze_document(
+        classifier=classifier,
+        rag_chunks=rag_chunks,
+        language=language,
+        has_datova_schranka=has_datova_schranka,
+    ).__aiter__()
+    analysis: AnalysisResult | None = None
+    model_used: str | None = None
+    while True:
+        next_task = asyncio.create_task(analyzer_iter.__anext__())
+        async for heartbeat in _yield_heartbeats_until_complete(next_task):
+            yield heartbeat
+        try:
+            item = next_task.result()
+        except StopAsyncIteration:
+            break
+        if item["type"] == "field":
+            yield _sse("field", {"field": item["field"], "value": item["value"]})
+        elif item["type"] == "done":
+            analysis = item["analysis"]
+            model_used = item["model_used"]
+    if analysis is None or model_used is None:
+        raise RuntimeError("Analyzer stream ended without a final result")
+    yield (analysis, model_used)
+
+
+async def _scan_stream_events(
+    user_id: UUID,
+    body: ScanRequest,
+    plan: str,
+    language: UserLanguage,
+    has_datova_schranka: bool,
+) -> AsyncIterator[str]:
+    """Compose the full SSE event sequence for a single scan request."""
+    try:
+        yield _sse("status", {"step": "preparing_inputs", "message": "Preparing document pages"})
+        vision_inputs = await _prepare_vision_inputs(user_id, body.image_paths)
+        await _check_scan_quota_or_402(user_id, plan, page_count=vision_inputs.page_count)
+
+        yield _sse("status", {"step": "ocr", "message": "Reading document text"})
+        classifier_task = asyncio.create_task(classify_document(vision_inputs.urls))
+        async for heartbeat in _yield_heartbeats_until_complete(classifier_task):
+            yield heartbeat
+        classifier = classifier_task.result().model_copy(
+            update={"page_count": vision_inputs.page_count}
+        )
+        yield _sse(
+            "status",
+            {
+                "step": "classified",
+                "category": classifier.category,
+                "doc_type": classifier.doc_type,
+                "confidence": classifier.confidence,
+            },
+        )
+
+        if not classifier.ocr_text.strip():
+            detail = f"Could not read document — try a better photo. {classifier.error or ''}".strip()
+            logger.warning(
+                "OCR quality gate failed (empty text) user_id=%s confidence=%.2f error=%s",
+                user_id,
+                classifier.confidence,
+                classifier.error,
+            )
+            yield _sse("error", {"status_code": status.HTTP_422_UNPROCESSABLE_ENTITY, "detail": detail})
+            return
+
+        yield _sse("status", {"step": "rag", "message": "Checking relevant Czech rules"})
+        rag_chunks = await retrieve_chunks(classifier.ocr_text, classifier.category)
+
+        yield _sse("status", {"step": "analysis", "message": "Finding summary, actions, and risks"})
+        analysis: AnalysisResult | None = None
+        model_used: str | None = None
+        async for item in _stream_analyzer_phase(classifier, rag_chunks, language, has_datova_schranka):
+            if isinstance(item, str):
+                yield item
+            else:
+                analysis, model_used = item
+
+        assert analysis is not None and model_used is not None  # noqa: S101
+
+        yield _sse("status", {"step": "saving", "message": "Saving scan and reminders"})
+        scan = await _persist_completed_scan(user_id, body, classifier, analysis, language, model_used)
+        yield _sse("done", scan.model_dump(mode="json"))
+    except HTTPException as exc:
+        yield _sse("error", {"status_code": exc.status_code, "detail": exc.detail})
+    except Exception as exc:
+        logger.exception("Streaming scan failed user_id=%s", user_id)
+        yield _sse("error", {"detail": str(exc) or "Streaming scan failed"})
 
 
 def _storage_suffix(path: str) -> str:
@@ -408,79 +507,8 @@ async def create_scan_stream(
 
     await _check_scan_quota_or_402(user_id, plan, page_count=len(body.image_paths))
 
-    async def events() -> AsyncIterator[str]:
-        try:
-            yield _sse("status", {"step": "preparing_inputs", "message": "Preparing document pages"})
-            vision_inputs = await _prepare_vision_inputs(user_id, body.image_paths)
-            await _check_scan_quota_or_402(user_id, plan, page_count=vision_inputs.page_count)
-
-            yield _sse("status", {"step": "ocr", "message": "Reading document text"})
-            classifier_task = asyncio.create_task(classify_document(vision_inputs.urls))
-            async for heartbeat in _yield_heartbeats_until_complete(classifier_task):
-                yield heartbeat
-            classifier = classifier_task.result()
-            classifier = classifier.model_copy(update={"page_count": vision_inputs.page_count})
-            yield _sse(
-                "status",
-                {
-                    "step": "classified",
-                    "category": classifier.category,
-                    "doc_type": classifier.doc_type,
-                    "confidence": classifier.confidence,
-                },
-            )
-
-            if not classifier.ocr_text.strip():
-                detail = f"Could not read document — try a better photo. {classifier.error or ''}".strip()
-                logger.warning(
-                    "OCR quality gate failed (empty text) user_id=%s confidence=%.2f error=%s",
-                    user_id,
-                    classifier.confidence,
-                    classifier.error,
-                )
-                yield _sse("error", {"status_code": status.HTTP_422_UNPROCESSABLE_ENTITY, "detail": detail})
-                return
-
-            yield _sse("status", {"step": "rag", "message": "Checking relevant Czech rules"})
-            rag_chunks = await retrieve_chunks(classifier.ocr_text, classifier.category)
-
-            yield _sse("status", {"step": "analysis", "message": "Finding summary, actions, and risks"})
-            analysis: AnalysisResult | None = None
-            model_used: str | None = None
-            analyzer_iter = stream_analyze_document(
-                classifier=classifier,
-                rag_chunks=rag_chunks,
-                language=language,
-                has_datova_schranka=has_datova_schranka,
-            ).__aiter__()
-            while True:
-                next_task = asyncio.create_task(analyzer_iter.__anext__())
-                async for heartbeat in _yield_heartbeats_until_complete(next_task):
-                    yield heartbeat
-                try:
-                    item = next_task.result()
-                except StopAsyncIteration:
-                    break
-                if item["type"] == "field":
-                    yield _sse("field", {"field": item["field"], "value": item["value"]})
-                elif item["type"] == "done":
-                    analysis = item["analysis"]
-                    model_used = item["model_used"]
-
-            if analysis is None or model_used is None:
-                raise RuntimeError("Analyzer stream ended without a final result")
-
-            yield _sse("status", {"step": "saving", "message": "Saving scan and reminders"})
-            scan = await _persist_completed_scan(user_id, body, classifier, analysis, language, model_used)
-            yield _sse("done", scan.model_dump(mode="json"))
-        except HTTPException as exc:
-            yield _sse("error", {"status_code": exc.status_code, "detail": exc.detail})
-        except Exception as exc:
-            logger.exception("Streaming scan failed user_id=%s", user_id)
-            yield _sse("error", {"detail": str(exc) or "Streaming scan failed"})
-
     return StreamingResponse(
-        events(),
+        _scan_stream_events(user_id, body, plan, language, has_datova_schranka),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
