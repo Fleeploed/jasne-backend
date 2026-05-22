@@ -565,6 +565,119 @@ class TestDeleteScan:
         r2 = client.get(f"/scans/{row['id']}", headers=auth_headers)
         assert r2.status_code == 404
 
+    def test_delete_cascades_messages_and_deadlines(
+        self, client, fake_supabase, auth_headers, test_user_id
+    ):
+        row = _seed_scan(fake_supabase, str(test_user_id))
+        scan_id = row["id"]
+        other = _seed_scan(fake_supabase, str(test_user_id))
+        fake_supabase.table("scan_messages").rows.extend(
+            [
+                {"id": str(uuid4()), "scan_id": scan_id, "user_id": str(test_user_id), "role": "user",
+                 "content": "x", "message_type": "text", "created_at": datetime.now(UTC).isoformat()},
+                {"id": str(uuid4()), "scan_id": other["id"], "user_id": str(test_user_id), "role": "user",
+                 "content": "y", "message_type": "text", "created_at": datetime.now(UTC).isoformat()},
+            ]
+        )
+        fake_supabase.table("deadlines").rows.extend(
+            [
+                {"id": str(uuid4()), "user_id": str(test_user_id), "scan_id": scan_id,
+                 "title": "t", "description": None, "due_date": "2099-01-01",
+                 "reminder_days": [1], "deadline_type": "action", "status": "active",
+                 "auto_created": True, "created_at": datetime.now(UTC).isoformat()},
+                {"id": str(uuid4()), "user_id": str(test_user_id), "scan_id": other["id"],
+                 "title": "keep", "description": None, "due_date": "2099-01-01",
+                 "reminder_days": [1], "deadline_type": "action", "status": "active",
+                 "auto_created": True, "created_at": datetime.now(UTC).isoformat()},
+            ]
+        )
+
+        r = client.delete(f"/scans/{scan_id}", headers=auth_headers)
+        assert r.status_code == 204
+
+        msgs = fake_supabase.table("scan_messages").rows
+        assert all(m["scan_id"] != scan_id for m in msgs)
+        assert any(m["scan_id"] == other["id"] for m in msgs)
+        dds = fake_supabase.table("deadlines").rows
+        assert all(d["scan_id"] != scan_id for d in dds)
+        assert any(d["scan_id"] == other["id"] for d in dds)
+
+    def test_delete_404_when_not_owner(self, client, fake_supabase, auth_headers):
+        row = _seed_scan(fake_supabase, "99999999-9999-9999-9999-999999999999")
+        r = client.delete(f"/scans/{row['id']}", headers=auth_headers)
+        assert r.status_code == 404
+
+
+class TestBulkDeleteScans:
+    def test_deletes_all_user_data_and_returns_counts(
+        self, client, fake_supabase, auth_headers, test_user_id
+    ):
+        s1 = _seed_scan(fake_supabase, str(test_user_id))
+        s2 = _seed_scan(fake_supabase, str(test_user_id))
+        fake_supabase.table("scan_messages").rows.append(
+            {"id": str(uuid4()), "scan_id": s1["id"], "user_id": str(test_user_id),
+             "role": "user", "content": "q", "message_type": "text",
+             "created_at": datetime.now(UTC).isoformat()}
+        )
+        fake_supabase.table("deadlines").rows.extend(
+            [
+                {"id": str(uuid4()), "user_id": str(test_user_id), "scan_id": s1["id"],
+                 "title": "a", "description": None, "due_date": "2099-01-01",
+                 "reminder_days": [1], "deadline_type": "action", "status": "active",
+                 "auto_created": True, "created_at": datetime.now(UTC).isoformat()},
+                {"id": str(uuid4()), "user_id": str(test_user_id), "scan_id": s2["id"],
+                 "title": "b", "description": None, "due_date": "2099-01-01",
+                 "reminder_days": [1], "deadline_type": "action", "status": "active",
+                 "auto_created": True, "created_at": datetime.now(UTC).isoformat()},
+            ]
+        )
+        # Seed usage row for current month to verify reset.
+        from app.services.limits import current_month
+        fake_supabase.table("usage_limits").rows.append(
+            {"user_id": str(test_user_id), "month": current_month(),
+             "scans_count": 4, "questions_per_scan": {s1["id"]: 2}}
+        )
+
+        r = client.delete("/scans", headers=auth_headers)
+        assert r.status_code == 200, r.json()
+        body = r.json()
+        assert body == {"deleted_scans": 2, "deleted_deadlines": 2}
+
+        assert fake_supabase.table("scans").rows == []
+        assert fake_supabase.table("scan_messages").rows == []
+        assert fake_supabase.table("deadlines").rows == []
+
+        usage = fake_supabase.table("usage_limits").rows[0]
+        assert usage["scans_count"] == 0
+        assert usage["questions_per_scan"] == {}
+
+    def test_does_not_touch_other_users(
+        self, client, fake_supabase, auth_headers, test_user_id
+    ):
+        other_id = "99999999-9999-9999-9999-999999999999"
+        _seed_scan(fake_supabase, str(test_user_id))
+        other_scan = _seed_scan(fake_supabase, other_id)
+        fake_supabase.table("deadlines").rows.append(
+            {"id": str(uuid4()), "user_id": other_id, "scan_id": other_scan["id"],
+             "title": "other", "description": None, "due_date": "2099-01-01",
+             "reminder_days": [1], "deadline_type": "action", "status": "active",
+             "auto_created": True, "created_at": datetime.now(UTC).isoformat()}
+        )
+
+        r = client.delete("/scans", headers=auth_headers)
+        assert r.status_code == 200
+        assert r.json() == {"deleted_scans": 1, "deleted_deadlines": 0}
+
+        scans_left = fake_supabase.table("scans").rows
+        assert len(scans_left) == 1 and scans_left[0]["user_id"] == other_id
+        dds = fake_supabase.table("deadlines").rows
+        assert len(dds) == 1 and dds[0]["user_id"] == other_id
+
+    def test_empty_account_returns_zero_counts(self, client, auth_headers):
+        r = client.delete("/scans", headers=auth_headers)
+        assert r.status_code == 200
+        assert r.json() == {"deleted_scans": 0, "deleted_deadlines": 0}
+
 
 class TestHealth:
     def test_health(self, client):

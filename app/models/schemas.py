@@ -163,6 +163,11 @@ class ScanImageUrlsResponse(_Base):
     urls: list[str]
 
 
+class ScanBulkDeleteResponse(_Base):
+    deleted_scans: int
+    deleted_deadlines: int
+
+
 class ScanListItem(_Base):
     id: UUID
     category: DocumentCategory | None = None

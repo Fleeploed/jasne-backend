@@ -161,15 +161,22 @@ class _FakeQuery:
         if self._op == "delete":
             ids_to_remove = {id(r) for r in rows}
             self._table.rows = [r for r in self._table.rows if id(r) not in ids_to_remove]
+            # Emulate FK ON DELETE CASCADE on scans.id for scan_messages and deadlines.
+            if self._table.name == "scans" and self._table.parent is not None:
+                deleted_scan_ids = {str(r.get("id")) for r in rows}
+                for child in ("scan_messages", "deadlines"):
+                    tbl = self._table.parent.table(child)
+                    tbl.rows = [r for r in tbl.rows if str(r.get("scan_id")) not in deleted_scan_ids]
             return _FakeResponse(list(rows))
 
         return _FakeResponse([])
 
 
 class _FakeTable:
-    def __init__(self, name: str):
+    def __init__(self, name: str, parent: FakeSupabase | None = None):
         self.name = name
         self.rows: list[dict[str, Any]] = []
+        self.parent = parent
 
     def select(self, *args, **kwargs) -> _FakeQuery:
         return _FakeQuery(self).select(*args, **kwargs)
@@ -212,7 +219,7 @@ class FakeSupabase:
 
     def table(self, name: str) -> _FakeTable:
         if name not in self._tables:
-            self._tables[name] = _FakeTable(name)
+            self._tables[name] = _FakeTable(name, parent=self)
         return self._tables[name]
 
     def rpc(self, name: str, params: dict[str, Any]) -> _FakeQuery:
@@ -257,6 +264,37 @@ class FakeSupabase:
                     }
                 )
                 return _FakeResponse([1])
+
+            if name == "delete_user_scans":
+                user_id = str(params["p_user_id"])
+                scans_tbl = self.table("scans")
+                deadlines_tbl = self.table("deadlines")
+                messages_tbl = self.table("scan_messages")
+
+                scan_ids = {str(r["id"]) for r in scans_tbl.rows if str(r.get("user_id")) == user_id}
+                deleted_scans = len(scan_ids)
+                deleted_deadlines = sum(
+                    1
+                    for r in deadlines_tbl.rows
+                    if str(r.get("user_id")) == user_id and str(r.get("scan_id")) in scan_ids
+                )
+
+                scans_tbl.rows = [r for r in scans_tbl.rows if str(r.get("user_id")) != user_id]
+                messages_tbl.rows = [r for r in messages_tbl.rows if str(r.get("scan_id")) not in scan_ids]
+                deadlines_tbl.rows = [
+                    r for r in deadlines_tbl.rows if str(r.get("scan_id")) not in scan_ids
+                ]
+
+                # Reset current month's usage counters.
+                month = datetime.now(UTC).strftime("%Y-%m")
+                for row in self.table("usage_limits").rows:
+                    if str(row.get("user_id")) == user_id and row.get("month") == month:
+                        row["scans_count"] = 0
+                        row["questions_per_scan"] = {}
+
+                return _FakeResponse(
+                    [{"deleted_scans": deleted_scans, "deleted_deadlines": deleted_deadlines}]
+                )
 
             if name == "list_scans_with_activity":
                 user_id = str(params["p_user_id"])

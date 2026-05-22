@@ -20,6 +20,7 @@ from app.models.schemas import (
     AnalysisResult,
     ClassifierResult,
     DeadlineItem,
+    ScanBulkDeleteResponse,
     ScanImageUrlsResponse,
     ScanListItem,
     ScanRequest,
@@ -586,11 +587,62 @@ async def get_scan_image_urls(
     return ScanImageUrlsResponse(urls=urls)
 
 
+@router.delete("", response_model=ScanBulkDeleteResponse)
+async def delete_all_scans(
+    user_id: UUID = Depends(get_current_user_id),
+) -> ScanBulkDeleteResponse:
+    """Delete every scan owned by the authenticated user.
+
+    Executes the `delete_user_scans` RPC, which runs in a single transaction:
+    counts rows, deletes `scans` (cascades to `scan_messages` and linked
+    `deadlines` via FK ON DELETE CASCADE), and zeros the current month's
+    `usage_limits` row so the wipe also resets quota. Idempotent: returns
+    `{0, 0}` with 200 when the user has nothing to delete.
+    """
+    supabase = await get_supabase()
+    result = await supabase.rpc("delete_user_scans", {"p_user_id": str(user_id)}).execute()
+
+    row: dict[str, Any] | None = None
+    if isinstance(result.data, list):
+        row = result.data[0] if result.data else None
+    elif isinstance(result.data, dict):
+        row = result.data
+
+    deleted_scans = int((row or {}).get("deleted_scans") or 0)
+    deleted_deadlines = int((row or {}).get("deleted_deadlines") or 0)
+    logger.info(
+        "Bulk scan delete user_id=%s scans=%d deadlines=%d",
+        user_id,
+        deleted_scans,
+        deleted_deadlines,
+    )
+    return ScanBulkDeleteResponse(
+        deleted_scans=deleted_scans,
+        deleted_deadlines=deleted_deadlines,
+    )
+
+
 @router.delete("/{scan_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_scan(
     scan_id: UUID,
     user_id: UUID = Depends(get_current_user_id),
 ) -> None:
+    """Delete a single scan owned by the authenticated user.
+
+    Relies on FK ON DELETE CASCADE to remove the scan's `scan_messages` and
+    linked `deadlines` rows atomically (see migration 0008).
+    """
     supabase = await get_supabase()
+    existing = (
+        await supabase.table("scans")
+        .select("id")
+        .eq("id", str(scan_id))
+        .eq("user_id", str(user_id))
+        .limit(1)
+        .execute()
+    )
+    if not existing.data:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Scan not found")
+
     await supabase.table("scans").delete().eq("id", str(scan_id)).eq("user_id", str(user_id)).execute()
     logger.info("Scan deleted scan_id=%s user_id=%s", scan_id, user_id)
