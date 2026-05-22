@@ -685,7 +685,7 @@ class TestBulkDeleteScans:
                 },
             ]
         )
-        # Seed usage row for current month to verify reset.
+        # Seed usage row for current month — must remain untouched after delete.
         from app.services.limits import current_month
 
         fake_supabase.table("usage_limits").rows.append(
@@ -706,9 +706,10 @@ class TestBulkDeleteScans:
         assert fake_supabase.table("scan_messages").rows == []
         assert fake_supabase.table("deadlines").rows == []
 
+        # Monthly counter is preserved: deletion does not refund quota.
         usage = fake_supabase.table("usage_limits").rows[0]
-        assert usage["scans_count"] == 0
-        assert usage["questions_per_scan"] == {}
+        assert usage["scans_count"] == 4
+        assert usage["questions_per_scan"] == {s1["id"]: 2}
 
     def test_does_not_touch_other_users(self, client, fake_supabase, auth_headers, test_user_id):
         other_id = "99999999-9999-9999-9999-999999999999"
@@ -743,6 +744,87 @@ class TestBulkDeleteScans:
         r = client.delete("/scans", headers=auth_headers)
         assert r.status_code == 200
         assert r.json() == {"deleted_scans": 0, "deleted_deadlines": 0}
+
+
+class TestDeleteDoesNotResetUsage:
+    """Regression: deletion must never refund the monthly scan quota."""
+
+    def test_single_scan_delete_does_not_change_scans_count(
+        self, client, fake_supabase, auth_headers, test_user_id
+    ):
+        from app.services.limits import current_month
+
+        row = _seed_scan(fake_supabase, str(test_user_id))
+        fake_supabase.table("usage_limits").rows.append(
+            {
+                "user_id": str(test_user_id),
+                "month": current_month(),
+                "scans_count": 3,
+                "questions_per_scan": {row["id"]: 1},
+            }
+        )
+
+        r = client.delete(f"/scans/{row['id']}", headers=auth_headers)
+        assert r.status_code == 204
+
+        usage = fake_supabase.table("usage_limits").rows[0]
+        assert usage["scans_count"] == 3
+        assert usage["questions_per_scan"] == {row["id"]: 1}
+
+    def test_bulk_delete_does_not_change_scans_count(self, client, fake_supabase, auth_headers, test_user_id):
+        from app.services.limits import current_month
+
+        _seed_scan(fake_supabase, str(test_user_id))
+        _seed_scan(fake_supabase, str(test_user_id))
+        fake_supabase.table("usage_limits").rows.append(
+            {
+                "user_id": str(test_user_id),
+                "month": current_month(),
+                "scans_count": 5,
+                "questions_per_scan": {},
+            }
+        )
+
+        r = client.delete("/scans", headers=auth_headers)
+        assert r.status_code == 200
+
+        usage = fake_supabase.table("usage_limits").rows[0]
+        assert usage["scans_count"] == 5
+
+    def test_free_user_cannot_bypass_quota_by_deleting(
+        self,
+        client,
+        fake_supabase,
+        auth_headers,
+        test_user_id,
+        mock_openai_classify,
+        mock_openai_analyze,
+        mock_rag_empty,
+    ):
+        _seed_profile(fake_supabase, str(test_user_id), plan="free")
+
+        # Exhaust the Free monthly cap (5 scans).
+        for _ in range(5):
+            r = client.post(
+                "/scans",
+                headers=auth_headers,
+                json={"image_paths": [f"{test_user_id}/p.jpg"]},
+            )
+            assert r.status_code == 201
+
+        # Wipe everything — counter must NOT reset.
+        r = client.delete("/scans", headers=auth_headers)
+        assert r.status_code == 200
+        assert r.json()["deleted_scans"] == 5
+
+        # 6th attempt must still be blocked by the monthly cap.
+        r = client.post(
+            "/scans",
+            headers=auth_headers,
+            json={"image_paths": [f"{test_user_id}/p.jpg"]},
+        )
+        assert r.status_code == 402
+        assert "5 scans/month" in r.json()["detail"]
 
 
 class TestHealth:

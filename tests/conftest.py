@@ -283,12 +283,8 @@ class FakeSupabase:
                 messages_tbl.rows = [r for r in messages_tbl.rows if str(r.get("scan_id")) not in scan_ids]
                 deadlines_tbl.rows = [r for r in deadlines_tbl.rows if str(r.get("scan_id")) not in scan_ids]
 
-                # Reset current month's usage counters.
-                month = datetime.now(UTC).strftime("%Y-%m")
-                for row in self.table("usage_limits").rows:
-                    if str(row.get("user_id")) == user_id and row.get("month") == month:
-                        row["scans_count"] = 0
-                        row["questions_per_scan"] = {}
+                # usage_limits is intentionally untouched — the monthly counter
+                # tracks initiations, not surviving rows. See migration 0009.
 
                 return _FakeResponse(
                     [{"deleted_scans": deleted_scans, "deleted_deadlines": deleted_deadlines}]
