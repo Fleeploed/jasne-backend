@@ -281,9 +281,7 @@ class FakeSupabase:
 
                 scans_tbl.rows = [r for r in scans_tbl.rows if str(r.get("user_id")) != user_id]
                 messages_tbl.rows = [r for r in messages_tbl.rows if str(r.get("scan_id")) not in scan_ids]
-                deadlines_tbl.rows = [
-                    r for r in deadlines_tbl.rows if str(r.get("scan_id")) not in scan_ids
-                ]
+                deadlines_tbl.rows = [r for r in deadlines_tbl.rows if str(r.get("scan_id")) not in scan_ids]
 
                 # Reset current month's usage counters.
                 month = datetime.now(UTC).strftime("%Y-%m")
