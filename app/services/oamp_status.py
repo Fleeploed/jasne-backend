@@ -17,8 +17,10 @@ except ImportError:  # pragma: no cover - exercised only in misconfigured deploy
 OAMP_STATUS_URL = "https://ipc.gov.cz/informace-o-stavu-rizeni/"
 OAMP_STATUS_URL_EN = "https://ipc.gov.cz/en/status-of-your-application/"
 _RESULT_RE = re.compile(
-    r"((?:Řízení či oznámení s číslem jednacím|Proceedings or notification with reference number)"
-    r".*?)(?=Zadejte číslo jednací|Enter reference number|$)",
+    r"((?:Řízení či oznámení s číslem jednacím|An application or report,\s*reference number|"
+    r"Proceedings or notification with reference number).*?)"
+    r"(?=Zadejte číslo jednací|Enter reference number|To book an appointment|The following procedure|"
+    r"The status of the procedure|$)",
     re.IGNORECASE,
 )
 _KEYWORD_RESULT_RE = re.compile(
@@ -183,6 +185,7 @@ def _classify_result(message: str):
         or "zamit" in normalized
         or "nevyhov" in normalized
         or "zastavil" in normalized
+        or "rejected" in normalized
         or "have been closed" in normalized
     ):
         return "rejected"

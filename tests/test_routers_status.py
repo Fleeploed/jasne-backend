@@ -11,6 +11,7 @@ from app.services.oamp_status import (
     OampStatusError,
     OampStatusTimeoutError,
     _classify_result,
+    _extract_result,
     _status_url_for_language,
 )
 
@@ -143,6 +144,44 @@ def test_oamp_status_maps_service_errors(client, auth_headers, monkeypatch, exc,
 )
 def test_oamp_status_classifies_portal_messages(message, expected):
     assert _classify_result(message) == expected
+
+
+class _FakePage:
+    def __init__(self, body: str):
+        self.body = body
+
+    def locator(self, selector: str):
+        assert selector == "body"
+        return self
+
+    def inner_text(self, timeout: int):
+        assert timeout == 10000
+        return self.body
+
+
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        (
+            "AGREE WITH ALL REFUSE ALL MORE SETTINGS HOME STATUS OF YOUR APPLICATION "
+            "Status of your Application An application or report, reference number "
+            "OAM-19391/ZM-2025 has been preliminarily assessed positively. "
+            "To book an appointment or for further information, contact the Client Centre.",
+            "An application or report, reference number OAM-19391/ZM-2025 "
+            "has been preliminarily assessed positively.",
+        ),
+        (
+            "AGREE WITH ALL REFUSE ALL MORE SETTINGS HOME STATUS OF YOUR APPLICATION "
+            "Status of your Application An application or report, reference number "
+            "OAM-55488/ZM-2025 was rejected or the proceedings have been closed. "
+            "The following procedure varies depending on the type of stay you are applying for.",
+            "An application or report, reference number OAM-55488/ZM-2025 "
+            "was rejected or the proceedings have been closed.",
+        ),
+    ],
+)
+def test_oamp_status_extracts_clean_english_result(body, expected):
+    assert _extract_result(_FakePage(body)) == expected
 
 
 def test_oamp_status_uses_english_portal_for_english_language():
