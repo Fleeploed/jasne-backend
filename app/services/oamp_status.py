@@ -19,8 +19,7 @@ OAMP_STATUS_URL_EN = "https://ipc.gov.cz/en/status-of-your-application/"
 _RESULT_RE = re.compile(
     r"((?:Řízení či oznámení s číslem jednacím|An application or report,\s*reference number|"
     r"Proceedings or notification with reference number).*?)"
-    r"(?=Zadejte číslo jednací|Enter reference number|To book an appointment|The following procedure|"
-    r"The status of the procedure|$)",
+    r"(?=Zadejte číslo jednací|Enter reference number|$)",
     re.IGNORECASE,
 )
 _KEYWORD_RESULT_RE = re.compile(

@@ -166,17 +166,37 @@ class _FakePage:
             "AGREE WITH ALL REFUSE ALL MORE SETTINGS HOME STATUS OF YOUR APPLICATION "
             "Status of your Application An application or report, reference number "
             "OAM-19391/ZM-2025 has been preliminarily assessed positively. "
-            "To book an appointment or for further information, contact the Client Centre.",
+            "To book an appointment or for further information, contact the Client Centre on "
+            "+420 974 801 801 (Mon-Thu 8:00-16:00, Fri 8:00-14:00). For information on how "
+            "to proceed, see this page. The status of the procedure is for informational "
+            "purposes only. It becomes binding only upon receiving a written decision or "
+            "notification of fulfilment of conditions, the residence permit card, or the "
+            "affixation of visa sticker. Until then, the Ministry continues to evaluate the "
+            "fulfilment of all necessary requirements. Enter reference number",
             "An application or report, reference number OAM-19391/ZM-2025 "
-            "has been preliminarily assessed positively.",
+            "has been preliminarily assessed positively. To book an appointment or for further "
+            "information, contact the Client Centre on +420 974 801 801 (Mon-Thu 8:00-16:00, "
+            "Fri 8:00-14:00). For information on how to proceed, see this page. The status of "
+            "the procedure is for informational purposes only. It becomes binding only upon "
+            "receiving a written decision or notification of fulfilment of conditions, the "
+            "residence permit card, or the affixation of visa sticker. Until then, the Ministry "
+            "continues to evaluate the fulfilment of all necessary requirements.",
         ),
         (
             "AGREE WITH ALL REFUSE ALL MORE SETTINGS HOME STATUS OF YOUR APPLICATION "
             "Status of your Application An application or report, reference number "
             "OAM-55488/ZM-2025 was rejected or the proceedings have been closed. "
-            "The following procedure varies depending on the type of stay you are applying for.",
+            "The following procedure varies depending on the type of stay you are applying for. "
+            "General information on how to proceed can be found here. You can find more "
+            "information about the procedure of applying for a long-term visa here. "
+            "If you are applying for long-term residence, pay attention to the information here. "
+            "Enter reference number",
             "An application or report, reference number OAM-55488/ZM-2025 "
-            "was rejected or the proceedings have been closed.",
+            "was rejected or the proceedings have been closed. The following procedure varies "
+            "depending on the type of stay you are applying for. General information on how to "
+            "proceed can be found here. You can find more information about the procedure of "
+            "applying for a long-term visa here. If you are applying for long-term residence, "
+            "pay attention to the information here.",
         ),
     ],
 )
