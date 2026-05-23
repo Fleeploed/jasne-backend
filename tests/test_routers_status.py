@@ -5,7 +5,14 @@ from datetime import UTC, datetime
 import pytest
 
 from app.models.schemas import OampStatusCheckResponse
-from app.services.oamp_status import OampStatusError, OampStatusTimeoutError
+from app.services.oamp_status import (
+    OAMP_STATUS_URL,
+    OAMP_STATUS_URL_EN,
+    OampStatusError,
+    OampStatusTimeoutError,
+    _classify_result,
+    _status_url_for_language,
+)
 
 
 def test_oamp_status_requires_auth(client):
@@ -36,7 +43,7 @@ def test_oamp_status_accepts_full_case_number(client, auth_headers, monkeypatch)
     r = client.post(
         "/status/oamp",
         headers=auth_headers,
-        json={"case_number": "OAM-19391-4/ZM-2026"},
+        json={"case_number": "OAM-19391-4/ZM-2026", "language": "en"},
     )
 
     assert r.status_code == 200, r.text
@@ -50,6 +57,7 @@ def test_oamp_status_accepts_full_case_number(client, auth_headers, monkeypatch)
     assert payload.additional_suffix == "4"
     assert payload.category == "ZM"
     assert payload.year == "2026"
+    assert payload.language == "en"
 
 
 def test_oamp_status_accepts_segmented_case_fields(client, auth_headers, monkeypatch):
@@ -108,3 +116,30 @@ def test_oamp_status_maps_service_errors(client, auth_headers, monkeypatch, exc,
     )
 
     assert r.status_code == expected_status
+
+
+@pytest.mark.parametrize(
+    ("message", "expected"),
+    [
+        ("Řízení či oznámení je předběžně vyhodnoceno kladně.", "approved"),
+        ("Řízení či oznámení se zpracovává se.", "processing"),
+        ("Řízení či oznámení s číslem jednacím OAM-19391/ZM-2026 je v řízení.", "processing"),
+        ("Pro zadané číslo jednací nebylo nalezeno žádné řízení.", "not_found"),
+        ("Řízení či oznámení s číslem jednacím OAM-55488/ZM-2025 bylo nepovoleno.", "rejected"),
+        ("Žádost byla zamítnuta.", "rejected"),
+        ("Ministerstvo vnitra zamítlo vaši žádost nebo zastavilo řízení.", "rejected"),
+        ("Proceedings or notification with reference number OAM-19391/ZM-2025 is being processed.", "processing"),
+        ("Proceedings or notification with reference number OAM-19391/ZM-2025 was preliminarily assessed positively.", "approved"),
+        ("Proceedings or notification with reference number OAM-55488/ZM-2025 have been closed.", "rejected"),
+        ("The application was not found.", "not_found"),
+        ("Neočekávaný výsledek bez známého stavu.", "rejected"),
+    ],
+)
+def test_oamp_status_classifies_portal_messages(message, expected):
+    assert _classify_result(message) == expected
+
+
+def test_oamp_status_uses_english_portal_for_english_language():
+    assert _status_url_for_language("en") == OAMP_STATUS_URL_EN
+    assert _status_url_for_language("ru") == OAMP_STATUS_URL
+    assert _status_url_for_language(None) == OAMP_STATUS_URL

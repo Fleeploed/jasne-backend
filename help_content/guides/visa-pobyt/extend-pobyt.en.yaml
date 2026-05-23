@@ -1,0 +1,22 @@
+slug: extend-pobyt
+category: visa-pobyt
+language: en
+published: true
+title: "How to extend residence"
+subtitle: "Filing an extension application"
+short_summary: "When to file a residence extension application and which documents to prepare."
+keywords:
+  - residence
+  - extension
+  - OAMP
+  - application
+sections:
+  - type: text
+    title: "When to apply"
+    body: "A residence extension application is usually filed no earlier than 120 days and no later than 14 days before the current permit expires. Filing at the last moment is possible but risky: if a required attachment is missing, there may be little time to fix it."
+
+  - type: cta
+    title: "Next steps"
+    actions:
+      - scan_oamp_letter
+      - open_help_center

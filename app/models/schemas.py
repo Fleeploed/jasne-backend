@@ -31,7 +31,7 @@ UserPlan = Literal["free", "pro"]
 MessageRole = Literal["user", "assistant"]
 MessageType = Literal["text", "image", "result_card"]
 OampStatusQueryKind = Literal["proceedings", "visa"]
-OampStatusOutcome = Literal["found", "not_found", "unknown"]
+OampStatusOutcome = Literal["approved", "processing", "not_found", "rejected", "found", "unknown"]
 
 DEFAULT_REMINDER_DAYS: list[int] = [30, 14, 7, 1]
 
@@ -324,6 +324,7 @@ class OampStatusCheckRequest(_Base):
     category: str | None = Field(default=None, min_length=2, max_length=4)
     year: str | None = Field(default=None, pattern=r"^\d{4}$")
     visa_number: str | None = Field(default=None, min_length=1, max_length=80)
+    language: UserLanguage | None = None
 
     @field_validator(
         "case_number", "reference_number", "additional_suffix", "category", "year", "visa_number"

@@ -1,0 +1,22 @@
+slug: danove-priznani-basics
+category: taxes
+language: en
+published: true
+title: "Tax return: basics"
+subtitle: "Who files it, when, and how"
+short_summary: "Basic orientation in filing a Czech tax return for individuals and OSVČ."
+keywords:
+  - taxes
+  - tax return
+  - OSVČ
+  - tax office
+sections:
+  - type: text
+    title: "Who usually files"
+    body: "OSVČ files a tax return every year. An employee with one employer often does not file one if the employer does the annual settlement. If you have additional income, check your filing obligation with the tax office or a tax adviser."
+
+  - type: cta
+    title: "Next steps"
+    actions:
+      - scan_tax_letter
+      - open_help_center

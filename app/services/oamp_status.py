@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from contextlib import suppress
 from datetime import UTC, datetime
 
@@ -14,8 +15,16 @@ except ImportError:  # pragma: no cover - exercised only in misconfigured deploy
     sync_playwright = None
 
 OAMP_STATUS_URL = "https://ipc.gov.cz/informace-o-stavu-rizeni/"
+OAMP_STATUS_URL_EN = "https://ipc.gov.cz/en/status-of-your-application/"
 _RESULT_RE = re.compile(
-    r"(Řízení či oznámení s číslem jednacím .*?)(?=Zadejte číslo jednací|$)",
+    r"((?:Řízení či oznámení s číslem jednacím|Proceedings or notification with reference number)"
+    r".*?)(?=Zadejte číslo jednací|Enter reference number|$)",
+    re.IGNORECASE,
+)
+_KEYWORD_RESULT_RE = re.compile(
+    r"([^.!?]*(?:kladn|zpracováv\w*\s+se|zpracovav\w*\s+se|nebylo\s+nalezeno|"
+    r"nenalezen|nepovol|zamítn|zamit|nevyhov|zastavil|preliminarily\s+assessed\s+positively|"
+    r"being\s+processed|have\s+been\s+closed|not\s+found)[^.!?]*(?:[.!?]|$))",
     re.IGNORECASE,
 )
 
@@ -48,6 +57,8 @@ def check_oamp_status(payload: OampStatusCheckRequest) -> OampStatusCheckRespons
     if sync_playwright is None:
         raise OampStatusError("Playwright is not installed")
 
+    source_url = _status_url_for_language(payload.language)
+
     try:
         with sync_playwright() as playwright:
             browser = playwright.chromium.launch(
@@ -65,7 +76,7 @@ def check_oamp_status(payload: OampStatusCheckRequest) -> OampStatusCheckRespons
                         "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36"
                     ),
                 )
-                page.goto(OAMP_STATUS_URL, wait_until="domcontentloaded", timeout=60000)
+                page.goto(source_url, wait_until="domcontentloaded", timeout=60000)
 
                 with suppress(PlaywrightTimeoutError):
                     page.wait_for_load_state("networkidle", timeout=30000)
@@ -101,7 +112,7 @@ def check_oamp_status(payload: OampStatusCheckRequest) -> OampStatusCheckRespons
         query=case_id,
         status=_classify_result(message),
         message=message,
-        source_url=OAMP_STATUS_URL,
+        source_url=source_url,
         checked_at=datetime.now(UTC),
     )
 
@@ -118,8 +129,18 @@ def _format_case_id(payload: OampStatusCheckRequest) -> str:
     return f"OAM-{payload.reference_number}{optional}/{payload.category}-{payload.year}"
 
 
+def _status_url_for_language(language: str | None) -> str:
+    return OAMP_STATUS_URL_EN if language == "en" else OAMP_STATUS_URL
+
+
 def _normalize_text(text: str) -> str:
     return " ".join(text.split())
+
+
+def _normalize_for_match(text: str) -> str:
+    decomposed = unicodedata.normalize("NFKD", text)
+    without_accents = "".join(char for char in decomposed if not unicodedata.combining(char))
+    return _normalize_text(without_accents).lower()
 
 
 def _fill_input(page, name: str, value: str) -> None:
@@ -140,13 +161,31 @@ def _extract_result(page) -> str:
     match = _RESULT_RE.search(body)
     if match:
         return _normalize_text(match.group(1))
+    keyword_match = _KEYWORD_RESULT_RE.search(body)
+    if keyword_match:
+        return _normalize_text(keyword_match.group(1))
     raise OampStatusError("Could not find OAMP result block")
 
 
 def _classify_result(message: str):
-    lower = message.lower()
-    if "nebyl" in lower or "nenalezen" in lower or "nenalezeno" in lower:
+    normalized = _normalize_for_match(message)
+    if (
+        "nebylo nalezeno" in normalized
+        or "nebyl" in normalized
+        or "nenalezen" in normalized
+        or "not found" in normalized
+    ):
         return "not_found"
-    if "řízení či oznámení s číslem jednacím" in lower:
-        return "found"
-    return "unknown"
+    if "kladn" in normalized or "preliminarily assessed positively" in normalized:
+        return "approved"
+    if (
+        "nepovol" in normalized
+        or "zamit" in normalized
+        or "nevyhov" in normalized
+        or "zastavil" in normalized
+        or "have been closed" in normalized
+    ):
+        return "rejected"
+    if "zpracovava se" in normalized or "v rizeni" in normalized or "being processed" in normalized:
+        return "processing"
+    return "rejected"

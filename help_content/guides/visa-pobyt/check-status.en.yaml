@@ -1,0 +1,53 @@
+slug: check-status
+category: visa-pobyt
+language: en
+published: true
+title: "How to check application status (OAMP)"
+subtitle: "Residence application status"
+short_summary: "Where to find your application number, how to open the online status check, and what to do if the status does not change for a long time."
+keywords:
+  - OAMP
+  - residence
+  - application status
+  - request
+  - proceedings
+  - permit
+official_source_url: "https://frs.gov.cz/informace-o-stavu-rizeni"
+sections:
+  - type: text
+    title: "In short"
+    body: "OAMP (Department for Asylum and Migration Policy) is part of the Czech Ministry of the Interior and handles residence applications. After filing an application, you can check the status online using the číslo jednací. The check is free and available at any time."
+
+  - type: steps
+    title: "What to do"
+    items:
+      - "Find the application number. It is usually on the confirmation of filing or on a document about your visa or biometrics."
+      - "Open frs.gov.cz and go to the Information on application status section."
+      - "Enter the number in the format OAM-XXXXX-XX/AA-YYYY and your date of birth."
+      - "Read the current status: Received, In progress, Suspended, Decided, or Delivered."
+
+  - type: checklist
+    title: "What to prepare"
+    items:
+      - "Passport"
+      - "Application number or číslo jednací"
+      - "Internet access"
+
+  - type: text
+    title: "What the statuses mean"
+    body: "Received means the application was accepted. In progress means it is being processed. Suspended usually means the office is waiting for missing documents. Decided means a decision already exists. Delivered means the decision was delivered or is ready for pickup."
+
+  - type: warning
+    title: "Important"
+    body: "Jasně does not connect to government systems and cannot verify the status for you. We show where to check the status and how to read the result. All official applications and decisions stay with OAMP."
+
+  - type: text
+    title: "If the status does not change"
+    body: "Typical timelines depend on the application type. If the status does not change for a long time or you have received a request to provide more documents, check the deadline and follow the letter. For complex cases, consider consulting a migration-law specialist."
+
+  - type: cta
+    title: "Next steps"
+    actions:
+      - scan_oamp_letter
+      - add_deadline_manual
+      - open_deadlines
