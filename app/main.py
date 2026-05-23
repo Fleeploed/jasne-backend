@@ -6,13 +6,14 @@ from contextlib import asynccontextmanager
 
 import openai
 from fastapi import FastAPI, Request
+from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.config import get_settings
 from app.models.schemas import DeepHealthResponse, DepStatus, HealthResponse
-from app.routers import chat, deadlines, limits, profile, scan, webhooks
+from app.routers import chat, deadlines, limits, profile, scan, status, webhooks
 from app.routers import help as help_router
 from app.services.embeddings import close_openai_client, get_openai_client
 from app.services.help_loader import load_help_content
@@ -84,6 +85,7 @@ app.include_router(chat.router)  # /scans/{scan_id}/chat (Pro Q&A)
 app.include_router(deadlines.router)
 app.include_router(profile.router)
 app.include_router(limits.router)  # /limits — usage vs plan caps
+app.include_router(status.router)  # /status/oamp — OAMP proceedings status
 app.include_router(webhooks.router)
 app.include_router(help_router.router)  # /help — static content from YAML
 
@@ -101,7 +103,7 @@ def _request_id_for(request: Request) -> str | None:
 async def validation_handler(request: Request, exc: RequestValidationError):
     return JSONResponse(
         status_code=422,
-        content={"detail": exc.errors(), "request_id": _request_id_for(request)},
+        content={"detail": jsonable_encoder(exc.errors()), "request_id": _request_id_for(request)},
     )
 
 

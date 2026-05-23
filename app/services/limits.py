@@ -4,14 +4,18 @@ Skill caps:
   Free → 5 scans/month, 3 pages/scan, 0 chat questions
   Pro  → 100 scans/month, 10 pages/scan, 10 chat questions per scan
 
-Counters live in `usage_limits` (composite PK on user_id+month). We prefer
-Postgres RPC functions so concurrent scan/chat requests cannot lose updates,
-with a compatibility fallback for environments where the SQL migration has not
-been applied yet.
+Free counters reset by calendar month. Pro counters reset by subscription
+period, so a user buying on May 22 gets a Pro quota bucket from May 22 to
+June 22 instead of losing quota at the end of May.
+
+Counters live in `usage_limits` (composite PK on user_id+month). The column is
+historically named `month`; for Pro it stores a stable subscription period key
+such as `pro:2026-05-22:2026-06-22`.
 """
 
 from __future__ import annotations
 
+import calendar
 import logging
 from datetime import UTC, datetime
 from typing import TypedDict
@@ -51,6 +55,63 @@ def current_month() -> str:
     return datetime.now(UTC).strftime("%Y-%m")
 
 
+def _parse_datetime(value: datetime | str | None) -> datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            logger.warning("Could not parse subscription_expires_at for usage period: %s", value)
+            return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
+
+
+def _subtract_calendar_months(value: datetime, months: int) -> datetime:
+    month_index = value.month - 1 - months
+    year = value.year + month_index // 12
+    month = month_index % 12 + 1
+    day = min(value.day, calendar.monthrange(year, month)[1])
+    return value.replace(year=year, month=month, day=day)
+
+
+def usage_period_for_plan(
+    plan: UserPlan,
+    *,
+    subscription_expires_at: datetime | str | None = None,
+    subscription_product_id: str | None = None,
+) -> str:
+    """Return the usage bucket key for the current request.
+
+    Free remains calendar-month based. Pro follows the active billing period
+    derived from RevenueCat's entitlement expiration. Monthly products subtract
+    one calendar month from `expires_at`; yearly products subtract one year.
+    """
+    if plan != "pro":
+        return current_month()
+
+    expires_at = _parse_datetime(subscription_expires_at)
+    if expires_at is None or expires_at <= datetime.now(UTC):
+        return current_month()
+
+    product = (subscription_product_id or "").lower()
+    period_months = 12 if "year" in product or "annual" in product else 1
+    starts_at = _subtract_calendar_months(expires_at, period_months)
+    return f"pro:{starts_at.date().isoformat()}:{expires_at.date().isoformat()}"
+
+
+def usage_period_for_profile(profile: dict) -> str:
+    return usage_period_for_plan(
+        profile.get("plan", "free"),
+        subscription_expires_at=profile.get("subscription_expires_at"),
+        subscription_product_id=profile.get("subscription_product_id"),
+    )
+
+
 async def _read_row(user_id: UUID, month: str) -> dict | None:
     supabase = await get_supabase()
     result = (
@@ -65,10 +126,10 @@ async def _read_row(user_id: UUID, month: str) -> dict | None:
 
 
 async def get_or_init_usage(user_id: UUID, month: str | None = None) -> dict:
-    """Read the current month's row, creating it if missing.
+    """Read the current usage period row, creating it if missing.
 
     Uses upsert with ignore_duplicates to avoid PK-violation races when two
-    requests arrive before the month's row exists.
+    requests arrive before the period row exists.
     """
     month = month or current_month()
     row = await _read_row(user_id, month)
@@ -173,23 +234,30 @@ async def _increment_chat_count_fallback(user_id: UUID, scan_id: UUID, month: st
     return new_count
 
 
-async def check_scan_quota(user_id: UUID, plan: UserPlan, page_count: int) -> None:
-    """Raise ValueError if scan would exceed monthly cap or per-scan page cap."""
+async def check_scan_quota(
+    user_id: UUID,
+    plan: UserPlan,
+    page_count: int,
+    month: str | None = None,
+) -> None:
+    """Raise ValueError if scan would exceed period cap or per-scan page cap."""
     caps = caps_for_plan(plan)
     if page_count > caps["max_pages_per_scan"]:
         raise ValueError(
             f"plan='{plan}' allows max {caps['max_pages_per_scan']} pages per scan (got {page_count})"
         )
-    usage = await get_or_init_usage(user_id)
+    usage = await get_or_init_usage(user_id, month)
     if usage["scans_count"] >= caps["monthly_scans"]:
+        period_label = "month" if plan == "free" else "subscription period"
         raise ValueError(
-            f"plan='{plan}' allows {caps['monthly_scans']} scans/month, already used {usage['scans_count']}"
+            f"plan='{plan}' allows {caps['monthly_scans']} scans/{period_label}, "
+            f"already used {usage['scans_count']}"
         )
 
 
-async def increment_scan_count(user_id: UUID) -> int:
+async def increment_scan_count(user_id: UUID, month: str | None = None) -> int:
     """Atomically bump scans_count by 1 and return the new value."""
-    month = current_month()
+    month = month or current_month()
     supabase = await get_supabase()
     try:
         result = await supabase.rpc(
@@ -217,14 +285,19 @@ async def increment_scan_count(user_id: UUID) -> int:
     return new_count
 
 
-async def check_chat_quota(user_id: UUID, plan: UserPlan, scan_id: UUID) -> int:
+async def check_chat_quota(
+    user_id: UUID,
+    plan: UserPlan,
+    scan_id: UUID,
+    month: str | None = None,
+) -> int:
     """Raise ValueError if asking another question would exceed per-scan chat cap.
     Returns the count of questions already asked for this scan."""
     caps = caps_for_plan(plan)
     if caps["max_questions_per_scan"] <= 0:
         raise ValueError(f"plan='{plan}' does not include chat questions")
 
-    usage = await get_or_init_usage(user_id)
+    usage = await get_or_init_usage(user_id, month)
     asked = int((usage.get("questions_per_scan") or {}).get(str(scan_id), 0))
     if asked >= caps["max_questions_per_scan"]:
         raise ValueError(
@@ -233,9 +306,9 @@ async def check_chat_quota(user_id: UUID, plan: UserPlan, scan_id: UUID) -> int:
     return asked
 
 
-async def increment_chat_count(user_id: UUID, scan_id: UUID) -> int:
+async def increment_chat_count(user_id: UUID, scan_id: UUID, month: str | None = None) -> int:
     """Atomically bump questions_per_scan[scan_id] by 1 and return the new value."""
-    month = current_month()
+    month = month or current_month()
     supabase = await get_supabase()
     try:
         result = await supabase.rpc(

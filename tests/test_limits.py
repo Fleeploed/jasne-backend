@@ -1,5 +1,6 @@
 """Tests for usage limits service (Free vs Pro caps)."""
 
+from datetime import UTC, datetime
 from uuid import UUID
 
 import pytest
@@ -13,6 +14,8 @@ from app.services.limits import (
     get_or_init_usage,
     increment_chat_count,
     increment_scan_count,
+    usage_period_for_plan,
+    usage_period_for_profile,
 )
 
 USER_ID = UUID("11111111-1111-1111-1111-111111111111")
@@ -44,6 +47,37 @@ class TestPlanLimits:
     def test_caps_for_plan_unknown_falls_back_to_free(self):
         caps = caps_for_plan("enterprise")  # type: ignore[arg-type]
         assert caps == PLAN_LIMITS["free"]
+
+
+class TestUsagePeriods:
+    def test_free_uses_calendar_month(self):
+        assert usage_period_for_plan("free") == current_month()
+
+    def test_monthly_pro_uses_subscription_period(self):
+        period = usage_period_for_plan(
+            "pro",
+            subscription_expires_at="2099-06-22T10:30:00+00:00",
+            subscription_product_id="jasne_pro_monthly",
+        )
+        assert period == "pro:2099-05-22:2099-06-22"
+
+    def test_yearly_pro_uses_annual_subscription_period(self):
+        period = usage_period_for_plan(
+            "pro",
+            subscription_expires_at=datetime(2099, 5, 22, 10, 30, tzinfo=UTC),
+            subscription_product_id="jasne_pro_yearly",
+        )
+        assert period == "pro:2098-05-22:2099-05-22"
+
+    def test_profile_period_uses_subscription_fields(self):
+        period = usage_period_for_profile(
+            {
+                "plan": "pro",
+                "subscription_product_id": "jasne_pro_monthly",
+                "subscription_expires_at": "2099-06-22T10:30:00Z",
+            }
+        )
+        assert period == "pro:2099-05-22:2099-06-22"
 
 
 @pytest.fixture

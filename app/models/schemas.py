@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import re
 from datetime import date, datetime
 from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 # ---------------------------------------------------------------------------
 # Enums / literals
@@ -29,6 +30,8 @@ UserLanguage = Literal["cs", "en", "uk", "ru"]
 UserPlan = Literal["free", "pro"]
 MessageRole = Literal["user", "assistant"]
 MessageType = Literal["text", "image", "result_card"]
+OampStatusQueryKind = Literal["proceedings", "visa"]
+OampStatusOutcome = Literal["found", "not_found", "unknown"]
 
 DEFAULT_REMINDER_DAYS: list[int] = [30, 14, 7, 1]
 
@@ -293,6 +296,98 @@ class LimitsResponse(_Base):
     # passed). null when called without a scan filter.
     questions_used_for_scan: int | None = None
     max_questions_per_scan: int
+
+
+# ---------------------------------------------------------------------------
+# OAMP status lookup
+# ---------------------------------------------------------------------------
+
+
+_OAMP_CASE_RE = re.compile(
+    r"^OAM-?(?P<reference_number>\d+)(?:-?(?P<additional_suffix>[A-Z0-9]+))?"
+    r"/?(?P<category>[A-Z]{2,4})-?(?P<year>\d{4})$"
+)
+
+
+class OampStatusCheckRequest(_Base):
+    """Payload accepted by the mobile status form.
+
+    Frontend can either send a preformatted `case_number`
+    (`OAM-19391-4/ZM-2026`) or separate fields from the segmented form.
+    `visa_number` is accepted as a distinct query kind, but the current
+    Playwright integration only has verified selectors for proceedings.
+    """
+
+    case_number: str | None = Field(default=None, max_length=80)
+    reference_number: str | None = Field(default=None, min_length=1, max_length=16)
+    additional_suffix: str | None = Field(default=None, max_length=12)
+    category: str | None = Field(default=None, min_length=2, max_length=4)
+    year: str | None = Field(default=None, pattern=r"^\d{4}$")
+    visa_number: str | None = Field(default=None, min_length=1, max_length=80)
+
+    @field_validator(
+        "case_number", "reference_number", "additional_suffix", "category", "year", "visa_number"
+    )
+    @classmethod
+    def normalize_uppercase(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        cleaned = " ".join(value.strip().upper().split())
+        return cleaned or None
+
+    @field_validator("reference_number")
+    @classmethod
+    def reference_number_digits_only(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        cleaned = re.sub(r"\D", "", value)
+        if not cleaned:
+            raise ValueError("reference_number must contain digits")
+        return cleaned
+
+    @field_validator("additional_suffix")
+    @classmethod
+    def additional_suffix_alphanumeric(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        cleaned = re.sub(r"[^A-Z0-9]", "", value)
+        return cleaned or None
+
+    @field_validator("category")
+    @classmethod
+    def category_letters_only(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        if not re.fullmatch(r"[A-Z]{2,4}", value):
+            raise ValueError("category must contain 2-4 letters")
+        return value
+
+    @model_validator(mode="after")
+    def parse_and_validate_query(self) -> OampStatusCheckRequest:
+        if self.case_number and not (self.reference_number and self.category and self.year):
+            normalized_case = re.sub(r"^0AM", "OAM", self.case_number.replace(" ", ""))
+            match = _OAMP_CASE_RE.fullmatch(normalized_case)
+            if match:
+                self.reference_number = match.group("reference_number")
+                self.additional_suffix = match.group("additional_suffix")
+                self.category = match.group("category")
+                self.year = match.group("year")
+            elif not self.visa_number:
+                raise ValueError("case_number must look like OAM-19391-4/ZM-2026")
+
+        has_proceedings = bool(self.reference_number and self.category and self.year)
+        if not has_proceedings and not self.visa_number:
+            raise ValueError("Send either OAMP proceedings fields or visa_number")
+        return self
+
+
+class OampStatusCheckResponse(_Base):
+    kind: OampStatusQueryKind
+    query: str
+    status: OampStatusOutcome
+    message: str
+    source_url: str
+    checked_at: datetime
 
 
 # ---------------------------------------------------------------------------

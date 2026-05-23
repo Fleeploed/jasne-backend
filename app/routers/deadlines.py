@@ -10,7 +10,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from app.middleware.auth import get_current_user_id
-from app.models.schemas import DeadlineCreate, DeadlineResponse, DeadlineUpdate
+from app.models.schemas import DeadlineCreate, DeadlineResponse, DeadlineStatus, DeadlineUpdate
 from app.services.rag import get_supabase
 
 logger = logging.getLogger(__name__)
@@ -35,13 +35,26 @@ async def _ensure_scan_owned(scan_id: UUID, user_id: UUID) -> None:
 @router.get("", response_model=list[DeadlineResponse])
 async def list_deadlines(
     only_active: bool = True,
+    status_filter: DeadlineStatus | None = None,
+    limit: int = 50,
+    offset: int = 0,
     user_id: UUID = Depends(get_current_user_id),
 ) -> list[DeadlineResponse]:
+    limit = max(1, min(limit, 100))
+    offset = max(0, offset)
+
     supabase = await get_supabase()
     query = supabase.table("deadlines").select("*").eq("user_id", str(user_id))
-    if only_active:
+    if status_filter is not None:
+        query = query.eq("status", status_filter)
+    elif only_active:
         query = query.eq("status", "active")
-    result = await query.order("due_date").execute()
+
+    result = (
+        await query.order("due_date", desc=status_filter == "completed")
+        .range(offset, offset + limit - 1)
+        .execute()
+    )
     return [DeadlineResponse.model_validate(row) for row in (result.data or [])]
 
 

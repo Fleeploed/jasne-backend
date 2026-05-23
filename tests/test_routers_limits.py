@@ -41,6 +41,20 @@ class TestGetLimits:
         assert body["max_pages_per_scan"] == 10
         assert body["max_questions_per_scan"] == 10
 
+    def test_pro_user_with_expiration_uses_subscription_period(
+        self, client, fake_supabase, auth_headers, test_user_id
+    ):
+        _seed_profile(
+            fake_supabase,
+            str(test_user_id),
+            plan="pro",
+            subscription_product_id="jasne_pro_monthly",
+            subscription_expires_at="2099-06-22T10:30:00Z",
+        )
+        r = client.get("/limits", headers=auth_headers)
+        body = r.json()
+        assert body["month"] == "pro:2099-05-22:2099-06-22"
+
     def test_with_scan_id_returns_chat_count(self, client, fake_supabase, auth_headers, test_user_id):
         _seed_profile(fake_supabase, str(test_user_id), plan="pro")
         scan_id = uuid4()

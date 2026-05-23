@@ -3,6 +3,7 @@ FROM python:3.12-slim AS builder
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
+    PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
@@ -21,6 +22,7 @@ FROM python:3.12-slim AS runtime
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
+    PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
     PORT=8000
 
 # Non-root user for security
@@ -30,6 +32,9 @@ WORKDIR /app
 
 # Copy installed packages from builder
 COPY --from=builder /install /usr/local
+
+# Chromium is required for the OAMP status checker.
+RUN python -m playwright install --with-deps chromium
 
 # Copy source
 COPY --chown=app:app app ./app

@@ -30,7 +30,7 @@ from app.models.schemas import (
 from app.routers.profile import _ensure_profile
 from app.services.analyzer import analyze_document, stream_analyze_document
 from app.services.classifier import classify_document
-from app.services.limits import check_scan_quota, increment_scan_count
+from app.services.limits import check_scan_quota, increment_scan_count, usage_period_for_profile
 from app.services.rag import get_supabase, retrieve_chunks
 
 logger = logging.getLogger(__name__)
@@ -113,15 +113,22 @@ async def _stream_analyzer_phase(
 async def _scan_stream_events(
     user_id: UUID,
     body: ScanRequest,
-    plan: str,
+    profile: dict,
     language: UserLanguage,
     has_datova_schranka: bool,
 ) -> AsyncIterator[str]:
     """Compose the full SSE event sequence for a single scan request."""
+    plan = profile.get("plan", "free")
+    usage_period = usage_period_for_profile(profile)
     try:
         yield _sse("status", {"step": "preparing_inputs", "message": "Preparing document pages"})
         vision_inputs = await _prepare_vision_inputs(user_id, body.image_paths)
-        await _check_scan_quota_or_402(user_id, plan, page_count=vision_inputs.page_count)
+        await _check_scan_quota_or_402(
+            user_id,
+            plan,
+            page_count=vision_inputs.page_count,
+            usage_period=usage_period,
+        )
 
         yield _sse("status", {"step": "ocr", "message": "Reading document text"})
         classifier_task = asyncio.create_task(classify_document(vision_inputs.urls))
@@ -164,7 +171,15 @@ async def _scan_stream_events(
         assert analysis is not None and model_used is not None  # noqa: S101
 
         yield _sse("status", {"step": "saving", "message": "Saving scan and reminders"})
-        scan = await _persist_completed_scan(user_id, body, classifier, analysis, language, model_used)
+        scan = await _persist_completed_scan(
+            user_id,
+            body,
+            classifier,
+            analysis,
+            language,
+            model_used,
+            usage_period=usage_period,
+        )
         yield _sse("done", scan.model_dump(mode="json"))
     except HTTPException as exc:
         yield _sse("error", {"status_code": exc.status_code, "detail": exc.detail})
@@ -326,9 +341,14 @@ async def _prepare_vision_inputs(user_id: UUID, image_paths: list[str]) -> Prepa
     return PreparedVisionInputs(urls=urls, page_count=len(urls))
 
 
-async def _check_scan_quota_or_402(user_id: UUID, plan: str, page_count: int) -> None:
+async def _check_scan_quota_or_402(
+    user_id: UUID,
+    plan: str,
+    page_count: int,
+    usage_period: str | None = None,
+) -> None:
     try:
-        await check_scan_quota(user_id, plan, page_count=page_count)
+        await check_scan_quota(user_id, plan, page_count=page_count, month=usage_period)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_402_PAYMENT_REQUIRED, detail=str(exc)) from exc
 
@@ -384,6 +404,7 @@ async def _persist_completed_scan(
     analysis: AnalysisResult,
     language: UserLanguage,
     model_used: str,
+    usage_period: str | None = None,
 ) -> ScanResponse:
     supabase = await get_supabase()
     scan_row = {
@@ -420,7 +441,7 @@ async def _persist_completed_scan(
     scan_data["page_count"] = classifier.page_count
     scan_id = UUID(scan_data["id"])
 
-    await increment_scan_count(user_id)
+    await increment_scan_count(user_id, month=usage_period)
 
     # Side-effects below must not fail the scan — the row is already committed.
     # We log and continue so the user gets their analysis back even if reminders
@@ -455,14 +476,20 @@ async def create_scan(
 ) -> ScanResponse:
     profile = await _ensure_profile(user_id)
     plan = profile.get("plan", "free")
+    usage_period = usage_period_for_profile(profile)
     language: UserLanguage = body.language or profile.get("language", "cs")
     has_datova_schranka: bool = bool(profile.get("has_datova_schranka", False))
 
     # Plan-based quota check (monthly scans + per-scan page cap)
-    await _check_scan_quota_or_402(user_id, plan, page_count=len(body.image_paths))
+    await _check_scan_quota_or_402(user_id, plan, page_count=len(body.image_paths), usage_period=usage_period)
 
     vision_inputs = await _prepare_vision_inputs(user_id, body.image_paths)
-    await _check_scan_quota_or_402(user_id, plan, page_count=vision_inputs.page_count)
+    await _check_scan_quota_or_402(
+        user_id,
+        plan,
+        page_count=vision_inputs.page_count,
+        usage_period=usage_period,
+    )
 
     # Call 1 — OCR + classification (multi-page, single Vision call)
     classifier = await classify_document(vision_inputs.urls)
@@ -491,7 +518,15 @@ async def create_scan(
         has_datova_schranka=has_datova_schranka,
     )
 
-    return await _persist_completed_scan(user_id, body, classifier, analysis, language, model_used)
+    return await _persist_completed_scan(
+        user_id,
+        body,
+        classifier,
+        analysis,
+        language,
+        model_used,
+        usage_period=usage_period,
+    )
 
 
 @router.post("/stream")
@@ -501,13 +536,14 @@ async def create_scan_stream(
 ) -> StreamingResponse:
     profile = await _ensure_profile(user_id)
     plan = profile.get("plan", "free")
+    usage_period = usage_period_for_profile(profile)
     language: UserLanguage = body.language or profile.get("language", "cs")
     has_datova_schranka: bool = bool(profile.get("has_datova_schranka", False))
 
-    await _check_scan_quota_or_402(user_id, plan, page_count=len(body.image_paths))
+    await _check_scan_quota_or_402(user_id, plan, page_count=len(body.image_paths), usage_period=usage_period)
 
     return StreamingResponse(
-        _scan_stream_events(user_id, body, plan, language, has_datova_schranka),
+        _scan_stream_events(user_id, body, profile, language, has_datova_schranka),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",

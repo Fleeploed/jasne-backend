@@ -18,6 +18,7 @@ from app.services.limits import (
     caps_for_plan,
     check_chat_quota,
     increment_chat_count,
+    usage_period_for_profile,
 )
 from app.services.rag import get_supabase, retrieve_chat_chunks
 
@@ -129,11 +130,12 @@ async def ask_question(
 ) -> ChatAskResponse:
     profile = await _ensure_profile(user_id)
     plan = profile.get("plan", "free")
+    usage_period = usage_period_for_profile(profile)
     language: UserLanguage = profile.get("language", "cs")
 
     # Quota first — cheaper to fail before loading scan + history.
     try:
-        await check_chat_quota(user_id, plan, scan_id)
+        await check_chat_quota(user_id, plan, scan_id, month=usage_period)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_402_PAYMENT_REQUIRED, detail=str(exc)) from exc
 
@@ -157,7 +159,7 @@ async def ask_question(
 
     user_message, assistant_message = await _persist_chat_pair(scan_id, user_id, body.question, answer)
 
-    new_count = await increment_chat_count(user_id, scan_id)
+    new_count = await increment_chat_count(user_id, scan_id, month=usage_period)
     caps = caps_for_plan(plan)
 
     return ChatAskResponse(
@@ -176,10 +178,11 @@ async def ask_question_stream(
 ) -> StreamingResponse:
     profile = await _ensure_profile(user_id)
     plan = profile.get("plan", "free")
+    usage_period = usage_period_for_profile(profile)
     language: UserLanguage = profile.get("language", "cs")
 
     try:
-        await check_chat_quota(user_id, plan, scan_id)
+        await check_chat_quota(user_id, plan, scan_id, month=usage_period)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_402_PAYMENT_REQUIRED, detail=str(exc)) from exc
 
@@ -214,7 +217,7 @@ async def ask_question_stream(
             user_message, assistant_message = await _persist_chat_pair(
                 scan_id, user_id, body.question, answer
             )
-            new_count = await increment_chat_count(user_id, scan_id)
+            new_count = await increment_chat_count(user_id, scan_id, month=usage_period)
             yield _sse(
                 "done",
                 {
