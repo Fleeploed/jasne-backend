@@ -172,7 +172,9 @@ class _FakePage:
             "purposes only. It becomes binding only upon receiving a written decision or "
             "notification of fulfilment of conditions, the residence permit card, or the "
             "affixation of visa sticker. Until then, the Ministry continues to evaluate the "
-            "fulfilment of all necessary requirements. Enter reference number",
+            "fulfilment of all necessary requirements. Enter the reference number of your "
+            "application. Item -XX is optional. OAM - 12345 - XX / Type - Year or visa "
+            "application number (ŽOV) Visa application number VALIDATE ABOUT US GLOSSARY",
             "An application or report, reference number OAM-19391/ZM-2025 "
             "has been preliminarily assessed positively. To book an appointment or for further "
             "information, contact the Client Centre on +420 974 801 801 (Mon-Thu 8:00-16:00, "
@@ -181,6 +183,25 @@ class _FakePage:
             "receiving a written decision or notification of fulfilment of conditions, the "
             "residence permit card, or the affixation of visa sticker. Until then, the Ministry "
             "continues to evaluate the fulfilment of all necessary requirements.",
+        ),
+        (
+            "HOME STAV VAŠÍ ŽÁDOSTI Řízení či oznámení s číslem jednacím "
+            "OAM-19391/ZM-2025 bylo předběžně vyhodnoceno kladně. Pro objednání a "
+            "případné další informace kontaktujte klientské centrum na čísle "
+            "+420 974 801 801 (Po–Čt 8:00–16:00, Pá 8:00–14:00). Informace o tom, "
+            "jak dále postupovat, naleznete dále na této stránce. Stav řízení je pouze "
+            "orientační. Závazné je až převzetí písemného rozhodnutí či sdělení "
+            "o splnění podmínek, pobytového průkazu či vyznačení vízového štítku. "
+            "Do té doby ministerstvo stále vyhodnocuje plnění všech nezbytných "
+            "náležitostí. Zadejte číslo jednací vaší žádosti. Položka -XX je volitelná.",
+            "Řízení či oznámení s číslem jednacím OAM-19391/ZM-2025 bylo předběžně "
+            "vyhodnoceno kladně. Pro objednání a případné další informace kontaktujte "
+            "klientské centrum na čísle +420 974 801 801 (Po–Čt 8:00–16:00, "
+            "Pá 8:00–14:00). Informace o tom, jak dále postupovat, naleznete dále na "
+            "této stránce. Stav řízení je pouze orientační. Závazné je až převzetí "
+            "písemného rozhodnutí či sdělení o splnění podmínek, pobytového průkazu "
+            "či vyznačení vízového štítku. Do té doby ministerstvo stále vyhodnocuje "
+            "plnění všech nezbytných náležitostí.",
         ),
         (
             "AGREE WITH ALL REFUSE ALL MORE SETTINGS HOME STATUS OF YOUR APPLICATION "
