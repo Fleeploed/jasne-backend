@@ -34,7 +34,18 @@ else
     FAIL=1
 fi
 
-# 3. Protected endpoint without token → 401/403
+# 3. Version endpoint should return 200 with a populated git_sha
+status=$(curl -s -o /dev/null -w "%{http_code}" "$BASE_URL/version")
+check "GET /version" 200 "$status"
+body=$(curl -s "$BASE_URL/version")
+if echo "$body" | grep -q '"git_sha"' && echo "$body" | grep -q '"git_sha_short"'; then
+    echo "  ✓ /version body has git_sha + git_sha_short"
+else
+    echo "  ✗ /version body missing git_sha fields: $body"
+    FAIL=1
+fi
+
+# 4. Protected endpoint without token → 401/403
 status=$(curl -s -o /dev/null -w "%{http_code}" "$BASE_URL/profile")
 if [[ "$status" == "401" || "$status" == "403" ]]; then
     echo "  ✓ GET /profile unauthenticated ($status)"
@@ -43,7 +54,7 @@ else
     FAIL=1
 fi
 
-# 4. Protected endpoint with bogus token → 401
+# 5. Protected endpoint with bogus token → 401
 status=$(curl -s -o /dev/null -w "%{http_code}" \
     -H "Authorization: Bearer bogus" "$BASE_URL/profile")
 check "GET /profile bogus token" 401 "$status"

@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -12,7 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.config import get_settings
-from app.models.schemas import DeepHealthResponse, DepStatus, HealthResponse
+from app.models.schemas import DeepHealthResponse, DepStatus, HealthResponse, VersionResponse
 from app.routers import chat, deadlines, limits, profile, scan, status, webhooks
 from app.routers import help as help_router
 from app.services.embeddings import close_openai_client, get_openai_client
@@ -20,6 +21,20 @@ from app.services.help_loader import load_help_content
 from app.services.rag import close_supabase, get_supabase, init_supabase
 
 settings = get_settings()
+
+
+def _load_git_sha() -> str:
+    """Resolve the deployed commit SHA from CI-injected env vars.
+
+    GIT_SHA is set explicitly by our workflow; RAILWAY_GIT_COMMIT_SHA is
+    populated by Railway itself when the deploy came from a connected repo.
+    Falls back to "unknown" so the endpoint never 500s in local/dev.
+    """
+    sha = os.getenv("GIT_SHA") or os.getenv("RAILWAY_GIT_COMMIT_SHA") or "unknown"
+    return sha.strip() or "unknown"
+
+
+GIT_SHA = _load_git_sha()
 
 logging.basicConfig(
     level=settings.log_level,
@@ -50,6 +65,8 @@ app = FastAPI(
     redoc_url=None,
     lifespan=lifespan,
 )
+
+app.state.git_sha = GIT_SHA
 
 app.add_middleware(
     CORSMiddleware,
@@ -167,6 +184,22 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
             "detail": "Internal server error",
             "request_id": _request_id_for(request),
         },
+    )
+
+
+@app.get("/version", response_model=VersionResponse, tags=["system"])
+async def version() -> VersionResponse:
+    """Reports the deployed commit SHA so CI can verify a rollout actually landed.
+
+    `railway up --detach` returns once the upload finishes, before the new
+    container is built and serving. Polling /health alone can match the OLD
+    container; polling /version until the SHA flips proves the new build is live.
+    """
+    sha = app.state.git_sha
+    return VersionResponse(
+        git_sha=sha,
+        git_sha_short=sha[:7] if sha != "unknown" else "unknown",
+        environment=settings.environment,
     )
 
 

@@ -130,26 +130,39 @@ jobs:
       - name: Install Railway CLI
         run: npm install -g @railway/cli
 
+      - name: Stamp GIT_SHA on Railway service
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN_STAGING }}
+        # Set BEFORE the deploy so the new container starts with the right SHA.
+        # --skip-deploys keeps this from triggering its own redeploy; the
+        # `railway up` below is the deploy that picks the variable up.
+        run: railway variables --set "GIT_SHA=${{ github.sha }}" --service jasne-backend --environment production --skip-deploys
+
       - name: Deploy to Railway (staging)
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN_STAGING }}
         # Project: jasne-backend-staging, env: production (Railway default), service: jasne-backend
         run: railway up --service jasne-backend --environment production --detach
 
-      - name: Wait for /health to return 200 (max 5 min)
+      - name: Wait for /version to report the new SHA (max 5 min)
+        # --detach returns once upload finishes, so /health may answer from the
+        # OLD container while the new one is still building. Polling /version
+        # until the SHA flips is the only way to know the new build is live.
         run: |
-          URL="${{ vars.STAGING_URL }}/health"
-          echo "Polling $URL ..."
+          URL="${{ vars.STAGING_URL }}/version"
+          EXPECTED="${GITHUB_SHA:0:7}"
+          echo "Polling $URL for git_sha_short=$EXPECTED ..."
           for i in $(seq 1 30); do
-            code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 "$URL" || echo "000")
-            if [ "$code" = "200" ]; then
-              echo "✓ Healthy after $((i * 10))s"
+            body=$(curl -s --max-time 5 "$URL" || echo "")
+            actual=$(echo "$body" | python3 -c "import json,sys; print(json.loads(sys.stdin.read() or '{}').get('git_sha_short',''))" 2>/dev/null || echo "")
+            if [ "$actual" = "$EXPECTED" ]; then
+              echo "✓ New build live after $((i * 10))s (sha=$actual)"
               exit 0
             fi
-            echo "  attempt $i/30 → HTTP $code, retrying in 10s"
+            echo "  attempt $i/30 → sha=$actual (want $EXPECTED), retrying in 10s"
             sleep 10
           done
-          echo "✗ Health check timeout — service did not become healthy in 5 min"
+          echo "✗ Rollout timeout — /version never reported $EXPECTED in 5 min"
           exit 1
 
       - name: Smoke test
@@ -177,25 +190,32 @@ jobs:
       - name: Install Railway CLI
         run: npm install -g @railway/cli
 
+      - name: Stamp GIT_SHA on Railway service
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN_PRODUCTION }}
+        run: railway variables --set "GIT_SHA=${{ github.sha }}" --service jasne-backend --environment production --skip-deploys
+
       - name: Deploy to Railway (production)
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN_PRODUCTION }}
         run: railway up --service jasne-backend --environment production --detach
 
-      - name: Wait for /health to return 200 (max 5 min)
+      - name: Wait for /version to report the new SHA (max 5 min)
         run: |
-          URL="${{ vars.PRODUCTION_URL }}/health"
-          echo "Polling $URL ..."
+          URL="${{ vars.PRODUCTION_URL }}/version"
+          EXPECTED="${GITHUB_SHA:0:7}"
+          echo "Polling $URL for git_sha_short=$EXPECTED ..."
           for i in $(seq 1 30); do
-            code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 "$URL" || echo "000")
-            if [ "$code" = "200" ]; then
-              echo "✓ Healthy after $((i * 10))s"
+            body=$(curl -s --max-time 5 "$URL" || echo "")
+            actual=$(echo "$body" | python3 -c "import json,sys; print(json.loads(sys.stdin.read() or '{}').get('git_sha_short',''))" 2>/dev/null || echo "")
+            if [ "$actual" = "$EXPECTED" ]; then
+              echo "✓ New build live after $((i * 10))s (sha=$actual)"
               exit 0
             fi
-            echo "  attempt $i/30 → HTTP $code, retrying in 10s"
+            echo "  attempt $i/30 → sha=$actual (want $EXPECTED), retrying in 10s"
             sleep 10
           done
-          echo "✗ Health check timeout — service did not become healthy in 5 min"
+          echo "✗ Rollout timeout — /version never reported $EXPECTED in 5 min"
           exit 1
 
       - name: Smoke test

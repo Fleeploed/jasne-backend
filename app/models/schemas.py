@@ -406,6 +406,15 @@ class HealthResponse(_Base):
     version: str = "0.1.0"
 
 
+class VersionResponse(_Base):
+    """Identifies the deployed code revision — used by CI to verify rollout."""
+
+    git_sha: str
+    git_sha_short: str
+    environment: str = "development"
+    version: str = "0.1.0"
+
+
 class DepStatus(_Base):
     """Status of a single external dependency for the deep health probe."""
 

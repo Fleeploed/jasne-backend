@@ -1,4 +1,4 @@
-"""Tests for /health (liveness) and /health/deep (readiness with dep checks)."""
+"""Tests for /health (liveness), /health/deep (readiness), and /version (rollout)."""
 
 from unittest.mock import AsyncMock, MagicMock
 
@@ -127,3 +127,62 @@ class TestDeepHealth:
         result = await _check_supabase()
         assert result.status == "error"
         assert "timeout" in result.error.lower()
+
+
+class TestVersion:
+    """The /version endpoint is the rollout-verification hook for CI.
+
+    `railway up --detach` returns before the new container is live, so polling
+    /health alone can match the OLD container. CI polls /version until the SHA
+    flips to prove the new build is actually serving traffic.
+    """
+
+    def test_returns_200_with_sha_fields(self, client):
+        r = client.get("/version")
+        assert r.status_code == 200
+        body = r.json()
+        assert "git_sha" in body
+        assert "git_sha_short" in body
+        assert "environment" in body
+        assert "version" in body
+
+    def test_short_sha_is_seven_chars_when_known(self, client, monkeypatch):
+        from app.main import app
+
+        monkeypatch.setattr(app.state, "git_sha", "abcdef0123456789")
+        r = client.get("/version")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["git_sha"] == "abcdef0123456789"
+        assert body["git_sha_short"] == "abcdef0"
+
+    def test_unknown_sha_falls_through_to_unknown_short(self, client, monkeypatch):
+        from app.main import app
+
+        monkeypatch.setattr(app.state, "git_sha", "unknown")
+        r = client.get("/version")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["git_sha"] == "unknown"
+        assert body["git_sha_short"] == "unknown"
+
+    def test_load_git_sha_prefers_GIT_SHA(self, monkeypatch):
+        from app.main import _load_git_sha
+
+        monkeypatch.setenv("GIT_SHA", "deadbeefcafef00d")
+        monkeypatch.setenv("RAILWAY_GIT_COMMIT_SHA", "0000000000000000")
+        assert _load_git_sha() == "deadbeefcafef00d"
+
+    def test_load_git_sha_falls_back_to_railway_var(self, monkeypatch):
+        from app.main import _load_git_sha
+
+        monkeypatch.delenv("GIT_SHA", raising=False)
+        monkeypatch.setenv("RAILWAY_GIT_COMMIT_SHA", "0000000000000000")
+        assert _load_git_sha() == "0000000000000000"
+
+    def test_load_git_sha_defaults_to_unknown(self, monkeypatch):
+        from app.main import _load_git_sha
+
+        monkeypatch.delenv("GIT_SHA", raising=False)
+        monkeypatch.delenv("RAILWAY_GIT_COMMIT_SHA", raising=False)
+        assert _load_git_sha() == "unknown"
