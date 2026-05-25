@@ -12,7 +12,7 @@ keywords:
   - výzva
   - řízení
   - povolení
-official_source_url: "https://frs.gov.cz/informace-o-stavu-rizeni"
+official_source_url: "https://ipc.gov.cz/informace-o-stavu-rizeni/"
 sections:
   - type: text
     title: "Stručně"
@@ -21,10 +21,10 @@ sections:
   - type: steps
     title: "Co udělat"
     items:
-      - "Najděte číslo žádosti. Bývá na potvrzení o podání žádosti nebo na dokumentu k vízu či biometrii."
-      - "Otevřete frs.gov.cz a sekci Informace o stavu řízení."
-      - "Zadejte číslo ve formátu OAM-XXXXX-XX/AA-YYYY a datum narození."
-      - "Přečtěte aktuální stav: Přijato, V řízení, Přerušeno, Rozhodnuto nebo Doručeno."
+      - "Najděte číslo jednací. Bývá na potvrzení o podání žádosti nebo v dopise od OAMP."
+      - "Otevřete kontrolu stavu v Jasně nebo oficiální stránku IPC."
+      - "Zadejte číslo ve formátu OAM-XXXXX-XX/AA-YYYY. Část –XX může chybět."
+      - "Přečtěte aktuální stav: schváleno, probíhá, nenalezeno nebo zamítnuto/ukončeno."
 
   - type: checklist
     title: "Co si připravit"
@@ -35,11 +35,11 @@ sections:
 
   - type: text
     title: "Co znamenají stavy"
-    body: "Přijato znamená, že žádost byla přijata. V řízení znamená, že se žádost zpracovává. Přerušeno obvykle znamená, že úřad čeká na doplnění dokumentů. Rozhodnuto znamená, že rozhodnutí už existuje. Doručeno znamená, že rozhodnutí bylo doručeno nebo je připravené k převzetí."
+    body: "Předběžně vyhodnoceno kladně znamená, že žádost byla schválena pro další krok. Zpracovává se znamená, že OAMP věc stále posuzuje. Nenalezeno znamená, že číslo není vidět v online systému. Zamítnuto nebo ukončeno znamená, že žádost byla odmítnuta nebo řízení skončilo."
 
   - type: warning
     title: "Důležité"
-    body: "Jasně se nepřipojuje ke státním systémům a nemůže ověřit stav za vás. Ukazujeme, kde stav zkontrolovat a jak číst výsledek. Všechny oficiální žádosti a rozhodnutí zůstávají na straně OAMP."
+    body: "Jasně kontroluje veřejný formulář IPC a zobrazí výsledek ve vašem jazyce. Výsledek je pouze informativní; závazné rozhodnutí pořád přichází od OAMP dopisem nebo jiným oficiálním sdělením."
 
   - type: text
     title: "Když se stav dlouho nemění"

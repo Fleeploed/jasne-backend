@@ -1,0 +1,1724 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="referrer" content="no-referrer" />
+  <title>Jasně — Помощь · Админ</title>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    rel="stylesheet"
+    href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&family=Inter+Tight:wght@400;500;600;700&display=swap"
+  />
+
+  <style>
+    :root {
+      --bg: #f6efe2;
+      --surface: #fbf6ec;
+      --surface-2: #f1e8d4;
+      --surface-3: #ece1c5;
+      --border: #e3d6b8;
+      --border-strong: #c9b78a;
+      --text: #2c2418;
+      --text-muted: #6e6147;
+      --text-faint: #9c8b67;
+      --accent: #b07417;
+      --accent-strong: #8a5a0f;
+      --accent-soft: #f4e2bc;
+      --green: #2f7a3a;
+      --green-soft: #d8ebd9;
+      --green-border: #b8d8b8;
+      --red: #a8341e;
+      --red-soft: #f1cfc4;
+      --warning: #b27d10;
+      --warning-soft: #fbecbe;
+      --warning-border: #e9d289;
+      --info: #2a5d8a;
+      --info-soft: #d4e3f0;
+
+      --radius-sm: 10px;
+      --radius: 16px;
+      --radius-lg: 24px;
+
+      --shadow-sm: 0 1px 0 rgba(60, 40, 10, 0.05);
+      --shadow: 0 4px 18px rgba(80, 55, 15, 0.06);
+      --shadow-md: 0 8px 28px rgba(80, 55, 15, 0.10);
+
+      --font-display: "Fraunces", Georgia, serif;
+      --font-body: "Inter Tight", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font-body);
+      font-size: 15px;
+      line-height: 1.5;
+      -webkit-font-smoothing: antialiased;
+    }
+    h1, h2, h3 { font-family: var(--font-display); font-weight: 600; margin: 0; }
+    h1 { font-size: 28px; letter-spacing: -0.01em; }
+    h2 { font-size: 22px; }
+    h3 { font-size: 17px; font-family: var(--font-body); font-weight: 600; }
+
+    .container { max-width: 1080px; margin: 0 auto; padding: 32px 24px 80px; }
+    .container.wide { max-width: 1400px; }
+
+    /* Header */
+    header.app-header {
+      display: flex; align-items: center; gap: 16px;
+      padding: 18px 24px;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      position: sticky; top: 0; z-index: 10;
+    }
+    header.app-header .brand {
+      font-family: var(--font-display); font-weight: 700;
+      font-size: 20px; letter-spacing: -0.01em;
+    }
+    header.app-header .brand small {
+      font-family: var(--font-body); font-weight: 500;
+      color: var(--text-muted); margin-left: 8px; font-size: 13px;
+    }
+    header.app-header .spacer { flex: 1; }
+    header.app-header .user { color: var(--text-muted); font-size: 13px; }
+
+    /* Buttons */
+    .btn {
+      display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+      font-family: var(--font-body); font-weight: 500; font-size: 14px;
+      padding: 10px 16px;
+      border-radius: var(--radius);
+      border: 1px solid var(--border-strong);
+      background: var(--surface);
+      color: var(--text);
+      cursor: pointer;
+      transition: background 120ms ease, transform 80ms ease, box-shadow 120ms ease;
+      box-shadow: var(--shadow-sm);
+    }
+    .btn:hover { background: var(--surface-2); }
+    .btn:active { transform: translateY(1px); }
+    .btn:disabled { opacity: 0.55; cursor: not-allowed; transform: none; }
+    .btn.primary { background: var(--accent); color: #fff; border-color: var(--accent-strong); }
+    .btn.primary:hover { background: var(--accent-strong); }
+    .btn.subtle {
+      border-color: transparent; background: transparent; box-shadow: none;
+      padding: 6px 10px; color: var(--text-muted);
+    }
+    .btn.subtle:hover { color: var(--text); background: var(--surface-2); }
+    .btn.danger { color: var(--red); border-color: var(--red-soft); }
+    .btn.danger:hover { background: var(--red-soft); }
+    .btn.sm { padding: 6px 10px; font-size: 13px; border-radius: 10px; }
+    .btn.ghost { border-color: var(--border); background: transparent; box-shadow: none; }
+    .btn.ghost:hover { background: var(--surface-2); }
+
+    /* Inputs */
+    label.field {
+      display: block;
+      font-size: 13px;
+      color: var(--text-muted);
+      margin-bottom: 6px;
+      font-weight: 500;
+    }
+    label.field .hint {
+      color: var(--text-faint);
+      font-weight: 400;
+      font-size: 12px;
+      margin-left: 6px;
+    }
+    input[type="text"], input[type="email"], input[type="password"], select, textarea {
+      width: 100%;
+      font-family: var(--font-body); font-size: 15px;
+      color: var(--text); background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      padding: 10px 12px;
+      transition: border-color 120ms ease, box-shadow 120ms ease;
+    }
+    input:focus, select:focus, textarea:focus {
+      outline: none;
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px var(--accent-soft);
+    }
+    textarea { resize: vertical; min-height: 80px; font-family: var(--font-body); }
+    input.invalid, textarea.invalid, select.invalid {
+      border-color: var(--red);
+      box-shadow: 0 0 0 3px var(--red-soft);
+    }
+
+    /* Cards */
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      padding: 24px;
+      box-shadow: var(--shadow);
+    }
+    .card + .card { margin-top: 16px; }
+
+    /* Badges */
+    .badge {
+      display: inline-flex; align-items: center;
+      padding: 3px 10px;
+      border-radius: 999px;
+      font-size: 12px; font-weight: 500;
+      background: var(--surface-2); color: var(--text-muted);
+      border: 1px solid var(--border);
+    }
+    .badge.draft { background: var(--surface-2); color: var(--text-muted); }
+    .badge.published { background: var(--green-soft); color: var(--green); border-color: var(--green-border); }
+    .badge.lang { background: var(--accent-soft); color: var(--accent-strong); border-color: #e8cf9c; font-variant-numeric: tabular-nums; }
+    .badge.count {
+      background: var(--surface-3); color: var(--text-muted); border-color: var(--border);
+      padding: 2px 8px; font-size: 11px;
+    }
+
+    /* Toast */
+    .toast {
+      position: fixed; right: 24px; bottom: 24px;
+      padding: 12px 18px;
+      border-radius: var(--radius);
+      box-shadow: var(--shadow-md);
+      font-size: 14px; font-weight: 500;
+      transform: translateY(80px); opacity: 0;
+      transition: transform 220ms ease, opacity 220ms ease;
+      z-index: 100;
+    }
+    .toast.show { transform: translateY(0); opacity: 1; }
+    .toast.success { background: var(--green-soft); color: var(--green); border: 1px solid var(--green-border); }
+    .toast.error { background: var(--red-soft); color: var(--red); border: 1px solid var(--red-soft); }
+
+    /* Login */
+    .login-wrap {
+      display: flex; align-items: center; justify-content: center;
+      min-height: 100vh; padding: 24px;
+    }
+    .login-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      padding: 40px 36px;
+      width: 100%; max-width: 420px;
+      box-shadow: var(--shadow);
+    }
+    .login-card h1 { margin-bottom: 6px; }
+    .login-card p.tagline { color: var(--text-muted); margin: 0 0 24px; font-size: 14px; }
+    .login-card .form-row + .form-row { margin-top: 14px; }
+    .login-card .btn.primary { width: 100%; margin-top: 18px; }
+    .error {
+      margin-top: 14px; padding: 10px 14px;
+      background: var(--red-soft); color: var(--red);
+      border-radius: var(--radius-sm); font-size: 13px;
+    }
+
+    /* Filters */
+    .filters {
+      display: grid;
+      grid-template-columns: 220px 160px 1fr;
+      gap: 12px; margin-bottom: 18px;
+    }
+    @media (max-width: 720px) {
+      .filters { grid-template-columns: 1fr 1fr; }
+      .filters > :last-child { grid-column: span 2; }
+    }
+
+    /* Table */
+    table.guides {
+      width: 100%; border-collapse: separate; border-spacing: 0;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
+    }
+    table.guides th, table.guides td {
+      padding: 14px 16px; text-align: left;
+      border-bottom: 1px solid var(--border);
+      vertical-align: middle;
+    }
+    table.guides tr:last-child td { border-bottom: none; }
+    table.guides tr:hover td { background: rgba(176, 116, 23, 0.03); }
+    table.guides th {
+      font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em;
+      color: var(--text-muted);
+      background: var(--surface-2);
+      font-weight: 500;
+    }
+    table.guides td .row-actions { display: flex; gap: 6px; justify-content: flex-end; }
+    .empty-state, .loading-state { padding: 60px 24px; text-align: center; color: var(--text-muted); }
+    .lang-pills { display: inline-flex; gap: 4px; flex-wrap: wrap; }
+
+    /* Tabs (categories vs guides on list view) */
+    .top-tabs {
+      display: inline-flex; gap: 4px;
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      padding: 4px;
+      margin-bottom: 18px;
+    }
+    .top-tabs button {
+      background: transparent; border: none;
+      padding: 8px 18px;
+      border-radius: 999px;
+      font-family: inherit; font-size: 13px; font-weight: 500;
+      color: var(--text-muted); cursor: pointer;
+    }
+    .top-tabs button.active {
+      background: var(--surface);
+      color: var(--text);
+      box-shadow: var(--shadow-sm);
+    }
+
+    /* Editor layout (split: form + preview) */
+    .editor-split {
+      display: grid;
+      grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
+      gap: 24px;
+      align-items: start;
+    }
+    @media (max-width: 1100px) {
+      .editor-split { grid-template-columns: 1fr; }
+      .preview-pane { position: static !important; max-height: none !important; }
+    }
+    .meta-grid {
+      display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px;
+    }
+    .meta-grid .full { grid-column: 1 / -1; }
+    @media (max-width: 720px) { .meta-grid { grid-template-columns: 1fr; } }
+
+    .section-card {
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 16px;
+      margin-bottom: 12px;
+    }
+    .section-card.type-warning { background: var(--warning-soft); border-color: var(--warning-border); }
+    .section-card.type-cta { background: var(--info-soft); border-color: #bcd2e5; }
+    .section-head {
+      display: flex; align-items: center; gap: 8px;
+      margin-bottom: 10px;
+    }
+    .section-head .type-tag {
+      font-size: 12px; font-weight: 600;
+      color: var(--accent-strong);
+      text-transform: uppercase; letter-spacing: 0.04em;
+    }
+    .section-card.type-warning .type-tag { color: var(--warning); }
+    .section-card.type-cta .type-tag { color: var(--info); }
+    .section-head .spacer { flex: 1; }
+    .section-head .ctrl {
+      background: transparent; border: 1px solid var(--border);
+      border-radius: 8px;
+      width: 28px; height: 28px;
+      display: inline-flex; align-items: center; justify-content: center;
+      cursor: pointer; color: var(--text-muted); padding: 0;
+    }
+    .section-head .ctrl:hover { background: var(--surface); color: var(--text); }
+    .section-head .ctrl.danger:hover { background: var(--red-soft); color: var(--red); }
+
+    .item-row {
+      display: flex; gap: 8px; margin-bottom: 8px; align-items: center;
+    }
+    .item-row .grip {
+      color: var(--text-faint); cursor: grab; user-select: none;
+      width: 18px; text-align: center;
+    }
+    .item-row input { flex: 1; }
+    .item-row .ctrl {
+      width: 32px; height: 32px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--surface);
+      cursor: pointer; color: var(--text-muted);
+      padding: 0;
+    }
+    .item-row .ctrl:hover { background: var(--red-soft); color: var(--red); }
+    .add-toolbar { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+    .add-toolbar .btn { padding: 8px 12px; font-size: 13px; }
+
+    .editor-actions {
+      display: flex; gap: 10px; justify-content: flex-end;
+      margin-top: 18px;
+      position: sticky; bottom: 12px;
+      background: rgba(246, 239, 226, 0.85);
+      backdrop-filter: blur(8px);
+      padding: 12px;
+      border-radius: var(--radius);
+      border: 1px solid var(--border);
+    }
+    .editor-actions .save-hint {
+      color: var(--text-faint); font-size: 12px; align-self: center;
+      margin-right: auto;
+    }
+
+    .field-error { color: var(--red); font-size: 12px; margin-top: 4px; }
+
+    .breadcrumb { color: var(--text-muted); font-size: 13px; margin-bottom: 18px; }
+    .breadcrumb a { color: var(--accent-strong); text-decoration: none; cursor: pointer; }
+    .breadcrumb a:hover { text-decoration: underline; }
+
+    /* Segmented */
+    .segmented {
+      display: inline-flex;
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      padding: 3px; gap: 3px;
+    }
+    .segmented button {
+      border: none; background: transparent;
+      padding: 6px 14px;
+      font-family: inherit; font-size: 13px;
+      color: var(--text-muted);
+      border-radius: 999px; cursor: pointer;
+    }
+    .segmented button.active {
+      background: var(--surface);
+      color: var(--text);
+      box-shadow: var(--shadow-sm);
+    }
+    .segmented.lang button.has-content { color: var(--text); font-weight: 500; }
+    .segmented.lang button.has-content::before {
+      content: "●"; color: var(--green); margin-right: 4px; font-size: 9px;
+    }
+
+    /* Preview pane */
+    .preview-pane {
+      position: sticky; top: 90px;
+      max-height: calc(100vh - 110px);
+      overflow-y: auto;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      padding: 0;
+      box-shadow: var(--shadow);
+    }
+    .preview-head {
+      padding: 14px 20px;
+      border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; gap: 10px;
+      background: var(--surface-2);
+      border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+      position: sticky; top: 0; z-index: 1;
+    }
+    .preview-head h3 { flex: 1; font-size: 14px; color: var(--text-muted); font-weight: 500; }
+    .preview-body { padding: 24px; }
+    .preview-body .pv-title { font-family: var(--font-display); font-size: 22px; font-weight: 600; margin-bottom: 4px; }
+    .preview-body .pv-subtitle { color: var(--text-muted); margin-bottom: 16px; }
+    .preview-body .pv-section { margin: 16px 0; }
+    .preview-body .pv-section-title { font-weight: 600; font-size: 15px; margin-bottom: 6px; }
+    .preview-body .pv-section.text p, .preview-body .pv-section.warning p {
+      margin: 0; white-space: pre-wrap;
+    }
+    .preview-body .pv-section.warning {
+      background: var(--warning-soft);
+      border-left: 3px solid var(--warning);
+      padding: 12px 14px;
+      border-radius: var(--radius-sm);
+    }
+    .preview-body .pv-section.steps ol { margin: 0; padding-left: 22px; }
+    .preview-body .pv-section.steps ol li { margin: 4px 0; }
+    .preview-body .pv-section.checklist ul { margin: 0; padding-left: 4px; list-style: none; }
+    .preview-body .pv-section.checklist li {
+      margin: 4px 0; padding-left: 24px; position: relative;
+    }
+    .preview-body .pv-section.checklist li::before {
+      content: "✓"; color: var(--green); font-weight: 700;
+      position: absolute; left: 4px;
+    }
+    .preview-body .pv-section.cta {
+      background: var(--info-soft);
+      border-radius: var(--radius);
+      padding: 12px 14px;
+    }
+    .preview-body .pv-section.cta .pv-action {
+      display: inline-block; margin: 4px 6px 4px 0;
+      padding: 6px 12px; border-radius: 999px;
+      background: var(--surface); border: 1px solid var(--border);
+      font-size: 13px; font-weight: 500;
+      color: var(--info);
+    }
+    .preview-body .pv-empty { color: var(--text-faint); font-style: italic; }
+
+    .hidden { display: none !important; }
+    .spinner {
+      display: inline-block; width: 14px; height: 14px;
+      border: 2px solid currentColor; border-right-color: transparent;
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+      vertical-align: -2px; margin-right: 6px;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    kbd {
+      display: inline-block;
+      padding: 1px 6px;
+      border: 1px solid var(--border);
+      border-bottom-width: 2px;
+      background: var(--surface);
+      border-radius: 4px;
+      font-family: ui-monospace, SF Mono, monospace;
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+
+    /* Sibling-language banner inside editor */
+    .siblings-banner {
+      padding: 10px 14px;
+      background: var(--info-soft);
+      border: 1px solid #bcd2e5;
+      border-radius: var(--radius-sm);
+      font-size: 13px;
+      display: flex; align-items: center; gap: 10px;
+      flex-wrap: wrap;
+      margin-bottom: 14px;
+    }
+    .siblings-banner strong { color: var(--info); }
+  </style>
+</head>
+<body>
+
+  <!-- ================================================================
+       LOGIN
+  ================================================================= -->
+  <div id="view-login" class="login-wrap">
+    <div class="login-card">
+      <h1>Jasně · Помощь</h1>
+      <p class="tagline">Редактирование статей Help-секции</p>
+      <form id="login-form" autocomplete="on">
+        <div class="form-row">
+          <label class="field" for="login-email">Email</label>
+          <input id="login-email" type="email" required autocomplete="username" />
+        </div>
+        <div class="form-row">
+          <label class="field" for="login-password">Пароль</label>
+          <input id="login-password" type="password" required autocomplete="current-password" />
+        </div>
+        <button type="submit" class="btn primary" id="login-submit">Войти</button>
+        <div id="login-error" class="error hidden"></div>
+      </form>
+    </div>
+  </div>
+
+  <!-- ================================================================
+       APP SHELL (shared header for list / editor / categories)
+  ================================================================= -->
+  <div id="view-app" class="hidden">
+    <header class="app-header">
+      <div class="brand">Jasně<small>Помощь · Админ</small></div>
+      <div class="spacer"></div>
+      <div class="user" id="app-user"></div>
+      <button class="btn subtle" id="app-logout">Выйти</button>
+    </header>
+
+    <!-- ============== LIST PAGE ============== -->
+    <div id="page-list" class="container">
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:18px;">
+        <h1 style="flex:1;">Раздел «Помощь»</h1>
+        <button class="btn ghost" id="open-categories">⚙ Категории</button>
+        <button class="btn primary" id="list-new">+ Новая статья</button>
+      </div>
+
+      <div class="filters">
+        <select id="filter-category"><option value="">Все категории</option></select>
+        <select id="filter-language">
+          <option value="">Все языки</option>
+          <option value="ru">Русский</option>
+          <option value="cs">Čeština</option>
+          <option value="uk">Українська</option>
+          <option value="en">English</option>
+        </select>
+        <input id="filter-search" type="text" placeholder="Поиск по названию или summary…" />
+      </div>
+
+      <div id="list-loading" class="loading-state hidden"><span class="spinner"></span> Загрузка…</div>
+      <div id="list-error" class="error hidden"></div>
+      <div id="list-empty" class="empty-state hidden">Пока нет статей — создайте первую.</div>
+
+      <table class="guides" id="list-table">
+        <thead>
+          <tr>
+            <th>Название</th>
+            <th>Категория</th>
+            <th>Языки</th>
+            <th>Статус</th>
+            <th>Секций</th>
+            <th>Обновлено</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="list-tbody"></tbody>
+      </table>
+    </div>
+
+    <!-- ============== CATEGORIES PAGE ============== -->
+    <div id="page-categories" class="container hidden">
+      <div class="breadcrumb"><a id="cat-back">← К списку статей</a></div>
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:18px;">
+        <h1 style="flex:1;">Категории</h1>
+        <button class="btn primary" id="cat-new">+ Новая категория</button>
+      </div>
+      <p style="color:var(--text-muted);max-width:720px;">
+        Slug, иконка и порядок отображения. Расширенные UI-метаданные (hero, fallback, useful_actions, guides_order)
+        продолжают жить в <code>help_content/categories.yaml</code> и меняются через git.
+      </p>
+      <div id="cat-error" class="error hidden"></div>
+      <table class="guides" id="cat-table" style="margin-top:18px;">
+        <thead>
+          <tr>
+            <th>Slug</th>
+            <th>Названия (cs · ru · uk · en)</th>
+            <th>Иконка</th>
+            <th>Порядок</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="cat-tbody"></tbody>
+      </table>
+    </div>
+
+    <!-- ============== EDITOR PAGE ============== -->
+    <div id="page-editor" class="container wide hidden">
+      <div class="breadcrumb"><a id="editor-back">← К списку</a></div>
+      <h1 id="editor-title">Новая статья</h1>
+
+      <div id="siblings-banner" class="siblings-banner hidden"></div>
+
+      <div class="editor-split">
+        <!-- LEFT: FORM -->
+        <div>
+          <div class="card">
+            <div class="meta-grid">
+              <div class="full">
+                <label class="field" for="ed-title">Заголовок *</label>
+                <input id="ed-title" type="text" />
+                <div class="field-error hidden" id="err-title"></div>
+              </div>
+              <div>
+                <label class="field" for="ed-category">Категория *</label>
+                <select id="ed-category"></select>
+                <div class="field-error hidden" id="err-category"></div>
+              </div>
+              <div>
+                <label class="field" for="ed-language">Язык *</label>
+                <select id="ed-language">
+                  <option value="ru">Русский</option>
+                  <option value="cs">Čeština</option>
+                  <option value="uk">Українська</option>
+                  <option value="en">English</option>
+                </select>
+              </div>
+              <div>
+                <label class="field" for="ed-slug">Slug * <span class="hint">авто</span></label>
+                <input id="ed-slug" type="text" placeholder="check-status" />
+                <div class="field-error hidden" id="err-slug"></div>
+              </div>
+              <div class="full">
+                <label class="field" for="ed-subtitle">Подзаголовок</label>
+                <input id="ed-subtitle" type="text" />
+              </div>
+              <div class="full">
+                <label class="field" for="ed-summary">Краткое описание (summary) <span class="hint" id="summary-count"></span></label>
+                <textarea id="ed-summary" rows="2"></textarea>
+              </div>
+              <div class="full">
+                <label class="field" for="ed-keywords">Keywords <span class="hint">через запятую</span></label>
+                <input id="ed-keywords" type="text" placeholder="OAMP, pobyt, řízení" />
+              </div>
+              <div class="full">
+                <label class="field" for="ed-source">Официальная ссылка</label>
+                <input id="ed-source" type="text" placeholder="https://…" />
+              </div>
+              <div>
+                <label class="field">Статус</label>
+                <div class="segmented" id="ed-status-seg">
+                  <button type="button" data-value="draft" class="active">Черновик</button>
+                  <button type="button" data-value="published">Опубликовано</button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;">
+              <h2 style="flex:1;">Секции</h2>
+              <span class="badge count" id="section-count">0</span>
+            </div>
+            <div id="sections-list"></div>
+            <div class="field-error hidden" id="err-sections"></div>
+            <div class="add-toolbar">
+              <button class="btn sm" type="button" data-add="text">+ Текст</button>
+              <button class="btn sm" type="button" data-add="steps">+ Шаги</button>
+              <button class="btn sm" type="button" data-add="checklist">+ Чеклист</button>
+              <button class="btn sm" type="button" data-add="warning">+ Предупреждение</button>
+              <button class="btn sm" type="button" data-add="cta">+ CTA</button>
+            </div>
+          </div>
+
+          <div id="editor-error" class="error hidden"></div>
+
+          <div class="editor-actions">
+            <div class="save-hint"><kbd>⌘</kbd>+<kbd>S</kbd> сохранить · <kbd>Esc</kbd> назад</div>
+            <button class="btn" id="editor-cancel" type="button">Отмена</button>
+            <button class="btn primary" id="editor-save" type="button">Сохранить</button>
+          </div>
+        </div>
+
+        <!-- RIGHT: LIVE PREVIEW -->
+        <aside class="preview-pane">
+          <div class="preview-head">
+            <h3>Предпросмотр</h3>
+            <span class="badge" id="preview-lang-badge">ru</span>
+          </div>
+          <div class="preview-body" id="preview-body"></div>
+        </aside>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================================================================
+       CATEGORY EDIT MODAL (simple overlay)
+  ================================================================= -->
+  <div id="cat-modal" class="hidden" style="position:fixed;inset:0;background:rgba(40,28,12,0.4);z-index:50;display:flex;align-items:center;justify-content:center;padding:24px;">
+    <div class="card" style="max-width:520px;width:100%;">
+      <h2 id="cat-modal-title" style="margin-bottom:18px;">Категория</h2>
+      <label class="field" for="cm-slug">Slug *</label>
+      <input id="cm-slug" type="text" placeholder="visa-pobyt" />
+      <div class="field-error hidden" id="cm-err-slug"></div>
+
+      <div style="margin-top:14px;">
+        <label class="field">Названия (4 языка) — хотя бы <code>cs</code> обязателен</label>
+        <div style="display:grid;grid-template-columns:60px 1fr;gap:8px;align-items:center;">
+          <div style="color:var(--text-muted);font-weight:500;">cs</div><input id="cm-title-cs" type="text" />
+          <div style="color:var(--text-muted);font-weight:500;">ru</div><input id="cm-title-ru" type="text" />
+          <div style="color:var(--text-muted);font-weight:500;">uk</div><input id="cm-title-uk" type="text" />
+          <div style="color:var(--text-muted);font-weight:500;">en</div><input id="cm-title-en" type="text" />
+        </div>
+        <div class="field-error hidden" id="cm-err-title"></div>
+      </div>
+
+      <div style="display:grid;grid-template-columns:1fr 120px;gap:14px;margin-top:14px;">
+        <div>
+          <label class="field" for="cm-icon">Иконка <span class="hint">Ionicons</span></label>
+          <input id="cm-icon" type="text" placeholder="passport" />
+        </div>
+        <div>
+          <label class="field" for="cm-sort">Порядок</label>
+          <input id="cm-sort" type="text" placeholder="10" />
+        </div>
+      </div>
+
+      <div id="cm-error" class="error hidden"></div>
+
+      <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:20px;">
+        <button class="btn" id="cm-cancel" type="button">Отмена</button>
+        <button class="btn primary" id="cm-save" type="button">Сохранить</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- toast -->
+  <div id="toast" class="toast"></div>
+
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
+  <script>
+    // ================== EDIT THESE ==================
+    const SUPABASE_URL = "https://ndestbxknbgaxxdjoqkv.supabase.co";
+    const SUPABASE_ANON_KEY = "REDACTED_PUBLIC_SUPABASE_ANON_KEY";
+    // ================================================
+
+    const { createClient } = window.supabase;
+    const sb = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+      auth: { persistSession: true, autoRefreshToken: true },
+    });
+
+    // --------------- view switching ---------------
+    const root = {
+      login: document.getElementById("view-login"),
+      app: document.getElementById("view-app"),
+    };
+    const pages = {
+      list: document.getElementById("page-list"),
+      editor: document.getElementById("page-editor"),
+      categories: document.getElementById("page-categories"),
+    };
+    function showRoot(name) {
+      for (const [k, el] of Object.entries(root)) el.classList.toggle("hidden", k !== name);
+    }
+    function showPage(name) {
+      for (const [k, el] of Object.entries(pages)) el.classList.toggle("hidden", k !== name);
+    }
+
+    // --------------- state ---------------
+    const state = {
+      session: null,
+      profile: null,
+      categories: [],
+      guides: [],
+      editing: null,
+      sections: [],
+      hasUnsaved: false,
+      slugTouched: false,
+      filters: { category: "", language: "", search: "" },
+      catEditing: null,
+    };
+
+    // ---- localStorage autosave (per guide id, or "new" key) ----
+    const AUTOSAVE_KEY = "jasne-help-admin:draft";
+    function autosaveKey() {
+      return AUTOSAVE_KEY + ":" + (state.editing?.id || "new");
+    }
+    function autosaveDump() {
+      if (!pages.editor || pages.editor.classList.contains("hidden")) return;
+      try {
+        localStorage.setItem(autosaveKey(), JSON.stringify({
+          ts: Date.now(),
+          payload: collectPayload(),
+        }));
+      } catch {}
+    }
+    function autosaveLoad() {
+      try {
+        const raw = localStorage.getItem(autosaveKey());
+        if (!raw) return null;
+        const { ts, payload } = JSON.parse(raw);
+        if (Date.now() - ts > 7 * 24 * 3600 * 1000) {
+          localStorage.removeItem(autosaveKey());
+          return null;
+        }
+        return payload;
+      } catch { return null; }
+    }
+    function autosaveClear() {
+      try { localStorage.removeItem(autosaveKey()); } catch {}
+    }
+
+    // ====================================================================
+    // BOOT
+    // ====================================================================
+    (async function boot() {
+      const { data: { session } } = await sb.auth.getSession();
+      if (session) {
+        const ok = await loadProfileAndGate(session);
+        if (ok) { await enterApp(); return; }
+      }
+      showRoot("login");
+    })();
+
+    window.addEventListener("beforeunload", (e) => {
+      if (!pages.editor.classList.contains("hidden") && state.hasUnsaved) {
+        e.preventDefault();
+        e.returnValue = "";
+      }
+    });
+
+    // Keyboard shortcuts
+    document.addEventListener("keydown", (e) => {
+      if (pages.editor.classList.contains("hidden")) return;
+      if ((e.metaKey || e.ctrlKey) && e.key === "s") {
+        e.preventDefault();
+        saveGuide();
+      } else if (e.key === "Escape") {
+        // Escape exits editor only when no modal is open
+        const modalOpen = !document.getElementById("cat-modal").classList.contains("hidden");
+        if (!modalOpen) exitEditor();
+      }
+    });
+
+    // ====================================================================
+    // LOGIN
+    // ====================================================================
+    document.getElementById("login-form").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const btn = document.getElementById("login-submit");
+      const err = document.getElementById("login-error");
+      err.classList.add("hidden");
+      const email = document.getElementById("login-email").value.trim();
+      const password = document.getElementById("login-password").value;
+      btn.disabled = true;
+      btn.innerHTML = '<span class="spinner"></span>Вход…';
+      try {
+        const { data, error } = await sb.auth.signInWithPassword({ email, password });
+        if (error) {
+          err.textContent = "Не удалось войти. Проверьте email и пароль.";
+          err.classList.remove("hidden");
+          return;
+        }
+        const ok = await loadProfileAndGate(data.session);
+        if (!ok) {
+          err.textContent = "Доступ только для администратора.";
+          err.classList.remove("hidden");
+          return;
+        }
+        await enterApp();
+      } catch (e) {
+        err.textContent = "Ошибка соединения. Попробуйте ещё раз.";
+        err.classList.remove("hidden");
+        console.error(e);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = "Войти";
+      }
+    });
+
+    async function loadProfileAndGate(session) {
+      state.session = session;
+      const { data, error } = await sb
+        .from("profiles")
+        .select("id, role, display_name")
+        .eq("id", session.user.id)
+        .single();
+      if (error || !data || data.role !== "admin") {
+        await sb.auth.signOut();
+        state.session = null; state.profile = null;
+        return false;
+      }
+      state.profile = data;
+      return true;
+    }
+
+    document.getElementById("app-logout").addEventListener("click", async () => {
+      if (state.hasUnsaved && !confirm("Изменения не сохранены. Выйти?")) return;
+      await sb.auth.signOut();
+      state.session = null; state.profile = null;
+      state.editing = null; state.hasUnsaved = false;
+      showRoot("login");
+    });
+
+    // ====================================================================
+    // APP ENTER
+    // ====================================================================
+    async function enterApp() {
+      document.getElementById("app-user").textContent =
+        state.session.user.email || state.profile?.display_name || "";
+      await loadCategories();
+      showRoot("app");
+      showPage("list");
+      await refreshList();
+    }
+
+    async function loadCategories() {
+      const { data, error } = await sb
+        .from("help_categories")
+        .select("slug, title, icon, sort_order")
+        .order("sort_order", { ascending: true });
+      if (error) {
+        console.error(error);
+        state.categories = [];
+        return;
+      }
+      state.categories = data || [];
+
+      // populate selects
+      const catFilter = document.getElementById("filter-category");
+      const catEditor = document.getElementById("ed-category");
+      catFilter.innerHTML = '<option value="">Все категории</option>';
+      catEditor.innerHTML = "";
+      for (const c of state.categories) {
+        const title = pickLocalized(c.title) || c.slug;
+        catFilter.insertAdjacentHTML(
+          "beforeend",
+          `<option value="${escapeAttr(c.slug)}">${escapeHtml(title)}</option>`,
+        );
+        catEditor.insertAdjacentHTML(
+          "beforeend",
+          `<option value="${escapeAttr(c.slug)}">${escapeHtml(title)}</option>`,
+        );
+      }
+    }
+
+    function pickLocalized(titleJsonb, preferred = "ru") {
+      if (!titleJsonb || typeof titleJsonb !== "object") return null;
+      return titleJsonb[preferred] || titleJsonb.ru || titleJsonb.cs || titleJsonb.en || titleJsonb.uk || null;
+    }
+
+    // ====================================================================
+    // LIST
+    // ====================================================================
+    document.getElementById("filter-category").addEventListener("change", (e) => { state.filters.category = e.target.value; renderList(); });
+    document.getElementById("filter-language").addEventListener("change", (e) => { state.filters.language = e.target.value; renderList(); });
+    document.getElementById("filter-search").addEventListener("input", (e) => { state.filters.search = e.target.value.trim().toLowerCase(); renderList(); });
+    document.getElementById("list-new").addEventListener("click", () => openEditor(null));
+    document.getElementById("open-categories").addEventListener("click", () => { showPage("categories"); renderCategoriesPage(); });
+    document.getElementById("cat-back").addEventListener("click", () => showPage("list"));
+
+    async function refreshList() {
+      const loadingEl = document.getElementById("list-loading");
+      const errEl = document.getElementById("list-error");
+      const tableEl = document.getElementById("list-table");
+      const emptyEl = document.getElementById("list-empty");
+      errEl.classList.add("hidden"); tableEl.classList.add("hidden"); emptyEl.classList.add("hidden");
+      loadingEl.classList.remove("hidden");
+      try {
+        const { data, error } = await sb
+          .from("help_guides")
+          .select("id, slug, category_slug, language, status, title, subtitle, short_summary, sections, keywords, official_source_url, updated_at, sort_order")
+          .order("updated_at", { ascending: false });
+        if (error) throw error;
+        state.guides = data || [];
+        renderList();
+      } catch (e) {
+        console.error(e);
+        errEl.textContent = "Не удалось загрузить статьи: " + (e.message || e);
+        errEl.classList.remove("hidden");
+      } finally {
+        loadingEl.classList.add("hidden");
+      }
+    }
+
+    function renderList() {
+      const { category, language, search } = state.filters;
+      const filtered = state.guides.filter((g) => {
+        if (category && g.category_slug !== category) return false;
+        if (language && g.language !== language) return false;
+        if (search) {
+          const hay = ((g.title || "") + " " + (g.short_summary || "") + " " + (g.subtitle || "") + " " + g.slug).toLowerCase();
+          if (!hay.includes(search)) return false;
+        }
+        return true;
+      });
+
+      const tableEl = document.getElementById("list-table");
+      const emptyEl = document.getElementById("list-empty");
+      const tbody = document.getElementById("list-tbody");
+      tbody.innerHTML = "";
+
+      if (filtered.length === 0) {
+        tableEl.classList.add("hidden");
+        emptyEl.classList.remove("hidden");
+        emptyEl.textContent = state.guides.length === 0
+          ? "Пока нет статей — создайте первую."
+          : "Ничего не найдено под текущие фильтры.";
+        return;
+      }
+      emptyEl.classList.add("hidden");
+      tableEl.classList.remove("hidden");
+
+      const catBySlug = Object.fromEntries(state.categories.map((c) => [c.slug, c]));
+
+      // group guides by slug to show siblings count
+      const langsBySlug = {};
+      for (const g of state.guides) {
+        (langsBySlug[g.slug] = langsBySlug[g.slug] || {})[g.language] = g;
+      }
+
+      for (const g of filtered) {
+        const cat = catBySlug[g.category_slug];
+        const catTitle = cat ? (pickLocalized(cat.title) || cat.slug) : g.category_slug;
+        const statusClass = g.status === "published" ? "published" : "draft";
+        const statusText = g.status === "published" ? "Опубликовано" : "Черновик";
+        const sectionCount = Array.isArray(g.sections) ? g.sections.length : 0;
+        const siblings = Object.keys(langsBySlug[g.slug] || {});
+        const langBadges = siblings.map((l) =>
+          `<span class="badge lang" style="${l === g.language ? '' : 'opacity:0.4'}">${l}</span>`
+        ).join(" ");
+
+        const tr = document.createElement("tr");
+        tr.innerHTML = `
+          <td>
+            <div style="font-weight:500;">${escapeHtml(g.title || "(без названия)")}</div>
+            <div style="font-size:12px;color:var(--text-muted);">${escapeHtml(g.slug)}</div>
+          </td>
+          <td>${escapeHtml(catTitle)}</td>
+          <td><div class="lang-pills">${langBadges}</div></td>
+          <td><span class="badge ${statusClass}">${statusText}</span></td>
+          <td><span class="badge count">${sectionCount}</span></td>
+          <td style="color:var(--text-muted);font-size:13px;">${formatDate(g.updated_at)}</td>
+          <td>
+            <div class="row-actions">
+              <button class="btn sm" data-edit="${g.id}">Редактировать</button>
+              <button class="btn sm danger" data-delete="${g.id}">Удалить</button>
+            </div>
+          </td>
+        `;
+        tbody.appendChild(tr);
+      }
+      tbody.querySelectorAll("[data-edit]").forEach((btn) =>
+        btn.addEventListener("click", () => {
+          const guide = state.guides.find((x) => x.id === btn.dataset.edit);
+          if (guide) openEditor(guide);
+        }),
+      );
+      tbody.querySelectorAll("[data-delete]").forEach((btn) =>
+        btn.addEventListener("click", () => deleteGuide(btn.dataset.delete)),
+      );
+    }
+
+    async function deleteGuide(id) {
+      const guide = state.guides.find((x) => x.id === id);
+      if (!guide) return;
+      if (!confirm(`Удалить статью "${guide.title}" (${guide.language})?`)) return;
+      try {
+        const { error } = await sb.from("help_guides").delete().eq("id", id);
+        if (error) throw error;
+        toast("Удалено", "success");
+        await refreshList();
+      } catch (e) {
+        toast("Не удалось удалить: " + (e.message || e), "error");
+      }
+    }
+
+    function formatDate(iso) {
+      if (!iso) return "";
+      try {
+        const d = new Date(iso);
+        return d.toLocaleDateString("ru-RU", { day: "2-digit", month: "2-digit", year: "numeric" });
+      } catch { return ""; }
+    }
+
+    // ====================================================================
+    // EDITOR
+    // ====================================================================
+    function openEditor(guide) {
+      state.editing = guide;
+      state.hasUnsaved = false;
+      state.slugTouched = !!guide; // existing guides don't auto-slug
+
+      document.getElementById("editor-title").textContent = guide
+        ? "Редактирование: " + (guide.title || guide.slug)
+        : "Новая статья";
+
+      document.getElementById("ed-title").value = guide?.title || "";
+      document.getElementById("ed-subtitle").value = guide?.subtitle || "";
+      document.getElementById("ed-summary").value = guide?.short_summary || "";
+      document.getElementById("ed-keywords").value = (guide?.keywords || []).join(", ");
+      document.getElementById("ed-source").value = guide?.official_source_url || "";
+      document.getElementById("ed-slug").value = guide?.slug || "";
+      document.getElementById("ed-language").value = guide?.language || "ru";
+      document.getElementById("ed-category").value =
+        guide?.category_slug || (state.categories[0]?.slug ?? "");
+
+      setStatus(guide?.status || "draft");
+      state.sections = Array.isArray(guide?.sections) ? deepClone(guide.sections) : [];
+
+      // restore autosave if more recent than DB row
+      const saved = autosaveLoad();
+      if (saved && (!guide || new Date(saved.ts || 0) > new Date(guide.updated_at || 0))) {
+        if (confirm("Найден несохранённый черновик. Восстановить?")) {
+          document.getElementById("ed-title").value = saved.title || "";
+          document.getElementById("ed-subtitle").value = saved.subtitle || "";
+          document.getElementById("ed-summary").value = saved.short_summary || "";
+          document.getElementById("ed-keywords").value = (saved.keywords || []).join(", ");
+          document.getElementById("ed-source").value = saved.official_source_url || "";
+          document.getElementById("ed-slug").value = saved.slug || "";
+          document.getElementById("ed-language").value = saved.language || "ru";
+          document.getElementById("ed-category").value = saved.category_slug || state.categories[0]?.slug;
+          setStatus(saved.status || "draft");
+          state.sections = Array.isArray(saved.sections) ? deepClone(saved.sections) : [];
+          state.hasUnsaved = true;
+        } else {
+          autosaveClear();
+        }
+      }
+
+      renderSections();
+      renderSiblingsBanner(guide);
+      updateSummaryCount();
+      updatePreview();
+      clearEditorErrors();
+      showPage("editor");
+      document.getElementById("ed-title").focus();
+    }
+
+    function renderSiblingsBanner(guide) {
+      const banner = document.getElementById("siblings-banner");
+      const slug = guide?.slug || document.getElementById("ed-slug").value;
+      if (!slug) { banner.classList.add("hidden"); return; }
+      const siblings = state.guides.filter((g) => g.slug === slug && g.id !== guide?.id);
+      if (siblings.length === 0) { banner.classList.add("hidden"); return; }
+      banner.classList.remove("hidden");
+      const links = siblings.map((s) =>
+        `<button type="button" class="btn sm ghost" data-sib="${s.id}">${s.language} → ${escapeHtml(s.title)}</button>`
+      ).join(" ");
+      banner.innerHTML = `<strong>Этот slug уже есть на других языках:</strong> ${links}`;
+      banner.querySelectorAll("[data-sib]").forEach((btn) =>
+        btn.addEventListener("click", () => {
+          if (state.hasUnsaved && !confirm("Несохранённые изменения будут потеряны. Переключиться?")) return;
+          const target = siblings.find((s) => s.id === btn.dataset.sib);
+          if (target) openEditor(target);
+        }),
+      );
+    }
+
+    function setStatus(value) {
+      document.querySelectorAll("#ed-status-seg button").forEach((b) =>
+        b.classList.toggle("active", b.dataset.value === value),
+      );
+    }
+    function getStatus() {
+      return document.querySelector("#ed-status-seg button.active")?.dataset.value || "draft";
+    }
+    document.querySelectorAll("#ed-status-seg button").forEach((b) =>
+      b.addEventListener("click", () => { setStatus(b.dataset.value); markDirty(); }),
+    );
+
+    document.getElementById("ed-slug").addEventListener("input", () => { state.slugTouched = true; markDirty(); });
+    document.getElementById("ed-title").addEventListener("input", (e) => {
+      markDirty();
+      if (!state.slugTouched && !state.editing) {
+        document.getElementById("ed-slug").value = slugify(e.target.value);
+      }
+      updatePreview();
+    });
+    document.getElementById("ed-subtitle").addEventListener("input", () => { markDirty(); updatePreview(); });
+    document.getElementById("ed-summary").addEventListener("input", () => { markDirty(); updateSummaryCount(); });
+    document.getElementById("ed-keywords").addEventListener("input", () => markDirty());
+    document.getElementById("ed-source").addEventListener("input", () => markDirty());
+    document.getElementById("ed-category").addEventListener("change", () => markDirty());
+    document.getElementById("ed-language").addEventListener("change", () => {
+      markDirty(); updatePreview();
+      document.getElementById("preview-lang-badge").textContent = document.getElementById("ed-language").value;
+    });
+
+    function updateSummaryCount() {
+      const v = document.getElementById("ed-summary").value;
+      const el = document.getElementById("summary-count");
+      el.textContent = v ? `${v.length} симв.` : "";
+    }
+
+    function markDirty() {
+      state.hasUnsaved = true;
+      autosaveDump();
+    }
+
+    // ---- cyrillic-aware slugify ----
+    const TRANSLIT_MAP = {
+      "а":"a","б":"b","в":"v","г":"g","д":"d","е":"e","ё":"yo","ж":"zh","з":"z","и":"i","й":"y",
+      "к":"k","л":"l","м":"m","н":"n","о":"o","п":"p","р":"r","с":"s","т":"t","у":"u","ф":"f",
+      "х":"h","ц":"ts","ч":"ch","ш":"sh","щ":"shch","ъ":"","ы":"y","ь":"","э":"e","ю":"yu","я":"ya",
+      "і":"i","ї":"yi","є":"ye","ґ":"g",
+    };
+    function slugify(s) {
+      if (!s) return "";
+      const lower = s.toLowerCase();
+      let translit = "";
+      for (const ch of lower) translit += TRANSLIT_MAP[ch] !== undefined ? TRANSLIT_MAP[ch] : ch;
+      return translit
+        .normalize("NFD")
+        .replace(/[̀-ͯ]/g, "")
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-+|-+$/g, "")
+        .slice(0, 80);
+    }
+
+    document.querySelectorAll("[data-add]").forEach((btn) =>
+      btn.addEventListener("click", () => { addSection(btn.dataset.add); markDirty(); }),
+    );
+
+    function addSection(type) {
+      let s;
+      switch (type) {
+        case "text":      s = { type: "text",      title: "", body: "" }; break;
+        case "steps":     s = { type: "steps",     title: "", items: [""] }; break;
+        case "checklist": s = { type: "checklist", title: "", items: [""] }; break;
+        case "warning":   s = { type: "warning",   title: "", body: "" }; break;
+        case "cta":       s = { type: "cta",       title: "", actions: [""] }; break;
+        default: return;
+      }
+      state.sections.push(s);
+      const card = renderSectionCard(s, state.sections.length - 1);
+      document.getElementById("sections-list").appendChild(card);
+      updateSectionCount();
+      updatePreview();
+      // focus first input of new card
+      const firstInput = card.querySelector("input, textarea");
+      if (firstInput) firstInput.focus();
+    }
+
+    function renderSections() {
+      const root = document.getElementById("sections-list");
+      root.innerHTML = "";
+      state.sections.forEach((s, idx) => root.appendChild(renderSectionCard(s, idx)));
+      updateSectionCount();
+    }
+
+    function updateSectionCount() {
+      document.getElementById("section-count").textContent = state.sections.length;
+    }
+
+    function renderSectionCard(section, idx) {
+      const card = document.createElement("div");
+      card.className = "section-card type-" + section.type;
+      card.dataset.idx = idx;
+      const label = {
+        text: "Текст", steps: "Шаги", checklist: "Чеклист", warning: "Предупреждение", cta: "CTA",
+      }[section.type] || section.type;
+
+      const head = document.createElement("div");
+      head.className = "section-head";
+      head.innerHTML = `
+        <span class="type-tag">${label}</span>
+        <span class="spacer"></span>
+        <button type="button" class="ctrl" title="Вверх" data-act="up">↑</button>
+        <button type="button" class="ctrl" title="Вниз" data-act="down">↓</button>
+        <button type="button" class="ctrl danger" title="Удалить" data-act="remove">×</button>
+      `;
+      card.appendChild(head);
+      head.querySelector('[data-act="up"]').addEventListener("click", () => moveSection(card, -1));
+      head.querySelector('[data-act="down"]').addEventListener("click", () => moveSection(card, 1));
+      head.querySelector('[data-act="remove"]').addEventListener("click", () => removeSectionCard(card));
+
+      card.appendChild(makeField("Заголовок (необязательно)", (input) => {
+        input.value = section.title || "";
+        input.addEventListener("input", () => { section.title = input.value; markDirty(); updatePreview(); });
+      }));
+
+      if (section.type === "text" || section.type === "warning") {
+        card.appendChild(makeField(section.type === "warning" ? "Текст предупреждения" : "Текст", (input) => {
+          input.value = section.body || "";
+          input.addEventListener("input", () => { section.body = input.value; markDirty(); updatePreview(); });
+        }, "textarea"));
+      } else if (section.type === "steps" || section.type === "checklist") {
+        section.items = section.items || [""];
+        const itemsBox = document.createElement("div");
+        section.items.forEach((_, i) => itemsBox.appendChild(makeItemRow(section, "items", i, "Текст пункта")));
+        card.appendChild(itemsBox);
+        const addBtn = document.createElement("button");
+        addBtn.type = "button";
+        addBtn.className = "btn sm";
+        addBtn.textContent = section.type === "steps" ? "+ шаг" : "+ пункт";
+        addBtn.addEventListener("click", () => {
+          section.items.push("");
+          const row = makeItemRow(section, "items", section.items.length - 1, "Текст пункта");
+          itemsBox.appendChild(row);
+          row.querySelector("input").focus();
+          markDirty(); updatePreview();
+        });
+        card.appendChild(addBtn);
+      } else if (section.type === "cta") {
+        section.actions = section.actions || [""];
+        const lbl = document.createElement("label");
+        lbl.className = "field";
+        lbl.innerHTML = `Ключи действий <span class="hint">из help_ui_strings.yaml → useful_actions</span>`;
+        card.appendChild(lbl);
+        const itemsBox = document.createElement("div");
+        section.actions.forEach((_, i) =>
+          itemsBox.appendChild(makeItemRow(section, "actions", i, "scan_oamp_letter / add_deadline_manual / open_deadlines …"))
+        );
+        card.appendChild(itemsBox);
+        const addBtn = document.createElement("button");
+        addBtn.type = "button";
+        addBtn.className = "btn sm";
+        addBtn.textContent = "+ действие";
+        addBtn.addEventListener("click", () => {
+          section.actions.push("");
+          const row = makeItemRow(section, "actions", section.actions.length - 1, "scan_oamp_letter / …");
+          itemsBox.appendChild(row);
+          row.querySelector("input").focus();
+          markDirty(); updatePreview();
+        });
+        card.appendChild(addBtn);
+      }
+
+      return card;
+    }
+
+    function makeField(labelText, attach, kind = "input") {
+      const wrap = document.createElement("div");
+      const lbl = document.createElement("label");
+      lbl.className = "field";
+      lbl.textContent = labelText;
+      wrap.appendChild(lbl);
+      const input = document.createElement(kind === "textarea" ? "textarea" : "input");
+      if (kind !== "textarea") input.type = "text";
+      attach(input);
+      wrap.appendChild(input);
+      return wrap;
+    }
+
+    // append-only item rows — no full re-render, focus is preserved
+    function makeItemRow(section, key, i, placeholder) {
+      const row = document.createElement("div");
+      row.className = "item-row";
+      row.dataset.index = i;
+      const input = document.createElement("input");
+      input.type = "text";
+      input.value = section[key][i] || "";
+      input.placeholder = placeholder;
+      input.addEventListener("input", () => {
+        const realIdx = Array.from(row.parentNode.children).indexOf(row);
+        section[key][realIdx] = input.value;
+        markDirty();
+        updatePreview();
+      });
+      const rm = document.createElement("button");
+      rm.type = "button";
+      rm.className = "ctrl";
+      rm.textContent = "×";
+      rm.title = "Удалить";
+      rm.addEventListener("click", () => {
+        const realIdx = Array.from(row.parentNode.children).indexOf(row);
+        section[key].splice(realIdx, 1);
+        row.remove();
+        markDirty();
+        updatePreview();
+      });
+      row.appendChild(input);
+      row.appendChild(rm);
+      return row;
+    }
+
+    function moveSection(card, delta) {
+      const list = card.parentNode;
+      const idx = Array.from(list.children).indexOf(card);
+      const t = idx + delta;
+      if (t < 0 || t >= state.sections.length) return;
+      [state.sections[idx], state.sections[t]] = [state.sections[t], state.sections[idx]];
+      if (delta < 0) list.insertBefore(card, list.children[t]);
+      else list.insertBefore(card, list.children[t + 1] || null);
+      markDirty(); updatePreview();
+    }
+    function removeSectionCard(card) {
+      if (!confirm("Удалить эту секцию?")) return;
+      const list = card.parentNode;
+      const idx = Array.from(list.children).indexOf(card);
+      state.sections.splice(idx, 1);
+      card.remove();
+      updateSectionCount();
+      markDirty(); updatePreview();
+    }
+
+    // ---- live preview ----
+    function updatePreview() {
+      const body = document.getElementById("preview-body");
+      const title = document.getElementById("ed-title").value;
+      const subtitle = document.getElementById("ed-subtitle").value;
+      document.getElementById("preview-lang-badge").textContent =
+        document.getElementById("ed-language").value;
+
+      if (!title && state.sections.length === 0) {
+        body.innerHTML = `<div class="pv-empty">Начните вводить заголовок и добавлять секции — здесь появится предпросмотр в стиле мобильного приложения.</div>`;
+        return;
+      }
+      let html = "";
+      if (title) html += `<div class="pv-title">${escapeHtml(title)}</div>`;
+      if (subtitle) html += `<div class="pv-subtitle">${escapeHtml(subtitle)}</div>`;
+      for (const s of state.sections) {
+        if (s.type === "text") {
+          html += `<div class="pv-section text">`;
+          if (s.title) html += `<div class="pv-section-title">${escapeHtml(s.title)}</div>`;
+          html += `<p>${escapeHtml(s.body || "")}</p></div>`;
+        } else if (s.type === "warning") {
+          html += `<div class="pv-section warning">`;
+          if (s.title) html += `<div class="pv-section-title">${escapeHtml(s.title)}</div>`;
+          html += `<p>${escapeHtml(s.body || "")}</p></div>`;
+        } else if (s.type === "steps") {
+          html += `<div class="pv-section steps">`;
+          if (s.title) html += `<div class="pv-section-title">${escapeHtml(s.title)}</div>`;
+          html += `<ol>${(s.items || []).filter(Boolean).map((x) => `<li>${escapeHtml(x)}</li>`).join("")}</ol></div>`;
+        } else if (s.type === "checklist") {
+          html += `<div class="pv-section checklist">`;
+          if (s.title) html += `<div class="pv-section-title">${escapeHtml(s.title)}</div>`;
+          html += `<ul>${(s.items || []).filter(Boolean).map((x) => `<li>${escapeHtml(x)}</li>`).join("")}</ul></div>`;
+        } else if (s.type === "cta") {
+          html += `<div class="pv-section cta">`;
+          if (s.title) html += `<div class="pv-section-title">${escapeHtml(s.title)}</div>`;
+          html += (s.actions || []).filter(Boolean).map((a) => `<span class="pv-action">${escapeHtml(a)}</span>`).join("");
+          html += `</div>`;
+        }
+      }
+      body.innerHTML = html;
+    }
+
+    // ---- save / cancel ----
+    document.getElementById("editor-cancel").addEventListener("click", () => exitEditor());
+    document.getElementById("editor-back").addEventListener("click", () => exitEditor());
+
+    function exitEditor() {
+      if (state.hasUnsaved && !confirm("Изменения не сохранены. Выйти?")) return;
+      state.editing = null; state.sections = []; state.hasUnsaved = false; state.slugTouched = false;
+      showPage("list");
+    }
+
+    document.getElementById("editor-save").addEventListener("click", saveGuide);
+
+    function clearEditorErrors() {
+      document.getElementById("editor-error").classList.add("hidden");
+      ["err-title", "err-category", "err-slug", "err-sections"].forEach((id) => {
+        document.getElementById(id).classList.add("hidden");
+      });
+      ["ed-title", "ed-category", "ed-slug"].forEach((id) =>
+        document.getElementById(id).classList.remove("invalid"),
+      );
+    }
+    function showFieldError(id, inputId, msg) {
+      const el = document.getElementById(id);
+      el.textContent = msg; el.classList.remove("hidden");
+      if (inputId) document.getElementById(inputId).classList.add("invalid");
+    }
+
+    function validate(payload) {
+      clearEditorErrors();
+      let ok = true;
+      if (!payload.title || !payload.title.trim()) {
+        showFieldError("err-title", "ed-title", "Введите заголовок"); ok = false;
+      }
+      if (!payload.category_slug) {
+        showFieldError("err-category", "ed-category", "Выберите категорию"); ok = false;
+      }
+      if (!payload.slug || !/^[a-z0-9-]+$/.test(payload.slug)) {
+        showFieldError("err-slug", "ed-slug", "Slug должен содержать только латиницу, цифры и дефис"); ok = false;
+      }
+      if (!Array.isArray(payload.sections) || payload.sections.length === 0) {
+        showFieldError("err-sections", null, "Добавьте хотя бы одну секцию"); ok = false;
+      } else {
+        for (let i = 0; i < payload.sections.length; i++) {
+          const s = payload.sections[i];
+          if ((s.type === "text" || s.type === "warning") && !(s.body || "").trim()) {
+            showFieldError("err-sections", null, `Секция #${i + 1} (${s.type}): пустой текст`); ok = false; break;
+          }
+          if ((s.type === "steps" || s.type === "checklist")) {
+            const items = (s.items || []).map((x) => (x || "").trim()).filter(Boolean);
+            if (items.length === 0) {
+              showFieldError("err-sections", null, `Секция #${i + 1} (${s.type}): добавьте пункты`); ok = false; break;
+            }
+          }
+          if (s.type === "cta") {
+            const acts = (s.actions || []).map((x) => (x || "").trim()).filter(Boolean);
+            if (acts.length === 0) {
+              showFieldError("err-sections", null, `Секция #${i + 1} (cta): укажите хотя бы одно действие`); ok = false; break;
+            }
+          }
+        }
+      }
+      return ok;
+    }
+
+    function collectPayload() {
+      const keywords = document.getElementById("ed-keywords").value
+        .split(",").map((x) => x.trim()).filter(Boolean);
+      const sections = state.sections.map((s) => {
+        const clean = { type: s.type };
+        clean.title = (s.title || "").trim() || null;
+        if (s.type === "text" || s.type === "warning") clean.body = (s.body || "").trim();
+        if (s.type === "steps" || s.type === "checklist") {
+          clean.items = (s.items || []).map((x) => (x || "").trim()).filter(Boolean);
+        }
+        if (s.type === "cta") {
+          clean.actions = (s.actions || []).map((x) => (x || "").trim()).filter(Boolean);
+        }
+        return clean;
+      });
+      return {
+        slug: document.getElementById("ed-slug").value.trim(),
+        category_slug: document.getElementById("ed-category").value,
+        language: document.getElementById("ed-language").value,
+        title: document.getElementById("ed-title").value.trim(),
+        subtitle: document.getElementById("ed-subtitle").value.trim() || null,
+        short_summary: document.getElementById("ed-summary").value.trim() || null,
+        keywords,
+        official_source_url: document.getElementById("ed-source").value.trim() || null,
+        status: getStatus(),
+        sections,
+      };
+    }
+
+    async function saveGuide() {
+      const payload = collectPayload();
+      if (!validate(payload)) {
+        toast("Исправьте ошибки в форме", "error");
+        return;
+      }
+      const btn = document.getElementById("editor-save");
+      const errEl = document.getElementById("editor-error");
+      errEl.classList.add("hidden");
+      btn.disabled = true;
+      btn.innerHTML = '<span class="spinner"></span>Сохранение…';
+      try {
+        let error;
+        if (state.editing) {
+          ({ error } = await sb.from("help_guides").update(payload).eq("id", state.editing.id));
+        } else {
+          ({ error } = await sb.from("help_guides").insert(payload));
+        }
+        if (error) {
+          if (error.code === "23505" || /duplicate key|unique/i.test(error.message || "")) {
+            errEl.textContent = "Статья с таким slug на этом языке уже существует.";
+          } else {
+            errEl.textContent = "Не удалось сохранить: " + (error.message || error.code || "неизвестная ошибка");
+          }
+          errEl.classList.remove("hidden");
+          return;
+        }
+        autosaveClear();
+        state.hasUnsaved = false;
+        toast(state.editing ? "Сохранено" : "Создано", "success");
+        await refreshList();
+        showPage("list");
+      } catch (e) {
+        console.error(e);
+        errEl.textContent = "Ошибка сохранения: " + (e.message || e);
+        errEl.classList.remove("hidden");
+      } finally {
+        btn.disabled = false;
+        btn.textContent = "Сохранить";
+      }
+    }
+
+    // ====================================================================
+    // CATEGORIES PAGE
+    // ====================================================================
+    document.getElementById("cat-new").addEventListener("click", () => openCatModal(null));
+    document.getElementById("cm-cancel").addEventListener("click", closeCatModal);
+    document.getElementById("cm-save").addEventListener("click", saveCategory);
+
+    function renderCategoriesPage() {
+      const tbody = document.getElementById("cat-tbody");
+      tbody.innerHTML = "";
+      for (const c of state.categories) {
+        const titles = ["cs","ru","uk","en"].map((l) =>
+          c.title?.[l] ? `<span class="badge lang">${l}</span> ${escapeHtml(c.title[l])}` : `<span class="badge" style="opacity:0.4">${l}</span>`
+        ).join("<br>");
+        const tr = document.createElement("tr");
+        tr.innerHTML = `
+          <td><code>${escapeHtml(c.slug)}</code></td>
+          <td style="font-size:13px;">${titles}</td>
+          <td>${escapeHtml(c.icon || "—")}</td>
+          <td>${c.sort_order ?? 0}</td>
+          <td>
+            <div class="row-actions">
+              <button class="btn sm" data-cat-edit="${escapeAttr(c.slug)}">Редактировать</button>
+              <button class="btn sm danger" data-cat-del="${escapeAttr(c.slug)}">Удалить</button>
+            </div>
+          </td>
+        `;
+        tbody.appendChild(tr);
+      }
+      tbody.querySelectorAll("[data-cat-edit]").forEach((btn) =>
+        btn.addEventListener("click", () => {
+          const cat = state.categories.find((x) => x.slug === btn.dataset.catEdit);
+          if (cat) openCatModal(cat);
+        }),
+      );
+      tbody.querySelectorAll("[data-cat-del]").forEach((btn) =>
+        btn.addEventListener("click", () => deleteCategory(btn.dataset.catDel)),
+      );
+    }
+
+    function openCatModal(cat) {
+      state.catEditing = cat;
+      document.getElementById("cat-modal-title").textContent = cat ? "Редактирование категории" : "Новая категория";
+      document.getElementById("cm-slug").value = cat?.slug || "";
+      document.getElementById("cm-slug").disabled = !!cat; // slug is the primary key
+      document.getElementById("cm-icon").value = cat?.icon || "";
+      document.getElementById("cm-sort").value = cat?.sort_order ?? "";
+      ["cs","ru","uk","en"].forEach((l) => {
+        document.getElementById(`cm-title-${l}`).value = cat?.title?.[l] || "";
+      });
+      document.getElementById("cm-error").classList.add("hidden");
+      document.getElementById("cm-err-slug").classList.add("hidden");
+      document.getElementById("cm-err-title").classList.add("hidden");
+      document.getElementById("cat-modal").classList.remove("hidden");
+    }
+    function closeCatModal() {
+      document.getElementById("cat-modal").classList.add("hidden");
+      state.catEditing = null;
+    }
+
+    async function saveCategory() {
+      const slug = document.getElementById("cm-slug").value.trim();
+      const icon = document.getElementById("cm-icon").value.trim() || null;
+      const sortRaw = document.getElementById("cm-sort").value.trim();
+      const sort_order = sortRaw === "" ? 0 : Number(sortRaw);
+      const title = {};
+      ["cs","ru","uk","en"].forEach((l) => {
+        const v = document.getElementById(`cm-title-${l}`).value.trim();
+        if (v) title[l] = v;
+      });
+      const errSlug = document.getElementById("cm-err-slug");
+      const errTitle = document.getElementById("cm-err-title");
+      const errEl = document.getElementById("cm-error");
+      errSlug.classList.add("hidden"); errTitle.classList.add("hidden"); errEl.classList.add("hidden");
+
+      if (!slug || !/^[a-z0-9-]+$/.test(slug)) {
+        errSlug.textContent = "Slug: только латиница, цифры и дефис";
+        errSlug.classList.remove("hidden"); return;
+      }
+      if (!title.cs) {
+        errTitle.textContent = "Название на cs обязательно (фолбэк для мобильного)";
+        errTitle.classList.remove("hidden"); return;
+      }
+      if (Number.isNaN(sort_order)) {
+        errEl.textContent = "Порядок должен быть числом";
+        errEl.classList.remove("hidden"); return;
+      }
+
+      const payload = { slug, title, icon, sort_order };
+      const btn = document.getElementById("cm-save");
+      btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>Сохранение…';
+      try {
+        let error;
+        if (state.catEditing) {
+          ({ error } = await sb.from("help_categories").update({ title, icon, sort_order }).eq("slug", slug));
+        } else {
+          ({ error } = await sb.from("help_categories").insert(payload));
+        }
+        if (error) {
+          if (error.code === "23505") {
+            errEl.textContent = "Категория с таким slug уже существует.";
+          } else {
+            errEl.textContent = "Не удалось сохранить: " + (error.message || error.code);
+          }
+          errEl.classList.remove("hidden");
+          return;
+        }
+        toast(state.catEditing ? "Категория обновлена" : "Категория создана", "success");
+        await loadCategories();
+        renderCategoriesPage();
+        closeCatModal();
+      } catch (e) {
+        errEl.textContent = "Ошибка: " + (e.message || e);
+        errEl.classList.remove("hidden");
+      } finally {
+        btn.disabled = false; btn.textContent = "Сохранить";
+      }
+    }
+
+    async function deleteCategory(slug) {
+      const usedBy = state.guides.filter((g) => g.category_slug === slug);
+      if (usedBy.length > 0) {
+        alert(`Нельзя удалить: на эту категорию ссылаются ${usedBy.length} статей. Сначала перенесите их.`);
+        return;
+      }
+      if (!confirm(`Удалить категорию "${slug}"?`)) return;
+      try {
+        const { error } = await sb.from("help_categories").delete().eq("slug", slug);
+        if (error) throw error;
+        toast("Категория удалена", "success");
+        await loadCategories();
+        renderCategoriesPage();
+      } catch (e) {
+        toast("Не удалось удалить: " + (e.message || e), "error");
+      }
+    }
+
+    // ====================================================================
+    // TOAST
+    // ====================================================================
+    let toastTimer = null;
+    function toast(message, kind = "success") {
+      const el = document.getElementById("toast");
+      el.textContent = message;
+      el.className = "toast " + kind + " show";
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => el.classList.remove("show"), 2400);
+    }
+
+    // ====================================================================
+    // UTIL
+    // ====================================================================
+    function escapeHtml(s) {
+      return String(s ?? "").replace(/[&<>"']/g, (c) => ({
+        "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+      }[c]));
+    }
+    function escapeAttr(s) { return escapeHtml(s); }
+    function deepClone(x) { return JSON.parse(JSON.stringify(x)); }
+  </script>
+</body>
+</html>

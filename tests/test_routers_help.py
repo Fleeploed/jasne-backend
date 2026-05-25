@@ -102,11 +102,31 @@ def _build_test_content() -> HelpContent:
     )
 
 
+@pytest.fixture(autouse=True)
+def default_snapshot_from_yaml(monkeypatch):
+    """Migration 0011 moved guides to Postgres. By default, route tests still
+    rely on the YAML-seeded content, so we patch `_snapshot()` to return what
+    the YAML loader produced (same shape as before the cutover). Tests that
+    need a hand-built HelpContent use `patched_content` which overrides this.
+    """
+    from app.services.help_loader import get_help_content as _real_yaml_content
+
+    async def _yaml_snapshot():
+        return _real_yaml_content()
+
+    monkeypatch.setattr("app.routers.help._snapshot", _yaml_snapshot)
+
+
 @pytest.fixture
 def patched_content(monkeypatch):
     """Tests use this to inject controlled HelpContent rather than seed YAML."""
     content = _build_test_content()
+
+    async def _fake_snapshot():
+        return content
+
     monkeypatch.setattr("app.routers.help.get_help_content", lambda: content)
+    monkeypatch.setattr("app.routers.help._snapshot", _fake_snapshot)
     return content
 
 
