@@ -585,11 +585,7 @@ async def get_scan_counts(
     # single user ever exceeds it, the chips will under-count but the page
     # itself stays correct.
     result = (
-        await supabase.table("scans")
-        .select("category")
-        .eq("user_id", str(user_id))
-        .range(0, 9999)
-        .execute()
+        await supabase.table("scans").select("category").eq("user_id", str(user_id)).range(0, 9999).execute()
     )
     by_category: dict[str, int] = {}
     for row in result.data or []:
