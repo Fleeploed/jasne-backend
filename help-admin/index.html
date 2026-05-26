@@ -1936,7 +1936,9 @@
     // Бэк проверяет admin-роль и форвардит на DeepL с серверным ключом.
     // ====================================================================
 
-    const DEEPL_LANG_MAP = { cs: "CS", ru: "RU", uk: "UK", en: "EN-US" };
+    // DeepL accepts EN-US/EN-GB only as target_lang. For source_lang it requires plain EN.
+    const DEEPL_SOURCE_MAP = { cs: "CS", ru: "RU", uk: "UK", en: "EN" };
+    const DEEPL_TARGET_MAP = { cs: "CS", ru: "RU", uk: "UK", en: "EN-US" };
     const DEEPL_CACHE_KEY = "jasne-help-admin:deepl-cache";
 
     async function backendFetch(path, options = {}) {
@@ -1978,8 +1980,8 @@
     async function deeplTranslateBatch(texts, sourceLang, targetLang) {
       if (texts.length === 0) return [];
       const body = JSON.stringify({
-        source_lang: DEEPL_LANG_MAP[sourceLang],
-        target_lang: DEEPL_LANG_MAP[targetLang],
+        source_lang: DEEPL_SOURCE_MAP[sourceLang],
+        target_lang: DEEPL_TARGET_MAP[targetLang],
         texts,
       });
       const data = await backendFetch("/admin/translate", {

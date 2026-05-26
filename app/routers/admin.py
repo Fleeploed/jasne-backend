@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 import os
 from typing import Literal
+from urllib.parse import urlencode
 from uuid import UUID
 
 import httpx
@@ -85,19 +86,31 @@ async def translate(
     await require_admin(user_id)
     key = _deepl_key()
 
+    # DeepL accepts EN-US/EN-GB only as target_lang. For source_lang it
+    # demands the base code. Normalise here so callers don't have to care.
+    src = body.source_lang.split("-")[0]
+
+    # Auth via header (not auth_key body param). And use `content=` with
+    # an explicit urlencoded body — httpx.AsyncClient.post(data=list_of_tuples)
+    # raises "Attempted to send a sync request with an AsyncClient instance"
+    # in 0.28.x; the `content=` path is the supported async route.
     params: list[tuple[str, str]] = [
-        ("auth_key", key),
-        ("source_lang", body.source_lang),
+        ("source_lang", src),
         ("target_lang", body.target_lang),
         ("preserve_formatting", "1"),
     ]
     for t in body.texts:
         params.append(("text", t))
+    body_str = urlencode(params)
 
     async with httpx.AsyncClient(timeout=30.0) as client:
         res = await client.post(
             f"{_deepl_endpoint(key)}/translate",
-            data=params,
+            content=body_str,
+            headers={
+                "Content-Type": "application/x-www-form-urlencoded",
+                "Authorization": f"DeepL-Auth-Key {key}",
+            },
         )
 
     if res.status_code != 200:
