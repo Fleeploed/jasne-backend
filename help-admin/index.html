@@ -172,6 +172,16 @@
     .badge.draft { background: var(--surface-2); color: var(--text-muted); }
     .badge.published { background: var(--green-soft); color: var(--green); border-color: var(--green-border); }
     .badge.lang { background: var(--accent-soft); color: var(--accent-strong); border-color: #e8cf9c; font-variant-numeric: tabular-nums; }
+    .badge.lang.missing {
+      background: transparent;
+      color: var(--text-faint);
+      border-color: var(--border);
+      border-style: dashed;
+    }
+    .badge.lang.current {
+      box-shadow: 0 0 0 2px var(--accent);
+      font-weight: 600;
+    }
     .badge.count {
       background: var(--surface-3); color: var(--text-muted); border-color: var(--border);
       padding: 2px 8px; font-size: 11px;
@@ -518,10 +528,13 @@
 
     <!-- ============== LIST PAGE ============== -->
     <div id="page-list" class="container">
-      <div style="display:flex;align-items:center;gap:12px;margin-bottom:18px;">
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:18px;flex-wrap:wrap;">
         <h1 style="flex:1;">Раздел «Помощь»</h1>
-        <button class="btn ghost" id="open-categories">⚙ Категории</button>
+        <button class="btn ghost" id="open-categories" title="Управление категориями">⚙ Категории</button>
+        <button class="btn ghost" id="list-import" title="Импорт из YAML-файлов">⬆ Импорт</button>
+        <button class="btn ghost" id="list-export" title="Скачать все статьи как JSON-архив">⬇ Экспорт</button>
         <button class="btn primary" id="list-new">+ Новая статья</button>
+        <input type="file" id="import-input" accept=".yaml,.yml" multiple style="display:none;" />
       </div>
 
       <div class="filters">
@@ -585,7 +598,11 @@
     <!-- ============== EDITOR PAGE ============== -->
     <div id="page-editor" class="container wide hidden">
       <div class="breadcrumb"><a id="editor-back">← К списку</a></div>
-      <h1 id="editor-title">Новая статья</h1>
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:8px;flex-wrap:wrap;">
+        <h1 id="editor-title" style="flex:1;">Новая статья</h1>
+        <button class="btn ghost sm" id="editor-translate" title="Перевести в недостающие языки через DeepL">🌐 Перевести</button>
+        <button class="btn ghost sm" id="editor-export-yaml" title="Скачать как YAML">⬇ YAML</button>
+      </div>
 
       <div id="siblings-banner" class="siblings-banner hidden"></div>
 
@@ -722,14 +739,45 @@
     </div>
   </div>
 
+  <!-- ================================================================
+       TRANSLATE MODAL — choose target languages
+  ================================================================= -->
+  <div id="tr-modal" class="hidden" style="position:fixed;inset:0;background:rgba(40,28,12,0.4);z-index:50;display:flex;align-items:center;justify-content:center;padding:24px;">
+    <div class="card" style="max-width:560px;width:100%;">
+      <h2 style="margin-bottom:6px;">Перевести через DeepL</h2>
+      <p style="color:var(--text-muted);margin:0 0 18px;font-size:13px;" id="tr-source-line"></p>
+
+      <label class="field">Перевести на</label>
+      <div id="tr-targets" style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:14px;"></div>
+
+      <div id="tr-summary" style="padding:12px 14px;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);font-size:13px;line-height:1.6;"></div>
+
+      <div id="tr-error" class="error hidden" style="margin-top:12px;"></div>
+
+      <p style="color:var(--text-faint);font-size:12px;margin:14px 0 0;">
+        Каждый перевод создастся как <strong>черновик</strong>. Мобильное приложение не увидит, пока вы вручную не опубликуете.
+      </p>
+
+      <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:18px;">
+        <button class="btn" id="tr-cancel" type="button">Отмена</button>
+        <button class="btn primary" id="tr-go" type="button">Перевести</button>
+      </div>
+    </div>
+  </div>
+
   <!-- toast -->
   <div id="toast" class="toast"></div>
 
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/js-yaml@4.1.0/dist/js-yaml.min.js"></script>
   <script>
     // ================== EDIT THESE ==================
     const SUPABASE_URL = "https://ndestbxknbgaxxdjoqkv.supabase.co";
     const SUPABASE_ANON_KEY = "REDACTED_PUBLIC_SUPABASE_ANON_KEY";
+
+    // Бэкенд для прокси-вызовов перевода (браузер сам в DeepL не пускают из-за CORS).
+    // DeepL-ключ хранится в Railway env var DEEPL_API_KEY, не в этом файле.
+    const BACKEND_URL = "https://jasne-backend-production.up.railway.app";
     // ================================================
 
     const { createClient } = window.supabase;
@@ -900,6 +948,8 @@
       showRoot("app");
       showPage("list");
       await refreshList();
+      loadFilters();
+      renderList();
     }
 
     async function loadCategories() {
@@ -1013,10 +1063,21 @@
         const statusClass = g.status === "published" ? "published" : "draft";
         const statusText = g.status === "published" ? "Опубликовано" : "Черновик";
         const sectionCount = Array.isArray(g.sections) ? g.sections.length : 0;
-        const siblings = Object.keys(langsBySlug[g.slug] || {});
-        const langBadges = siblings.map((l) =>
-          `<span class="badge lang" style="${l === g.language ? '' : 'opacity:0.4'}">${l}</span>`
-        ).join(" ");
+        // Show all 4 language slots so existence/absence reads at a glance.
+        // - "current" — this row's language (subtle ring)
+        // - plain "lang" — exists for this slug in DB
+        // - "lang missing" — no row in DB for that language
+        const ALL_LANGS = ["cs", "ru", "uk", "en"];
+        const siblingSet = new Set(Object.keys(langsBySlug[g.slug] || {}));
+        const langBadges = ALL_LANGS.map((l) => {
+          const exists = siblingSet.has(l);
+          const isCurrent = l === g.language;
+          const cls = `badge lang${exists ? "" : " missing"}${isCurrent ? " current" : ""}`;
+          const title = isCurrent
+            ? `текущая строка (${l})`
+            : exists ? `есть в БД (${l})` : `нет в БД (${l})`;
+          return `<span class="${cls}" title="${title}">${l}</span>`;
+        }).join(" ");
 
         const tr = document.createElement("tr");
         tr.innerHTML = `
@@ -1026,7 +1087,7 @@
           </td>
           <td>${escapeHtml(catTitle)}</td>
           <td><div class="lang-pills">${langBadges}</div></td>
-          <td><span class="badge ${statusClass}">${statusText}</span></td>
+          <td><span class="badge ${statusClass}" data-toggle-status="${g.id}" style="cursor:pointer;" title="Кликнуть, чтобы переключить">${statusText}</span></td>
           <td><span class="badge count">${sectionCount}</span></td>
           <td style="color:var(--text-muted);font-size:13px;">${formatDate(g.updated_at)}</td>
           <td>
@@ -1708,6 +1769,531 @@
       clearTimeout(toastTimer);
       toastTimer = setTimeout(() => el.classList.remove("show"), 2400);
     }
+
+    // ====================================================================
+    // YAML EXPORT / IMPORT
+    //
+    // Format matches help_content/guides/<category>/<slug>.<lang>.yaml in the
+    // backend repo, so files round-trip cleanly through git + scripts/seed_help_guides_from_yaml.py.
+    // ====================================================================
+
+    function guideToYamlObject(g) {
+      // Strip null/empty fields so output matches the hand-written YAML style.
+      const out = {
+        slug: g.slug,
+        category: g.category_slug,
+        language: g.language,
+        published: g.status === "published",
+        title: g.title,
+      };
+      if (g.subtitle) out.subtitle = g.subtitle;
+      if (g.short_summary) out.short_summary = g.short_summary;
+      if (g.keywords?.length) out.keywords = g.keywords;
+      if (g.official_source_url) out.official_source_url = g.official_source_url;
+      out.sections = (g.sections || []).map((s) => {
+        const clean = { type: s.type };
+        if (s.title) clean.title = s.title;
+        if (s.body !== undefined && s.body !== null) clean.body = s.body;
+        if (s.items) clean.items = s.items;
+        if (s.actions) clean.actions = s.actions;
+        return clean;
+      });
+      return out;
+    }
+
+    function yamlObjectToGuide(obj) {
+      // Inverse of the above. Validates required fields; throws on bad input.
+      const required = ["slug", "category", "language", "title", "sections"];
+      for (const k of required) {
+        if (obj[k] === undefined) throw new Error(`Не хватает поля «${k}»`);
+      }
+      if (!["cs", "ru", "uk", "en"].includes(obj.language)) {
+        throw new Error(`Неизвестный язык: ${obj.language}`);
+      }
+      if (!Array.isArray(obj.sections) || obj.sections.length === 0) {
+        throw new Error("sections должны быть непустым массивом");
+      }
+      return {
+        slug: String(obj.slug),
+        category_slug: String(obj.category),
+        language: obj.language,
+        status: obj.published === false ? "draft" : "published",
+        title: String(obj.title),
+        subtitle: obj.subtitle || null,
+        short_summary: obj.short_summary || null,
+        keywords: Array.isArray(obj.keywords) ? obj.keywords : [],
+        official_source_url: obj.official_source_url || null,
+        sections: obj.sections.map((s) => {
+          const clean = { type: s.type };
+          clean.title = s.title || null;
+          if (s.body !== undefined && s.body !== null) clean.body = String(s.body);
+          if (s.items) clean.items = s.items.map(String);
+          if (s.actions) clean.actions = s.actions.map(String);
+          return clean;
+        }),
+      };
+    }
+
+    function downloadFile(filename, content, mime = "text/plain") {
+      const blob = new Blob([content], { type: mime + ";charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    }
+
+    // ---- Editor: export current guide ----
+    document.getElementById("editor-export-yaml").addEventListener("click", () => {
+      const payload = collectPayload();
+      if (!payload.slug || !payload.title) {
+        toast("Сначала заполните slug и заголовок", "error");
+        return;
+      }
+      const obj = guideToYamlObject({
+        slug: payload.slug,
+        category_slug: payload.category_slug,
+        language: payload.language,
+        status: payload.status,
+        title: payload.title,
+        subtitle: payload.subtitle,
+        short_summary: payload.short_summary,
+        keywords: payload.keywords,
+        official_source_url: payload.official_source_url,
+        sections: payload.sections,
+      });
+      const yaml = jsyaml.dump(obj, { lineWidth: 100, noRefs: true, quotingType: '"', forceQuotes: false });
+      downloadFile(`${payload.slug}.${payload.language}.yaml`, yaml, "application/x-yaml");
+      toast("YAML скачан", "success");
+    });
+
+    // ---- List: bulk export ----
+    document.getElementById("list-export").addEventListener("click", () => {
+      if (state.guides.length === 0) {
+        toast("Нет статей для экспорта", "error");
+        return;
+      }
+      // Concatenated multi-document YAML — one file with all guides separated by `---`.
+      // Easier than ZIP without bringing in JSZip; can be split apart with `yq` or any YAML tool.
+      const docs = state.guides.map((g) => jsyaml.dump(guideToYamlObject(g), {
+        lineWidth: 100, noRefs: true, quotingType: '"', forceQuotes: false,
+      }));
+      const out = "# Jasně Help — full export\n# Generated " + new Date().toISOString() + "\n\n" + docs.join("\n---\n");
+      downloadFile(`jasne-help-export-${new Date().toISOString().slice(0,10)}.yaml`, out, "application/x-yaml");
+      toast(`Экспортировано ${state.guides.length} статей`, "success");
+    });
+
+    // ---- List: import ----
+    document.getElementById("list-import").addEventListener("click", () => {
+      document.getElementById("import-input").click();
+    });
+
+    document.getElementById("import-input").addEventListener("change", async (e) => {
+      const files = Array.from(e.target.files || []);
+      e.target.value = ""; // allow re-import of same files
+      if (files.length === 0) return;
+      if (!confirm(`Импортировать ${files.length} файл(ов)? Существующие статьи с такими же (slug, language) будут перезаписаны.`)) return;
+
+      const results = { ok: 0, errors: [] };
+      for (const file of files) {
+        try {
+          const text = await file.text();
+          // Support both single doc and multi-doc YAML (--- separator).
+          const docs = jsyaml.loadAll(text).filter(Boolean);
+          for (const doc of docs) {
+            const row = yamlObjectToGuide(doc);
+            const { error } = await sb
+              .from("help_guides")
+              .upsert(row, { onConflict: "slug,language" });
+            if (error) {
+              results.errors.push(`${file.name} (${doc.slug || "?"}.${doc.language || "?"}): ${error.message}`);
+            } else {
+              results.ok++;
+            }
+          }
+        } catch (err) {
+          results.errors.push(`${file.name}: ${err.message || err}`);
+        }
+      }
+      if (results.errors.length === 0) {
+        toast(`Импортировано: ${results.ok}`, "success");
+      } else {
+        toast(`Импортировано ${results.ok}, ошибок ${results.errors.length}`, "error");
+        console.warn("Import errors:", results.errors);
+        alert("Импорт завершён с ошибками:\n\n" + results.errors.join("\n"));
+      }
+      await refreshList();
+    });
+
+    // ====================================================================
+    // DEEPL AUTO-TRANSLATE (через бэкенд-прокси)
+    //
+    // DeepL не отдаёт CORS-заголовки → браузер не может звонить туда напрямую.
+    // Поэтому идём через свой FastAPI: POST /admin/translate, GET /admin/translate/usage.
+    // Бэк проверяет admin-роль и форвардит на DeepL с серверным ключом.
+    // ====================================================================
+
+    const DEEPL_LANG_MAP = { cs: "CS", ru: "RU", uk: "UK", en: "EN-US" };
+    const DEEPL_CACHE_KEY = "jasne-help-admin:deepl-cache";
+
+    async function backendFetch(path, options = {}) {
+      // Все вызовы в /admin/* требуют валидный JWT в Authorization.
+      const { data: { session } } = await sb.auth.getSession();
+      if (!session) throw new Error("Сессия истекла, перелогиньтесь");
+      const headers = {
+        Authorization: `Bearer ${session.access_token}`,
+        ...(options.headers || {}),
+      };
+      const res = await fetch(`${BACKEND_URL}${path}`, { ...options, headers });
+      if (!res.ok) {
+        let detail;
+        try { detail = (await res.json()).detail; } catch { detail = await res.text(); }
+        throw new Error(`${res.status}: ${detail || res.statusText}`);
+      }
+      return res.json();
+    }
+
+    // ---- translation cache: keyed by srcHash + lang_pair, persists in localStorage ----
+    function deeplCacheLoad() {
+      try { return JSON.parse(localStorage.getItem(DEEPL_CACHE_KEY) || "{}"); } catch { return {}; }
+    }
+    function deeplCacheSave(cache) {
+      try { localStorage.setItem(DEEPL_CACHE_KEY, JSON.stringify(cache)); } catch {}
+    }
+    async function strHash(s) {
+      const buf = await crypto.subtle.digest("SHA-1", new TextEncoder().encode(s));
+      return Array.from(new Uint8Array(buf)).slice(0, 8)
+        .map((b) => b.toString(16).padStart(2, "0")).join("");
+    }
+    const ck = (hash, src, tgt) => `${hash}:${src}>${tgt}`;
+
+    async function deeplFetchUsage() {
+      // Returns { character_count, character_limit }. Errors swallowed by caller.
+      return backendFetch("/admin/translate/usage");
+    }
+
+    async function deeplTranslateBatch(texts, sourceLang, targetLang) {
+      if (texts.length === 0) return [];
+      const body = JSON.stringify({
+        source_lang: DEEPL_LANG_MAP[sourceLang],
+        target_lang: DEEPL_LANG_MAP[targetLang],
+        texts,
+      });
+      const data = await backendFetch("/admin/translate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body,
+      });
+      return data.translations;
+    }
+
+    /** Collect translatable strings + their slot metadata in deterministic order. */
+    function collectTranslatableStrings(srcGuide) {
+      const strings = [], slots = [];
+      const push = (kind, idx, key, value) => {
+        if (value && value.trim()) { strings.push(value); slots.push({ kind, idx, key }); }
+      };
+      push("top", 0, "title", srcGuide.title);
+      push("top", 0, "subtitle", srcGuide.subtitle);
+      push("top", 0, "short_summary", srcGuide.short_summary);
+      srcGuide.sections.forEach((s, i) => {
+        if (s.title) push("section", i, "title", s.title);
+        if (s.body) push("section", i, "body", s.body);
+        if (s.items) s.items.forEach((it, j) => push("section-item", i, j, it));
+        // s.actions intentionally NOT translated — they're ui-string keys.
+      });
+      return { strings, slots };
+    }
+
+    /**
+     * Translate srcGuide → targetLang with dedup + cache.
+     *
+     * Strategy (saves DeepL characters):
+     *   1. Collect every human string from the guide.
+     *   2. Dedup duplicates (e.g. "OAMP" mentioned 5×).
+     *   3. Look each unique string up in localStorage cache (key=hash+lang_pair).
+     *   4. Send ONLY cache misses to DeepL in a single batch request.
+     *   5. Update cache with new translations.
+     *   6. Reassemble the guide using the dedup map.
+     *
+     * Returns { guide, charsCharged, cacheHits, uniqueCount, totalStrings }.
+     */
+    async function translateGuide(srcGuide, targetLang) {
+      const { strings, slots } = collectTranslatableStrings(srcGuide);
+      const cache = deeplCacheLoad();
+
+      // Dedup, preserving order of first appearance.
+      const firstSeen = new Map();
+      const uniq = [];
+      for (const s of strings) {
+        if (!firstSeen.has(s)) { firstSeen.set(s, uniq.length); uniq.push(s); }
+      }
+
+      // Cache lookup per unique string.
+      const hashes = await Promise.all(uniq.map(strHash));
+      const keys = uniq.map((_, i) => ck(hashes[i], srcGuide.language, targetLang));
+      const uniqTranslations = new Array(uniq.length);
+      const misses = [];        // strings to actually translate
+      const missOrigIdx = [];   // their position in `uniq`
+      let cacheHits = 0;
+
+      uniq.forEach((s, i) => {
+        const cached = cache[keys[i]];
+        if (cached !== undefined) { uniqTranslations[i] = cached; cacheHits++; }
+        else { misses.push(s); missOrigIdx.push(i); }
+      });
+
+      let charsCharged = 0;
+      if (misses.length > 0) {
+        const out = await deeplTranslateBatch(misses, srcGuide.language, targetLang);
+        out.forEach((t, n) => {
+          const origIdx = missOrigIdx[n];
+          uniqTranslations[origIdx] = t;
+          cache[keys[origIdx]] = t;
+        });
+        charsCharged = misses.reduce((sum, s) => sum + s.length, 0);
+        deeplCacheSave(cache);
+      }
+
+      // Reassemble.
+      const guide = deepClone(srcGuide);
+      guide.language = targetLang;
+      guide.status = "draft";
+      guide.sections = deepClone(srcGuide.sections);
+      strings.forEach((src, n) => {
+        const t = uniqTranslations[firstSeen.get(src)];
+        const slot = slots[n];
+        if (slot.kind === "top") guide[slot.key] = t;
+        else if (slot.kind === "section") guide.sections[slot.idx][slot.key] = t;
+        else if (slot.kind === "section-item") guide.sections[slot.idx].items[slot.key] = t;
+      });
+
+      return { guide, charsCharged, cacheHits, uniqueCount: uniq.length, totalStrings: strings.length };
+    }
+
+    /** Pre-flight: how many characters will actually be sent (after dedup + cache)? */
+    async function estimateTranslationCost(srcGuide, targetLangs) {
+      const { strings } = collectTranslatableStrings(srcGuide);
+      const uniq = Array.from(new Set(strings));
+      const hashes = await Promise.all(uniq.map(strHash));
+      const cache = deeplCacheLoad();
+      const perLang = {};
+      let total = 0;
+      for (const tgt of targetLangs) {
+        let langChars = 0;
+        uniq.forEach((s, i) => {
+          if (!(ck(hashes[i], srcGuide.language, tgt) in cache)) langChars += s.length;
+        });
+        perLang[tgt] = langChars;
+        total += langChars;
+      }
+      return { total, perLang, uniqueCount: uniq.length, totalStrings: strings.length };
+    }
+
+    const LANG_NAMES = { cs: "Čeština", ru: "Русский", uk: "Українська", en: "English" };
+    const ALL_LANGS_LIST = ["cs", "ru", "uk", "en"];
+
+    // Mutable state owned by the translate modal.
+    const trState = { srcGuide: null, estimate: null, usage: null };
+
+    document.getElementById("editor-translate").addEventListener("click", openTranslateModal);
+    document.getElementById("tr-cancel").addEventListener("click", () => {
+      document.getElementById("tr-modal").classList.add("hidden");
+    });
+    document.getElementById("tr-go").addEventListener("click", runTranslate);
+
+    async function openTranslateModal() {
+      const payload = collectPayload();
+      if (!payload.title || payload.sections.length === 0) {
+        toast("Заполните заголовок и хотя бы одну секцию", "error");
+        return;
+      }
+      if (!payload.slug) {
+        toast("Сначала задайте slug", "error");
+        return;
+      }
+      trState.srcGuide = {
+        slug: payload.slug,
+        category_slug: payload.category_slug,
+        language: payload.language,
+        status: payload.status,
+        title: payload.title,
+        subtitle: payload.subtitle,
+        short_summary: payload.short_summary,
+        keywords: payload.keywords,
+        official_source_url: payload.official_source_url,
+        sections: payload.sections,
+      };
+
+      const existing = state.guides.filter((g) => g.slug === payload.slug).map((g) => g.language);
+
+      // Build language checkbox grid.
+      const targetsBox = document.getElementById("tr-targets");
+      targetsBox.innerHTML = "";
+      const checkable = ALL_LANGS_LIST.filter((l) => l !== payload.language);
+      for (const l of checkable) {
+        const exists = existing.includes(l);
+        const row = document.createElement("label");
+        row.style.cssText = "display:flex;align-items:center;gap:8px;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radius-sm);cursor:pointer;background:var(--surface-2);";
+        row.innerHTML = `
+          <input type="checkbox" data-target="${l}" ${exists ? "" : "checked"} ${exists ? "" : ""}>
+          <span style="flex:1;font-weight:500;">${LANG_NAMES[l]} <span style="color:var(--text-muted);font-size:12px;">(${l})</span></span>
+          ${exists ? `<span class="badge" style="background:var(--warning-soft);color:var(--warning);border-color:var(--warning-border);">перезаписать</span>` : `<span class="badge" style="background:var(--green-soft);color:var(--green);border-color:var(--green-border);">создать</span>`}
+        `;
+        targetsBox.appendChild(row);
+        row.querySelector("input").addEventListener("change", refreshTranslateSummary);
+      }
+
+      document.getElementById("tr-source-line").innerHTML =
+        `Источник: <strong>${LANG_NAMES[payload.language]}</strong> (${payload.language})`;
+
+      document.getElementById("tr-error").classList.add("hidden");
+      document.getElementById("tr-summary").innerHTML = '<span class="spinner"></span> Подсчёт стоимости…';
+      document.getElementById("tr-modal").classList.remove("hidden");
+
+      // Fetch usage + initial estimate in parallel.
+      trState.usage = null;
+      try {
+        trState.usage = await deeplFetchUsage();
+      } catch (e) {
+        // Don't block — just hide budget info.
+        console.warn("DeepL usage fetch failed:", e);
+      }
+      await refreshTranslateSummary();
+    }
+
+    async function refreshTranslateSummary() {
+      const summaryEl = document.getElementById("tr-summary");
+      const targets = Array.from(document.querySelectorAll("#tr-targets input:checked"))
+        .map((x) => x.dataset.target);
+      if (targets.length === 0) {
+        summaryEl.innerHTML = '<span style="color:var(--text-faint);">Выберите хотя бы один язык.</span>';
+        document.getElementById("tr-go").disabled = true;
+        return;
+      }
+      try {
+        trState.estimate = await estimateTranslationCost(trState.srcGuide, targets);
+      } catch (e) {
+        summaryEl.innerHTML = `<span style="color:var(--red);">Ошибка подсчёта: ${escapeHtml(e.message || String(e))}</span>`;
+        document.getElementById("tr-go").disabled = true;
+        return;
+      }
+      const e = trState.estimate;
+      const lines = targets.map((l) => {
+        const c = e.perLang[l];
+        return c === 0
+          ? `• ${LANG_NAMES[l]}: <strong>0</strong> знаков <span style="color:var(--green);">(из кеша)</span>`
+          : `• ${LANG_NAMES[l]}: <strong>${c.toLocaleString("ru-RU")}</strong> знаков`;
+      }).join("<br>");
+      const dedup = e.totalStrings !== e.uniqueCount
+        ? `<br><span style="color:var(--text-faint);">Дедуп: ${e.totalStrings} строк → ${e.uniqueCount} уникальных.</span>`
+        : "";
+      let budget = "";
+      if (trState.usage) {
+        const used = trState.usage.character_count;
+        const limit = trState.usage.character_limit;
+        const left = limit - used;
+        const insufficient = e.total > left;
+        budget = `<br><br>DeepL: <strong>${used.toLocaleString("ru-RU")}</strong> / ${limit.toLocaleString("ru-RU")} (осталось ${left.toLocaleString("ru-RU")}).`;
+        if (insufficient) {
+          budget += ` <span style="color:var(--red);font-weight:600;">Не хватает квоты!</span>`;
+        }
+      }
+      summaryEl.innerHTML = `${lines}<br><br>Итого к отправке: <strong>${e.total.toLocaleString("ru-RU")}</strong> знаков.${dedup}${budget}`;
+      const insufficient = trState.usage && e.total > (trState.usage.character_limit - trState.usage.character_count);
+      document.getElementById("tr-go").disabled = !!insufficient;
+    }
+
+    async function runTranslate() {
+      const targets = Array.from(document.querySelectorAll("#tr-targets input:checked"))
+        .map((x) => x.dataset.target);
+      if (targets.length === 0) return;
+      const errEl = document.getElementById("tr-error");
+      errEl.classList.add("hidden");
+      const goBtn = document.getElementById("tr-go");
+      goBtn.disabled = true;
+      goBtn.innerHTML = '<span class="spinner"></span>Перевод…';
+
+      const errs = [];
+      let okCount = 0, charsUsed = 0, cacheHits = 0;
+      try {
+        for (const target of targets) {
+          try {
+            const res = await translateGuide(trState.srcGuide, target);
+            const { error } = await sb
+              .from("help_guides")
+              .upsert(res.guide, { onConflict: "slug,language" });
+            if (error) errs.push(`${target}: ${error.message}`);
+            else { okCount++; charsUsed += res.charsCharged; cacheHits += res.cacheHits; }
+          } catch (e) {
+            errs.push(`${target}: ${e.message || e}`);
+          }
+        }
+        if (errs.length === 0) {
+          const tail = cacheHits > 0 ? ` · ${cacheHits} строк из кеша` : "";
+          toast(`Создано: ${okCount} · ${charsUsed.toLocaleString("ru-RU")} знаков потрачено${tail}`, "success");
+          document.getElementById("tr-modal").classList.add("hidden");
+          await refreshList();
+          renderSiblingsBanner(state.editing);
+        } else {
+          errEl.innerHTML = errs.map(escapeHtml).join("<br>");
+          errEl.classList.remove("hidden");
+          if (okCount > 0) toast(`Готово ${okCount}, ошибок ${errs.length}`, "error");
+        }
+      } finally {
+        goBtn.disabled = false;
+        goBtn.textContent = "Перевести";
+      }
+    }
+
+    // ====================================================================
+    // FILTER PERSISTENCE — restore filters across sessions
+    // ====================================================================
+    const FILTERS_KEY = "jasne-help-admin:filters";
+    function saveFilters() {
+      try { localStorage.setItem(FILTERS_KEY, JSON.stringify(state.filters)); } catch {}
+    }
+    function loadFilters() {
+      try {
+        const raw = localStorage.getItem(FILTERS_KEY);
+        if (!raw) return;
+        const f = JSON.parse(raw);
+        state.filters = { category: f.category || "", language: f.language || "", search: f.search || "" };
+        document.getElementById("filter-category").value = state.filters.category;
+        document.getElementById("filter-language").value = state.filters.language;
+        document.getElementById("filter-search").value = state.filters.search;
+      } catch {}
+    }
+    ["filter-category", "filter-language", "filter-search"].forEach((id) =>
+      document.getElementById(id).addEventListener("change", saveFilters),
+    );
+    document.getElementById("filter-search").addEventListener("input", saveFilters);
+
+    // ====================================================================
+    // INLINE STATUS TOGGLE — click status badge in list to flip draft↔published
+    // ====================================================================
+    document.getElementById("list-tbody").addEventListener("click", async (e) => {
+      const badge = e.target.closest("[data-toggle-status]");
+      if (!badge) return;
+      const id = badge.dataset.toggleStatus;
+      const guide = state.guides.find((g) => g.id === id);
+      if (!guide) return;
+      const next = guide.status === "published" ? "draft" : "published";
+      badge.style.opacity = "0.5";
+      try {
+        const { error } = await sb.from("help_guides").update({ status: next }).eq("id", id);
+        if (error) throw error;
+        guide.status = next;
+        toast(next === "published" ? "Опубликовано" : "Снято с публикации", "success");
+        renderList();
+      } catch (err) {
+        toast("Не удалось изменить статус: " + (err.message || err), "error");
+        badge.style.opacity = "1";
+      }
+    });
 
     // ====================================================================
     // UTIL
