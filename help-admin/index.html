@@ -1915,7 +1915,13 @@
             }
           }
         } catch (err) {
-          results.errors.push(`${file.name}: ${err.message || err}`);
+          // Translate the most common js-yaml error into a hint actionable
+          // by a non-expert (this is the one ChatGPT-generated YAML hits most often).
+          let msg = err.message || String(err);
+          if (/bad indentation of a mapping entry/i.test(msg)) {
+            msg += "\n  → Похоже не хватает «- » перед элементами списка (keywords, items, actions).";
+          }
+          results.errors.push(`${file.name}: ${msg}`);
         }
       }
       if (results.errors.length === 0) {

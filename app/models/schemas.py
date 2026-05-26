@@ -171,6 +171,11 @@ class ScanBulkDeleteResponse(_Base):
     deleted_deadlines: int
 
 
+class ScanCountsResponse(_Base):
+    total: int
+    by_category: dict[str, int]
+
+
 class ScanListItem(_Base):
     id: UUID
     category: DocumentCategory | None = None

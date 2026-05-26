@@ -21,6 +21,7 @@ from app.models.schemas import (
     ClassifierResult,
     DeadlineItem,
     ScanBulkDeleteResponse,
+    ScanCountsResponse,
     ScanImageUrlsResponse,
     ScanListItem,
     ScanRequest,
@@ -567,6 +568,34 @@ async def list_scans(
         {"p_user_id": str(user_id), "p_limit": limit, "p_offset": offset},
     ).execute()
     return [ScanListItem.from_row(row) for row in (result.data or [])]
+
+
+@router.get("/counts", response_model=ScanCountsResponse)
+async def get_scan_counts(
+    user_id: UUID = Depends(get_current_user_id),
+) -> ScanCountsResponse:
+    """Return total scan count and per-category counts for the current user.
+
+    Used by the frontend to render filter chips with true DB counts instead of
+    counting only what's been paginated into the list view. Aggregation is done
+    in Python over a single-column fetch — cheap, no migration needed.
+    """
+    supabase = await get_supabase()
+    # Pull only the category column. Range covers any realistic user; if a
+    # single user ever exceeds it, the chips will under-count but the page
+    # itself stays correct.
+    result = (
+        await supabase.table("scans")
+        .select("category")
+        .eq("user_id", str(user_id))
+        .range(0, 9999)
+        .execute()
+    )
+    by_category: dict[str, int] = {}
+    for row in result.data or []:
+        key = row.get("category") or "ostatni"
+        by_category[key] = by_category.get(key, 0) + 1
+    return ScanCountsResponse(total=sum(by_category.values()), by_category=by_category)
 
 
 @router.get("/{scan_id}", response_model=ScanResponse)
