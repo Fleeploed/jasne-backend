@@ -186,10 +186,18 @@ class ScanListItem(_Base):
     page_count: int = 1
     created_at: datetime
     last_message_at: datetime | None = None
+    # Set when the analysis extracted at least one deadline. Lets the client
+    # group scans under "Со сроками" even if no DB deadline row was created
+    # (e.g., the user dismissed it, or auto-creation hasn't run yet).
+    has_analysis_deadlines: bool = False
+    next_analysis_deadline_at: str | None = None
 
     @classmethod
     def from_row(cls, row: dict[str, Any]) -> ScanListItem:
         result = row.get("result") or {}
+        analysis_deadlines = result.get("deadlines") or []
+        dates = [d.get("date") for d in analysis_deadlines if isinstance(d, dict) and d.get("date")]
+        next_deadline = min(dates) if dates else None
         return cls(
             id=row["id"],
             category=row.get("category"),
@@ -200,6 +208,8 @@ class ScanListItem(_Base):
             page_count=row.get("page_count") or len(row.get("image_paths") or []) or 1,
             created_at=row["created_at"],
             last_message_at=row.get("last_message_at"),
+            has_analysis_deadlines=bool(analysis_deadlines),
+            next_analysis_deadline_at=next_deadline,
         )
 
 
