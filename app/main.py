@@ -197,9 +197,9 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
 async def version() -> VersionResponse:
     """Reports the deployed commit SHA so CI can verify a rollout actually landed.
 
-    `railway up --detach` returns once the upload finishes, before the new
-    container is built and serving. Polling /health alone can match the OLD
-    container; polling /version until the SHA flips proves the new build is live.
+    Hosted deploys can briefly serve the previous container while the new one
+    is still building. Polling /version until the SHA flips proves the new build
+    is live.
     """
     sha = app.state.git_sha
     return VersionResponse(
@@ -211,7 +211,7 @@ async def version() -> VersionResponse:
 
 @app.get("/health", response_model=HealthResponse, tags=["system"])
 async def health() -> HealthResponse:
-    """Liveness probe — cheap, used by Railway's healthcheck.
+    """Liveness probe — cheap, used by platform healthchecks.
 
     Intentionally does NOT touch external dependencies: a failing dep
     should not trigger a container restart (rebooting won't fix Supabase).
@@ -272,7 +272,7 @@ async def health_deep() -> JSONResponse:
 
     Returns 200 when every dep is healthy, 503 if any dep is down. Intended
     for external uptime monitors (GitHub cron, UptimeRobot, etc.) — NOT for
-    Railway's healthcheck (would cause crash-loops on Supabase/OpenAI outages).
+    platform healthchecks (would cause crash-loops on Supabase/OpenAI outages).
     """
     supabase_status, openai_status = await asyncio.gather(_check_supabase(), _check_openai())
     deps = {"supabase": supabase_status, "openai": openai_status}

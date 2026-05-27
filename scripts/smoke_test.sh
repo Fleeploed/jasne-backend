@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Post-deploy smoke test — minimal checks that a deployment is alive.
-# Usage: ./scripts/smoke_test.sh https://jasne-backend-staging.up.railway.app
+# Usage: ./scripts/smoke_test.sh https://jasne-backend.onrender.com
 
 set -euo pipefail
 
