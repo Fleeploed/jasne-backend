@@ -149,12 +149,18 @@ def _extract_keyword_terms(text: str, *, limit: int = 8) -> list[str]:
     "Voroněžská 144/20" are often better found lexically.
     """
     terms: list[str] = []
+    seen: set[str] = set()
     for raw in re.findall(r"[\wÀ-ž/.-]+", text, flags=re.UNICODE):
         term = raw.strip(".,;:!?()[]{}\"'`").strip()
+        if not term:
+            continue
         folded = term.casefold()
-        existing = {item.casefold() for item in terms}
-        if term and _is_searchable_keyword(term) and folded not in existing:
-            terms.append(term)
+        if folded in seen:
+            continue
+        if not _is_searchable_keyword(term):
+            continue
+        terms.append(term)
+        seen.add(folded)
 
     return sorted(terms, key=_keyword_rank)[:limit]
 

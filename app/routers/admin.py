@@ -40,10 +40,16 @@ DeepLLang = Literal["CS", "RU", "UK", "EN-US", "EN-GB", "EN", "DE", "FR", "ES", 
 
 
 async def require_admin(user_id: UUID) -> None:
-    """Raise 403 if the caller's profile.role is not 'admin'."""
+    """Raise 403 if the caller's profile.role is not 'admin'.
+
+    Uses .limit(1) rather than .single() so a missing profile returns an
+    empty result instead of raising — same outward behaviour (403), but no
+    noisy 500 if a token without a profile row ever reaches this endpoint.
+    """
     supabase = await get_supabase()
-    res = await supabase.table("profiles").select("role").eq("id", str(user_id)).single().execute()
-    role = (res.data or {}).get("role")
+    res = await supabase.table("profiles").select("role").eq("id", str(user_id)).limit(1).execute()
+    rows = res.data or []
+    role = (rows[0] if rows else {}).get("role")
     if role != "admin":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin only")
 

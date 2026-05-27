@@ -131,7 +131,7 @@ async def ask_question(
     profile = await _ensure_profile(user_id)
     plan = profile.get("plan", "free")
     usage_period = usage_period_for_profile(profile)
-    language: UserLanguage = profile.get("language", "cs")
+    profile_language: UserLanguage = profile.get("language", "cs")
 
     # Quota first — cheaper to fail before loading scan + history.
     try:
@@ -140,7 +140,9 @@ async def ask_question(
         raise HTTPException(status_code=status.HTTP_402_PAYMENT_REQUIRED, detail=str(exc)) from exc
 
     scan_row = await _load_scan(scan_id, user_id)
-    language: UserLanguage = scan_row.get("language") or language
+    # Always answer in the scan's original language when known so the user gets
+    # the same language they originally asked in — falls back to the profile.
+    language: UserLanguage = scan_row.get("language") or profile_language
     history = await fetch_scan_history(scan_id, user_id)
     rag_chunks = await retrieve_chat_chunks(
         _build_chat_rag_query(body.question, scan_row),
@@ -179,7 +181,7 @@ async def ask_question_stream(
     profile = await _ensure_profile(user_id)
     plan = profile.get("plan", "free")
     usage_period = usage_period_for_profile(profile)
-    language: UserLanguage = profile.get("language", "cs")
+    profile_language: UserLanguage = profile.get("language", "cs")
 
     try:
         await check_chat_quota(user_id, plan, scan_id, month=usage_period)
@@ -187,7 +189,7 @@ async def ask_question_stream(
         raise HTTPException(status_code=status.HTTP_402_PAYMENT_REQUIRED, detail=str(exc)) from exc
 
     scan_row = await _load_scan(scan_id, user_id)
-    language: UserLanguage = scan_row.get("language") or language
+    language: UserLanguage = scan_row.get("language") or profile_language
     history = await fetch_scan_history(scan_id, user_id)
     rag_chunks = await retrieve_chat_chunks(
         _build_chat_rag_query(body.question, scan_row),

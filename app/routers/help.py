@@ -35,7 +35,9 @@ from app.models.help_schemas import (
     HelpQuickAction,
     HelpScanCta,
     HelpSearchResponse,
+    HelpUiLocale,
     HelpUsefulAction,
+    HelpUsefulActionDef,
 )
 from app.services.help_loader import HelpContent, get_help_content
 from app.services.help_search import search as run_search
@@ -270,7 +272,7 @@ async def help_search(
 # ---------------------------------------------------------------------------
 
 
-def _resolve_ui(content: HelpContent, language: HelpLanguage):
+def _resolve_ui(content: HelpContent, language: HelpLanguage) -> HelpUiLocale:
     locales = content.ui_strings.translations
     return locales.get(language) or locales["cs"]
 
@@ -330,7 +332,7 @@ def _published_guides_with_fallback(
     return out
 
 
-def _ordered_guide_cards(order: list[str], guides) -> list[HelpGuideCard]:
+def _ordered_guide_cards(order: list[str], guides: list[HelpGuide]) -> list[HelpGuideCard]:
     by_slug = {guide.slug: guide for guide in guides}
     out: list[HelpGuideCard] = []
     seen: set[str] = set()
@@ -345,7 +347,11 @@ def _ordered_guide_cards(order: list[str], guides) -> list[HelpGuideCard]:
     return out
 
 
-def _resolve_useful_actions(content: HelpContent, override, language: HelpLanguage) -> list[HelpUsefulAction]:
+def _resolve_useful_actions(
+    content: HelpContent,
+    override: list[HelpUsefulActionDef] | None,
+    language: HelpLanguage,
+) -> list[HelpUsefulAction]:
     ui = _resolve_ui(content, language)
     raw_actions: list[dict[str, object]] = (
         [{"key": a.key, "action": a.action, "highlighted": a.highlighted} for a in override]

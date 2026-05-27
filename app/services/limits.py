@@ -247,11 +247,11 @@ async def check_scan_quota(
             f"plan='{plan}' allows max {caps['max_pages_per_scan']} pages per scan (got {page_count})"
         )
     usage = await get_or_init_usage(user_id, month)
-    if usage["scans_count"] >= caps["monthly_scans"]:
+    scans_used = int(usage.get("scans_count") or 0)
+    if scans_used >= caps["monthly_scans"]:
         period_label = "month" if plan == "free" else "subscription period"
         raise ValueError(
-            f"plan='{plan}' allows {caps['monthly_scans']} scans/{period_label}, "
-            f"already used {usage['scans_count']}"
+            f"plan='{plan}' allows {caps['monthly_scans']} scans/{period_label}, already used {scans_used}"
         )
 
 

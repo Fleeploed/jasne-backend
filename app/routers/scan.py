@@ -169,7 +169,8 @@ async def _scan_stream_events(
             else:
                 analysis, model_used = item
 
-        assert analysis is not None and model_used is not None  # noqa: S101
+        if analysis is None or model_used is None:
+            raise RuntimeError("Analyzer stream ended without a final result")
 
         yield _sse("status", {"step": "saving", "message": "Saving scan and reminders"})
         scan = await _persist_completed_scan(
@@ -316,29 +317,35 @@ def _render_pdf_to_png_data_urls(pdf_bytes: bytes, path: str) -> list[str]:
         document.close()
 
 
+async def _prepare_single_input(user_id: UUID, raw_path: str) -> list[str]:
+    """Resolve one user-supplied path to one-or-more Vision-ready URLs."""
+    path = _validate_storage_path(user_id, raw_path)
+    suffix = _storage_suffix(path)
+
+    if suffix in SUPPORTED_IMAGE_EXTENSIONS:
+        return [await _sign_storage_url(path)]
+
+    if suffix == PDF_EXTENSION:
+        signed_url = await _sign_storage_url(path)
+        pdf_bytes = await _download_signed_object(signed_url, path)
+        # PDF rendering is CPU-bound (fitz/PyMuPDF) — run off the event loop
+        # so concurrent scans keep responding to heartbeats.
+        return await asyncio.to_thread(_render_pdf_to_png_data_urls, pdf_bytes, path)
+
+    raise HTTPException(
+        status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+        detail="Unsupported file type. Upload PNG, JPEG, GIF, WEBP, or PDF.",
+    )
+
+
 async def _prepare_vision_inputs(user_id: UUID, image_paths: list[str]) -> PreparedVisionInputs:
-    """Validate storage paths and convert supported inputs into GPT Vision URLs."""
-    urls: list[str] = []
+    """Validate storage paths and convert supported inputs into GPT Vision URLs.
 
-    for raw_path in image_paths:
-        path = _validate_storage_path(user_id, raw_path)
-        suffix = _storage_suffix(path)
-
-        if suffix in SUPPORTED_IMAGE_EXTENSIONS:
-            urls.append(await _sign_storage_url(path))
-            continue
-
-        if suffix == PDF_EXTENSION:
-            signed_url = await _sign_storage_url(path)
-            pdf_bytes = await _download_signed_object(signed_url, path)
-            urls.extend(_render_pdf_to_png_data_urls(pdf_bytes, path))
-            continue
-
-        raise HTTPException(
-            status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
-            detail="Unsupported file type. Upload PNG, JPEG, GIF, WEBP, or PDF.",
-        )
-
+    Inputs are resolved concurrently — signing + downloading happens in
+    parallel so a 5-page upload doesn't pay 5× the network latency.
+    """
+    grouped = await asyncio.gather(*(_prepare_single_input(user_id, raw_path) for raw_path in image_paths))
+    urls = [url for group in grouped for url in group]
     return PreparedVisionInputs(urls=urls, page_count=len(urls))
 
 

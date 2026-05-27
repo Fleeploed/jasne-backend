@@ -5,7 +5,7 @@ import unicodedata
 from contextlib import suppress
 from datetime import UTC, datetime
 
-from app.models.schemas import OampStatusCheckRequest, OampStatusCheckResponse
+from app.models.schemas import OampStatusCheckRequest, OampStatusCheckResponse, OampStatusOutcome
 
 try:
     from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
@@ -168,7 +168,7 @@ def _extract_result(page) -> str:
     raise OampStatusError("Could not find OAMP result block")
 
 
-def _classify_result(message: str):
+def _classify_result(message: str) -> OampStatusOutcome:
     normalized = _normalize_for_match(message)
     if (
         "nebylo nalezeno" in normalized
