@@ -170,13 +170,23 @@ class TestVersion:
         from app.main import _load_git_sha
 
         monkeypatch.setenv("GIT_SHA", "deadbeefcafef00d")
+        monkeypatch.setenv("RENDER_GIT_COMMIT", "1111111111111111")
         monkeypatch.setenv("RAILWAY_GIT_COMMIT_SHA", "0000000000000000")
         assert _load_git_sha() == "deadbeefcafef00d"
+
+    def test_load_git_sha_falls_back_to_render_var(self, monkeypatch):
+        from app.main import _load_git_sha
+
+        monkeypatch.delenv("GIT_SHA", raising=False)
+        monkeypatch.setenv("RENDER_GIT_COMMIT", "1111111111111111")
+        monkeypatch.setenv("RAILWAY_GIT_COMMIT_SHA", "0000000000000000")
+        assert _load_git_sha() == "1111111111111111"
 
     def test_load_git_sha_falls_back_to_railway_var(self, monkeypatch):
         from app.main import _load_git_sha
 
         monkeypatch.delenv("GIT_SHA", raising=False)
+        monkeypatch.delenv("RENDER_GIT_COMMIT", raising=False)
         monkeypatch.setenv("RAILWAY_GIT_COMMIT_SHA", "0000000000000000")
         assert _load_git_sha() == "0000000000000000"
 
@@ -184,5 +194,6 @@ class TestVersion:
         from app.main import _load_git_sha
 
         monkeypatch.delenv("GIT_SHA", raising=False)
+        monkeypatch.delenv("RENDER_GIT_COMMIT", raising=False)
         monkeypatch.delenv("RAILWAY_GIT_COMMIT_SHA", raising=False)
         assert _load_git_sha() == "unknown"

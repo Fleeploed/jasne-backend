@@ -26,11 +26,16 @@ settings = get_settings()
 def _load_git_sha() -> str:
     """Resolve the deployed commit SHA from CI-injected env vars.
 
-    GIT_SHA is set explicitly by our workflow; RAILWAY_GIT_COMMIT_SHA is
-    populated by Railway itself when the deploy came from a connected repo.
+    GIT_SHA is set explicitly by our workflow; Render and Railway populate
+    their own values when the deploy came from a connected repo.
     Falls back to "unknown" so the endpoint never 500s in local/dev.
     """
-    sha = os.getenv("GIT_SHA") or os.getenv("RAILWAY_GIT_COMMIT_SHA") or "unknown"
+    sha = (
+        os.getenv("GIT_SHA")
+        or os.getenv("RENDER_GIT_COMMIT")
+        or os.getenv("RAILWAY_GIT_COMMIT_SHA")
+        or "unknown"
+    )
     return sha.strip() or "unknown"
 
 
