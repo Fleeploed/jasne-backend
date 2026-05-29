@@ -187,9 +187,7 @@ def test_home_default_language_is_cs(client, auth_headers):
     r = client.get("/help/home", headers=auth_headers)
     assert r.status_code == 200
     # cs categories use Czech titles
-    assert any(
-        c["title"] == "Víza a pobyt" for c in r.json()["popular_categories"]
-    )
+    assert any(c["title"] == "Víza a pobyt" for c in r.json()["popular_categories"])
 
 
 def test_home_invalid_language_returns_422(client, auth_headers):
