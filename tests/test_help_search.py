@@ -71,7 +71,7 @@ def _guide(
 
 
 def _content_with(*guides: HelpGuide, categories: list[HelpCategory] | None = None) -> HelpContent:
-    cats = categories or [_category("visa-pobyt", ru_title="Визы и разрешения на проживание")]
+    cats = categories or [_category("visa-pobyt", ru_title="Визы и проживание")]
     by_slug: dict[str, dict] = {}
     for g in guides:
         by_slug.setdefault(g.slug, {})[g.language] = g
@@ -183,7 +183,7 @@ def test_categories_appear_in_results():
         categories=[
             _category(
                 "visa-pobyt",
-                ru_title="Визы и разрешения на проживание",
+                ru_title="Визы и проживание",
                 ru_subtitle="МВД Чехии, разрешения",
             )
         ],

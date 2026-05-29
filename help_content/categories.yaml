@@ -10,26 +10,26 @@
     - extend-pobyt
   translations:
     cs:
-      title: "Víza a pobytová oprávnění"
-      subtitle: "Ministerstvo vnitra, prodloužení, povolení"
+      title: "Víza a pobyt"
+      subtitle: "Ministerstvo vnitra, povolení, praktické tipy"
       badge: "Nejčastější"
       hero_title: "Pobyt v Česku"
       hero_text: "Praktické návody k pobytu v Česku: kontrola stavu řízení, prodloužení pobytu a další povolení."
     ru:
-      title: "Визы и разрешения на проживание"
-      subtitle: "МВД Чехии, продление, разрешения"
+      title: "Визы и проживание"
+      subtitle: "МВД Чехии, разрешения, практические советы"
       badge: "Самое частое"
       hero_title: "Проживание в Чехии"
       hero_text: "Практические гайды по проживанию в Чехии: проверка статуса заявления, продление разрешения и другие документы."
     uk:
-      title: "Візи та дозволи на проживання"
-      subtitle: "МВС Чехії, продовження, дозволи"
+      title: "Візи та проживання"
+      subtitle: "МВС Чехії, дозволи, практичні поради"
       badge: "Найчастіше"
       hero_title: "Проживання в Чехії"
       hero_text: "Практичні інструкції щодо проживання в Чехії: перевірка статусу заяви, продовження дозволу та інші документи."
     en:
-      title: "Visas and residence permits"
-      subtitle: "Interior Ministry, extensions, permits"
+      title: "Visas & living"
+      subtitle: "Interior Ministry, permits, practical tips"
       badge: "Most common"
       hero_title: "Staying in Czechia"
       hero_text: "Practical guides for staying in Czechia: checking application status, extending residence permits, and handling related documents."

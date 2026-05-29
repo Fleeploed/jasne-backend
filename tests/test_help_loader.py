@@ -24,7 +24,7 @@ VALID_CATEGORIES = dedent(
       icon: passport
       translations:
         cs:
-          title: "Víza a pobytová oprávnění"
+          title: "Víza a pobyt"
           subtitle: "Ministerstvo vnitra"
       fallback:
         cs:
