@@ -9,6 +9,7 @@ Two layers:
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -70,6 +71,7 @@ class HelpGuide(_Base):
     short_summary: str | None = None
     keywords: list[str] = Field(default_factory=list)
     official_source_url: str | None = None
+    updated_at: datetime | None = None
     sections: list[HelpSection] = Field(min_length=1)
 
 
@@ -227,6 +229,7 @@ class HelpGuideResponse(_Base):
     fallback_language: HelpLanguage | None = None
     sections: list[HelpSection]
     official_source_url: str | None = None
+    updated_at: datetime | None = None
 
 
 class HelpSearchResult(_Base):

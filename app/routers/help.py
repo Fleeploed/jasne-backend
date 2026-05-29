@@ -75,7 +75,7 @@ async def _load_published_guides() -> dict[str, dict[HelpLanguage, HelpGuide]]:
         supabase.table("help_guides")
         .select(
             "slug, category_slug, language, status, title, subtitle, "
-            "short_summary, keywords, official_source_url, sections"
+            "short_summary, keywords, official_source_url, updated_at, sections"
         )
         .eq("status", "published")
         .execute()
@@ -96,6 +96,7 @@ async def _load_published_guides() -> dict[str, dict[HelpLanguage, HelpGuide]]:
                     "short_summary": row.get("short_summary"),
                     "keywords": row.get("keywords") or [],
                     "official_source_url": row.get("official_source_url"),
+                    "updated_at": row.get("updated_at"),
                     "sections": row.get("sections") or [],
                 }
             )
@@ -248,6 +249,7 @@ async def help_guide(
         fallback_language=fallback_language,
         sections=guide.sections,
         official_source_url=guide.official_source_url,
+        updated_at=guide.updated_at,
     )
 
 
