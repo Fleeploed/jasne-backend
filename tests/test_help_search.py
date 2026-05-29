@@ -71,7 +71,7 @@ def _guide(
 
 
 def _content_with(*guides: HelpGuide, categories: list[HelpCategory] | None = None) -> HelpContent:
-    cats = categories or [_category("visa-pobyt", ru_title="Виза и pobyt")]
+    cats = categories or [_category("visa-pobyt", ru_title="Визы и разрешения на проживание")]
     by_slug: dict[str, dict] = {}
     for g in guides:
         by_slug.setdefault(g.slug, {})[g.language] = g
@@ -180,9 +180,15 @@ def test_keyword_ranks_above_subtitle():
 def test_categories_appear_in_results():
     content = _content_with(
         _guide("g1", "visa-pobyt", title="Other"),
-        categories=[_category("visa-pobyt", ru_title="Виза и pobyt", ru_subtitle="OAMP, разрешения")],
+        categories=[
+            _category(
+                "visa-pobyt",
+                ru_title="Визы и разрешения на проживание",
+                ru_subtitle="МВД Чехии, разрешения",
+            )
+        ],
     )
-    results = search(content, "pobyt", "ru")
+    results = search(content, "проживание", "ru")
     # Should include both the guide (no match) and the category
     types = {r.type for r in results}
     assert "category" in types

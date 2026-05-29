@@ -57,8 +57,10 @@ def _build_test_content() -> HelpContent:
         slug="visa-pobyt",
         icon="passport",
         translations={
-            "cs": HelpCategoryTranslation(title="Vízum a pobyt"),
-            "ru": HelpCategoryTranslation(title="Виза и pobyt", subtitle="OAMP"),
+            "cs": HelpCategoryTranslation(title="Víza a pobytová oprávnění"),
+            "ru": HelpCategoryTranslation(
+                title="Визы и разрешения на проживание", subtitle="МВД Чехии"
+            ),
         },
         fallback={
             "cs": HelpCategoryFallback(title="Prázdné cs", text="cs text"),
@@ -187,7 +189,9 @@ def test_home_default_language_is_cs(client, auth_headers):
     r = client.get("/help/home", headers=auth_headers)
     assert r.status_code == 200
     # cs categories use Czech titles
-    assert any(c["title"] == "Vízum a pobyt" for c in r.json()["popular_categories"])
+    assert any(
+        c["title"] == "Víza a pobytová oprávnění" for c in r.json()["popular_categories"]
+    )
 
 
 def test_home_invalid_language_returns_422(client, auth_headers):
@@ -205,7 +209,7 @@ def test_category_returns_guides(client, auth_headers):
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["slug"] == "visa-pobyt"
-    assert body["title"] == "Виза и pobyt"
+    assert body["title"] == "Визы и разрешения на проживание"
     assert body["fallback"] is None
     # Seed includes check-status + extend-pobyt
     guide_slugs = {g["slug"] for g in body["guides"]}

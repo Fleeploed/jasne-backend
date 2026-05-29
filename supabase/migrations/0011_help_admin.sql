@@ -170,10 +170,10 @@ create policy help_guides_admin_write on help_guides
 -- ---------------------------------------------------------------------
 insert into help_categories (slug, title, icon, sort_order) values
   ('visa-pobyt', jsonb_build_object(
-      'cs', 'Vízum a pobyt',
-      'ru', 'Виза и pobyt',
-      'uk', 'Віза і pobyt',
-      'en', 'Visa and residence'
+      'cs', 'Víza a pobytová oprávnění',
+      'ru', 'Визы и разрешения на проживание',
+      'uk', 'Візи та дозволи на проживання',
+      'en', 'Visas and residence permits'
     ), 'passport', 10),
   ('taxes', jsonb_build_object(
       'cs', 'Daně',

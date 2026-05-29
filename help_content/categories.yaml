@@ -10,29 +10,29 @@
     - extend-pobyt
   translations:
     cs:
-      title: "Vízum a pobyt"
-      subtitle: "OAMP, prodloužení, povolení"
+      title: "Víza a pobytová oprávnění"
+      subtitle: "Ministerstvo vnitra, prodloužení, povolení"
       badge: "Nejčastější"
       hero_title: "Pobyt v Česku"
-      hero_text: "Praktické návody pro práci s OAMP — od kontroly stavu řízení po prodloužení povolení."
+      hero_text: "Praktické návody k pobytu v Česku: kontrola stavu řízení, prodloužení pobytu a další povolení."
     ru:
-      title: "Виза и pobyt"
-      subtitle: "OAMP, продление, разрешения"
+      title: "Визы и разрешения на проживание"
+      subtitle: "МВД Чехии, продление, разрешения"
       badge: "Самое частое"
-      hero_title: "Жизнь в Чехии"
-      hero_text: "Гайды по работе с OAMP — от проверки статуса заявления до продления pobyt."
+      hero_title: "Проживание в Чехии"
+      hero_text: "Практические гайды по проживанию в Чехии: проверка статуса заявления, продление разрешения и другие документы."
     uk:
-      title: "Віза і pobyt"
-      subtitle: "OAMP, продовження, дозволи"
+      title: "Візи та дозволи на проживання"
+      subtitle: "МВС Чехії, продовження, дозволи"
       badge: "Найчастіше"
-      hero_title: "Життя в Чехії"
-      hero_text: "Інструкції щодо OAMP — від перевірки статусу заяви до продовження pobyt."
+      hero_title: "Проживання в Чехії"
+      hero_text: "Практичні інструкції щодо проживання в Чехії: перевірка статусу заяви, продовження дозволу та інші документи."
     en:
-      title: "Visa and residence"
-      subtitle: "OAMP, extensions, permits"
+      title: "Visas and residence permits"
+      subtitle: "Interior Ministry, extensions, permits"
       badge: "Most common"
-      hero_title: "Living in Czechia"
-      hero_text: "Practical guides for OAMP — from checking application status to extending residence permits."
+      hero_title: "Staying in Czechia"
+      hero_text: "Practical guides for staying in Czechia: checking application status, extending residence permits, and handling related documents."
   fallback:
     cs:
       title: "Zatím prázdné"
