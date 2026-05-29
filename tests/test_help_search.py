@@ -194,8 +194,7 @@ def test_categories_appear_in_results():
     assert "category" in types
 
 
-def test_language_fallback_to_cs():
-    """If guide isn't in ru, search falls back to cs."""
+def test_missing_requested_language_excluded():
     cs_only = HelpGuide(
         slug="g1",
         category="visa-pobyt",
@@ -205,8 +204,7 @@ def test_language_fallback_to_cs():
     )
     content = _content_with(cs_only)
     results = search(content, "pobyt", "ru")
-    assert len(results) >= 1
-    assert any(r.slug == "g1" for r in results)
+    assert all(r.slug != "g1" for r in results)
 
 
 def test_unpublished_guide_excluded():

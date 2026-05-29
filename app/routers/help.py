@@ -59,7 +59,6 @@ _DEFAULT_USEFUL_ACTIONS: list[dict[str, object]] = [
 ]
 
 _POPULAR_CATEGORY_ORDER: tuple[str, ...] = ("visa-pobyt", "taxes", "bills", "urad-prace")
-_GUIDE_FALLBACK_ORDER: tuple[HelpLanguage, ...] = ("cs", "ru", "en", "uk")
 
 
 # ---------------------------------------------------------------------------
@@ -185,7 +184,7 @@ async def help_category(
     translation = category.translations.get(language) or category.translations["cs"]
     fallback_translation = category.fallback.get(language) or category.fallback["cs"]
 
-    guides_in_language = _published_guides_with_fallback(content, slug, language)
+    guides_in_language = _published_guides_for_language(content, slug, language)
     is_completely_empty = not guides_in_language
 
     ordered_cards = _ordered_guide_cards(category.guides_order, guides_in_language)
@@ -225,10 +224,9 @@ async def help_guide(
     if not langs:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Guide not found")
 
-    guide = _published_guide_with_fallback(langs, language)
+    guide = _published_guide_for_language(langs, language)
     if guide is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Guide not available")
-    fallback_language: HelpLanguage | None = guide.language if guide.language != language else None
 
     category = content.find_category(guide.category)
     if category is None:
@@ -246,7 +244,7 @@ async def help_guide(
         subtitle=guide.subtitle,
         short_summary=guide.short_summary,
         language=guide.language,
-        fallback_language=fallback_language,
+        fallback_language=None,
         sections=guide.sections,
         official_source_url=guide.official_source_url,
         updated_at=guide.updated_at,
@@ -305,30 +303,21 @@ def _popular_categories(content: HelpContent, language: HelpLanguage) -> list[He
     return out
 
 
-def _language_fallback_order(language: HelpLanguage) -> tuple[HelpLanguage, ...]:
-    ordered: list[HelpLanguage] = [language]
-    for fallback in _GUIDE_FALLBACK_ORDER:
-        if fallback not in ordered:
-            ordered.append(fallback)
-    return tuple(ordered)
-
-
-def _published_guide_with_fallback(
+def _published_guide_for_language(
     langs: dict[HelpLanguage, HelpGuide], language: HelpLanguage
 ) -> HelpGuide | None:
-    for candidate in _language_fallback_order(language):
-        guide = langs.get(candidate)
-        if guide and guide.published:
-            return guide
+    guide = langs.get(language)
+    if guide and guide.published:
+        return guide
     return None
 
 
-def _published_guides_with_fallback(
+def _published_guides_for_language(
     content: HelpContent, category_slug: str, language: HelpLanguage
 ) -> list[HelpGuide]:
     out: list[HelpGuide] = []
     for langs in content.guides_by_slug.values():
-        guide = _published_guide_with_fallback(langs, language)
+        guide = _published_guide_for_language(langs, language)
         if guide and guide.category == category_slug:
             out.append(guide)
     return out

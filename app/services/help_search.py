@@ -85,9 +85,9 @@ def search(content: HelpContent, query: str, language: HelpLanguage) -> list[Hel
 
 
 def _guides_for_language(content: HelpContent, language: HelpLanguage) -> Iterable[HelpGuide]:
-    """Yield published guides in the requested language, falling back to cs."""
+    """Yield published guides in the requested language only."""
     for langs in content.guides_by_slug.values():
-        guide = langs.get(language) or langs.get("cs")
+        guide = langs.get(language)
         if guide and guide.published:
             yield guide
 

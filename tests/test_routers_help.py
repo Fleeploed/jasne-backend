@@ -273,14 +273,9 @@ def test_guide_returns_seed_czech_content(client, auth_headers):
     assert body["fallback_language"] is None
 
 
-def test_guide_falls_back_to_other_language(client, auth_headers, patched_content):
-    """Patched content has only ru + cs. Request `en` → falls back to cs
-    (fallback chain prefers cs after the missing requested language)."""
+def test_guide_missing_requested_language_returns_404(client, auth_headers, patched_content):
     r = client.get("/help/guides/check-status?language=en", headers=auth_headers)
-    assert r.status_code == 200
-    body = r.json()
-    assert body["language"] == "cs"
-    assert body["fallback_language"] == "cs"
+    assert r.status_code == 404
 
 
 def test_guide_request_cs_no_fallback_flag(client, auth_headers, patched_content):
