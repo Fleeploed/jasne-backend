@@ -9,7 +9,7 @@ translations:
     quick_actions:
       check_status:
         title: "Zkontrolovat stav řízení"
-        subtitle: "OAMP, finanční úřad, soud"
+        subtitle: "OAMP, kontrola víza"
       prepare_documents:
         title: "Jaké dokumenty si připravit"
         subtitle: "Pro úřady, banku, lékaře"
@@ -32,6 +32,9 @@ translations:
       open_deadlines:
         title: "Otevřít moje termíny"
         subtitle: "Vše, co je v plánu"
+      check_status_visa:
+        title: "Zkontrolovat stav žádosti"
+        subtitle: "OAMP, vízum nebo pobyt"
       scan_tax_letter:
         title: "Naskenovat dopis z FÚ"
         subtitle: "Pochopte termín a sumu"
@@ -49,7 +52,7 @@ translations:
     quick_actions:
       check_status:
         title: "Проверить статус заявления"
-        subtitle: "OAMP, налоговая, суд"
+        subtitle: "ОАМП, проверка визы"
       prepare_documents:
         title: "Какие документы подготовить"
         subtitle: "Для ведомств, банка, врача"
@@ -72,6 +75,9 @@ translations:
       open_deadlines:
         title: "Открыть мои сроки"
         subtitle: "Всё что в плане"
+      check_status_visa:
+        title: "Проверить статус заявления"
+        subtitle: "OAMP, виза или ВНЖ"
       scan_tax_letter:
         title: "Сканировать письмо налоговой"
         subtitle: "Понять срок и сумму"
@@ -89,7 +95,7 @@ translations:
     quick_actions:
       check_status:
         title: "Check application status"
-        subtitle: "OAMP, tax office, court"
+        subtitle: "OAMP, visa check"
       prepare_documents:
         title: "What documents to prepare"
         subtitle: "For offices, bank, doctor"
@@ -112,6 +118,9 @@ translations:
       open_deadlines:
         title: "Open my deadlines"
         subtitle: "Everything that's scheduled"
+      check_status_visa:
+        title: "Check application status"
+        subtitle: "OAMP, visa, or residence"
       scan_tax_letter:
         title: "Scan a tax-office letter"
         subtitle: "Understand the deadline and amount"
@@ -129,7 +138,7 @@ translations:
     quick_actions:
       check_status:
         title: "Перевірити статус заяви"
-        subtitle: "OAMP, податкова, суд"
+        subtitle: "OAMP, перевірка візи"
       prepare_documents:
         title: "Які документи підготувати"
         subtitle: "Для установ, банку, лікаря"
@@ -152,6 +161,9 @@ translations:
       open_deadlines:
         title: "Відкрити мої терміни"
         subtitle: "Все, що заплановано"
+      check_status_visa:
+        title: "Перевірити статус заяви"
+        subtitle: "OAMP, віза або проживання"
       scan_tax_letter:
         title: "Сканувати лист податкової"
         subtitle: "Зрозуміти термін і суму"

@@ -58,6 +58,10 @@ services:
         value: pro
       - key: REVENUECAT_API_BASE_URL
         value: https://api.revenuecat.com/v1
+      - key: INTERNAL_CRON_SECRET
+        sync: false
+      - key: EXPO_PUSH_API_URL
+        value: https://exp.host/--/api/v2/push/send
       - key: RAG_TOP_K
         value: "5"
       - key: RAG_SIMILARITY_THRESHOLD

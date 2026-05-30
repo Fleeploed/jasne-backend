@@ -48,6 +48,6 @@ sections:
   - type: cta
     title: "Що далі"
     actions:
+      - check_status_visa
       - scan_oamp_letter
-      - add_deadline_manual
       - open_deadlines

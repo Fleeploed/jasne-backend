@@ -14,7 +14,7 @@ from fastapi.responses import JSONResponse
 
 from app.config import get_settings
 from app.models.schemas import DeepHealthResponse, DepStatus, HealthResponse, VersionResponse
-from app.routers import admin, chat, deadlines, limits, profile, scan, status, webhooks
+from app.routers import admin, chat, deadlines, internal, limits, profile, push, scan, status, webhooks
 from app.routers import help as help_router
 from app.services.embeddings import close_openai_client, get_openai_client
 from app.services.help_loader import load_help_content
@@ -109,6 +109,8 @@ app.include_router(profile.router)
 app.include_router(limits.router)  # /limits — usage vs plan caps
 app.include_router(status.router)  # /status/oamp — OAMP proceedings status
 app.include_router(webhooks.router)
+app.include_router(push.router)  # /push-tokens — Expo push token registration
+app.include_router(internal.router)  # /internal — cron-only jobs
 app.include_router(help_router.router)  # /help — static content from YAML
 app.include_router(admin.router)  # /admin — proxies for the static Help admin UI
 

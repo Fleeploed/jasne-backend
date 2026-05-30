@@ -1,0 +1,54 @@
+name: Deadline Notifications
+
+on:
+  schedule:
+    # Daily morning run for Czech users. Delivery is idempotent on the backend.
+    - cron: "0 7 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: deadline-notifications
+  cancel-in-progress: false
+
+jobs:
+  due-reminders:
+    name: POST /internal/notifications/due
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Trigger backend notification job
+        env:
+          BASE_URL: ${{ vars.NOTIFICATION_CRON_BASE_URL || vars.RENDER_STAGING_URL || 'https://jasne-backend.onrender.com' }}
+          CRON_SECRET: ${{ secrets.INTERNAL_CRON_SECRET }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "$CRON_SECRET" ]; then
+            echo "::error::Missing GitHub secret INTERNAL_CRON_SECRET"
+            exit 1
+          fi
+
+          URL="${BASE_URL%/}/internal/notifications/due"
+          response=$(curl -s -m 30 -w "\n%{http_code}\n%{time_total}" \
+            -X POST \
+            -H "X-Cron-Secret: $CRON_SECRET" \
+            -H "Content-Type: application/json" \
+            "$URL" || echo "")
+
+          if [ -z "$response" ]; then
+            echo "::error::No response from $URL"
+            exit 1
+          fi
+
+          time_total=$(echo "$response" | tail -n 1)
+          code=$(echo "$response" | tail -n 2 | head -n 1)
+          body=$(echo "$response" | head -n -2)
+
+          echo "URL: $URL"
+          echo "HTTP $code (${time_total}s)"
+          echo "Body: $body"
+
+          if [ "$code" != "200" ]; then
+            echo "::error::Notification job returned HTTP $code"
+            exit 1
+          fi

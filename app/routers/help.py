@@ -48,12 +48,10 @@ router = APIRouter(prefix="/help", tags=["help"])
 
 _QUICK_ACTION_ROUTES: dict[str, str] = {
     "check_status": "/help/guides/check-status",
-    "prepare_documents": "/help/categories/visa-pobyt",
     "understand_letter": "/scan/new",
 }
 
 _DEFAULT_USEFUL_ACTIONS: list[dict[str, object]] = [
-    {"key": "scan_oamp_letter", "action": "scan_new", "highlighted": True},
     {"key": "add_deadline_manual", "action": "deadline_new", "highlighted": False},
     {"key": "open_deadlines", "action": "deadlines_tab", "highlighted": False},
 ]

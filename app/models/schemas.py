@@ -30,6 +30,7 @@ UserLanguage = Literal["cs", "en", "uk", "ru"]
 UserPlan = Literal["free", "pro"]
 MessageRole = Literal["user", "assistant"]
 MessageType = Literal["text", "image", "result_card"]
+PushPlatform = Literal["ios", "android"]
 OampStatusQueryKind = Literal["proceedings", "visa"]
 OampStatusOutcome = Literal["approved", "processing", "not_found", "rejected", "found", "unknown"]
 
@@ -290,6 +291,51 @@ class DeadlineResponse(_Base):
     status: DeadlineStatus
     auto_created: bool = False
     created_at: datetime
+
+
+# ---------------------------------------------------------------------------
+# Push notifications
+# ---------------------------------------------------------------------------
+
+
+class PushTokenCreate(_Base):
+    expo_push_token: str = Field(min_length=20, max_length=240)
+    platform: PushPlatform
+    timezone: str | None = Field(default=None, max_length=80)
+    locale: str | None = Field(default=None, max_length=16)
+    device_id: str | None = Field(default=None, max_length=200)
+    app_version: str | None = Field(default=None, max_length=40)
+
+    @field_validator("expo_push_token")
+    @classmethod
+    def validate_expo_push_token(cls, value: str) -> str:
+        token = value.strip()
+        if not (token.startswith("ExponentPushToken[") or token.startswith("ExpoPushToken[")):
+            raise ValueError("expo_push_token must be an Expo push token")
+        return token
+
+
+class PushTokenResponse(_Base):
+    id: UUID
+    user_id: UUID
+    expo_push_token: str
+    platform: PushPlatform
+    timezone: str | None = None
+    locale: str | None = None
+    device_id: str | None = None
+    app_version: str | None = None
+    enabled: bool
+    created_at: datetime
+    last_seen_at: datetime
+
+
+class NotificationRunResponse(_Base):
+    scanned_deadlines: int
+    candidate_notifications: int
+    attempted: int
+    sent: int
+    failed: int
+    skipped: int
 
 
 # ---------------------------------------------------------------------------

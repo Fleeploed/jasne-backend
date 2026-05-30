@@ -42,6 +42,16 @@
     en:
       title: "Section in progress"
       text: "Guides for visas and residence will be added soon."
+  useful_actions:
+    - key: scan_oamp_letter
+      action: scan_new
+      highlighted: true
+    - key: add_deadline_manual
+      action: deadline_new
+      highlighted: false
+    - key: open_deadlines
+      action: deadlines_tab
+      highlighted: false
 
 - slug: taxes
   icon: receipt

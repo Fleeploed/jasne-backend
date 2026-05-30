@@ -169,9 +169,9 @@ def test_home_returns_quick_actions_and_categories(client, auth_headers):
     assert "popular_categories" in body
     assert "scan_cta" in body
 
-    # All three hardcoded quick action keys present
+    # Current help home keeps only the two primary quick actions.
     keys = {a["key"] for a in body["quick_actions"]}
-    assert keys == {"check_status", "prepare_documents", "understand_letter"}
+    assert keys == {"check_status", "understand_letter"}
 
     # visa-pobyt should be first in popular order
     assert body["popular_categories"][0]["slug"] == "visa-pobyt"

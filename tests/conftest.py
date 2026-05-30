@@ -444,7 +444,9 @@ def client(fake_supabase, monkeypatch):
     monkeypatch.setattr("app.routers.scan.get_supabase", fake_get_supabase)
     monkeypatch.setattr("app.routers.chat.get_supabase", fake_get_supabase)
     monkeypatch.setattr("app.routers.deadlines.get_supabase", fake_get_supabase)
+    monkeypatch.setattr("app.routers.push.get_supabase", fake_get_supabase)
     monkeypatch.setattr("app.services.limits.get_supabase", fake_get_supabase)
+    monkeypatch.setattr("app.services.push_notifications.get_supabase", fake_get_supabase)
     monkeypatch.setattr("app.services.chat.get_supabase", fake_get_supabase, raising=False)
     monkeypatch.setattr("app.services.revenuecat.get_supabase", fake_get_supabase)
 

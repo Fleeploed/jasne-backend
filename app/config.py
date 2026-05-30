@@ -73,6 +73,15 @@ class Settings(BaseSettings):
     revenuecat_api_base_url: str = "https://api.revenuecat.com/v1"
 
     # =====================================================================
+    # Push notifications
+    # =====================================================================
+    # Shared secret required by Railway/GitHub cron when calling internal
+    # notification jobs. In local/test environments an unset value allows
+    # manual calls; production must configure it.
+    internal_cron_secret: str | None = None
+    expo_push_api_url: str = "https://exp.host/--/api/v2/push/send"
+
+    # =====================================================================
     # RAG
     # =====================================================================
     rag_top_k: int = 5

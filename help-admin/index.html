@@ -1359,7 +1359,7 @@
         card.appendChild(lbl);
         const itemsBox = document.createElement("div");
         section.actions.forEach((_, i) =>
-          itemsBox.appendChild(makeItemRow(section, "actions", i, "scan_oamp_letter / add_deadline_manual / open_deadlines …"))
+          itemsBox.appendChild(makeItemRow(section, "actions", i, "check_status_visa / scan_oamp_letter / add_deadline_manual / open_deadlines …"))
         );
         card.appendChild(itemsBox);
         const addBtn = document.createElement("button");
@@ -1368,7 +1368,7 @@
         addBtn.textContent = "+ действие";
         addBtn.addEventListener("click", () => {
           section.actions.push("");
-          const row = makeItemRow(section, "actions", section.actions.length - 1, "scan_oamp_letter / …");
+          const row = makeItemRow(section, "actions", section.actions.length - 1, "check_status_visa / scan_oamp_letter / …");
           itemsBox.appendChild(row);
           row.querySelector("input").focus();
           markDirty(); updatePreview();
@@ -1444,6 +1444,38 @@
       markDirty(); updatePreview();
     }
 
+    const CTA_PREVIEW_LABELS = {
+      cs: {
+        check_status_visa: "Zkontrolovat stav žádosti",
+        scan_oamp_letter: "Naskenovat dopis z OAMP",
+        add_deadline_manual: "Přidat termín ručně",
+        open_deadlines: "Otevřít moje termíny",
+      },
+      ru: {
+        check_status_visa: "Проверить статус заявления",
+        scan_oamp_letter: "Сканировать письмо OAMP",
+        add_deadline_manual: "Добавить срок вручную",
+        open_deadlines: "Открыть мои сроки",
+      },
+      en: {
+        check_status_visa: "Check application status",
+        scan_oamp_letter: "Scan an OAMP letter",
+        add_deadline_manual: "Add a deadline manually",
+        open_deadlines: "Open my deadlines",
+      },
+      uk: {
+        check_status_visa: "Перевірити статус заяви",
+        scan_oamp_letter: "Сканувати лист OAMP",
+        add_deadline_manual: "Додати термін вручну",
+        open_deadlines: "Відкрити мої терміни",
+      },
+    };
+
+    function previewCtaActionLabel(action) {
+      const lang = document.getElementById("ed-language").value;
+      return CTA_PREVIEW_LABELS[lang]?.[action] || action;
+    }
+
     // ---- live preview ----
     function updatePreview() {
       const body = document.getElementById("preview-body");
@@ -1479,7 +1511,7 @@
         } else if (s.type === "cta") {
           html += `<div class="pv-section cta">`;
           if (s.title) html += `<div class="pv-section-title">${escapeHtml(s.title)}</div>`;
-          html += (s.actions || []).filter(Boolean).map((a) => `<span class="pv-action">${escapeHtml(a)}</span>`).join("");
+          html += (s.actions || []).filter(Boolean).map((a) => `<span class="pv-action">${escapeHtml(previewCtaActionLabel(a))}</span>`).join("");
           html += `</div>`;
         }
       }
