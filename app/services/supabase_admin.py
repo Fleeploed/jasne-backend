@@ -21,4 +21,3 @@ async def get_supabase_admin() -> AsyncClient:
         )
         logger.info("Supabase admin client initialised")
     return supabase_admin
-
