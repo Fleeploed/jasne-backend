@@ -111,9 +111,9 @@ class TestCreateTracking:
 
         assert r.status_code == 429
 
-    def test_rejects_duplicate_active_tracking(self, client, fake_supabase, auth_headers, test_user_id):
+    def test_duplicate_active_tracking_is_idempotent(self, client, fake_supabase, auth_headers, test_user_id):
         _seed_profile(fake_supabase, str(test_user_id), plan="pro")
-        _seed_tracking(fake_supabase, str(test_user_id), identifier="OAM-19391/ZM-2026")
+        existing = _seed_tracking(fake_supabase, str(test_user_id), identifier="OAM-19391/ZM-2026")
 
         r = client.post(
             "/trackings",
@@ -121,7 +121,9 @@ class TestCreateTracking:
             json={"tracking_type": "oamp_status", "identifier": "OAM-19391/ZM-2026"},
         )
 
-        assert r.status_code == 409
+        assert r.status_code == 200
+        assert r.json()["id"] == existing["id"]
+        assert len(fake_supabase.table("trackings").rows) == 1
 
 
 class TestListTracking:

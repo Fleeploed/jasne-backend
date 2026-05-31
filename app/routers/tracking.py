@@ -22,6 +22,7 @@ MAX_ACTIVE_TRACKINGS_PER_TYPE = 5
 @router.post("", response_model=TrackingResponse, status_code=status.HTTP_201_CREATED)
 async def create_tracking(
     body: TrackingCreate,
+    response: Response,
     user_id: UUID = Depends(get_current_user_id),
 ) -> TrackingResponse:
     tracker = _tracker_or_422(body.tracking_type)
@@ -40,8 +41,10 @@ async def create_tracking(
         )
 
     active_rows = await _active_trackings_for_user(supabase, user_id_str, body.tracking_type)
-    if any(row.get("identifier") == identifier for row in active_rows):
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Tracking is already active")
+    existing = next((row for row in active_rows if row.get("identifier") == identifier), None)
+    if existing is not None:
+        response.status_code = status.HTTP_200_OK
+        return TrackingResponse.model_validate(existing)
     if len(active_rows) >= MAX_ACTIVE_TRACKINGS_PER_TYPE:
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
@@ -158,7 +161,7 @@ async def _profile_for_user(supabase, user_id: str) -> dict:
 async def _active_trackings_for_user(supabase, user_id: str, tracking_type: str) -> list[dict]:
     result = (
         await supabase.table("trackings")
-        .select("id,tracking_type,identifier")
+        .select("*")
         .eq("user_id", user_id)
         .eq("tracking_type", tracking_type)
         .eq("is_active", True)
