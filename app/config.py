@@ -82,6 +82,21 @@ class Settings(BaseSettings):
     expo_push_api_url: str = "https://exp.host/--/api/v2/push/send"
 
     # =====================================================================
+    # OAMP status tracking
+    # =====================================================================
+    oamp_base_url: str = "https://ipc.gov.cz"
+    oamp_status_path: str = "/informace-o-stavu-rizeni/"
+    oamp_status_path_en: str = "/en/status-of-your-application/"
+    oamp_timeout_seconds: float = 60.0
+    oamp_user_agents: Annotated[list[str], NoDecode] = Field(
+        default_factory=lambda: [
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_6) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/125.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36",
+        ]
+    )
+
+    # =====================================================================
     # RAG
     # =====================================================================
     rag_top_k: int = 5
@@ -118,6 +133,24 @@ class Settings(BaseSettings):
                 except (json.JSONDecodeError, ValueError):
                     pass
             return [origin.strip() for origin in v.split(",") if origin.strip()]
+        return v  # type: ignore[return-value]
+
+    @field_validator("oamp_user_agents", mode="before")
+    @classmethod
+    def parse_oamp_user_agents(cls, v: object) -> list[str]:
+        if v is None:
+            return []
+        if isinstance(v, str):
+            if not v.strip():
+                return []
+            if v.strip().startswith("["):
+                try:
+                    parsed = json.loads(v)
+                    if isinstance(parsed, list):
+                        return [str(x).strip() for x in parsed if str(x).strip()]
+                except (json.JSONDecodeError, ValueError):
+                    pass
+            return [item.strip() for item in v.split(",") if item.strip()]
         return v  # type: ignore[return-value]
 
     @field_validator("allowed_origins")

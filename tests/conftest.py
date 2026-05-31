@@ -25,12 +25,34 @@ class _FakeResponse:
         self.data = data
 
 
+def _matches_filter(row_value: Any, op: str, expected: Any) -> bool:
+    if op == "eq":
+        return str(row_value) == str(expected)
+    if op in {"lt", "lte", "gt", "gte"}:
+        left = _sortable(row_value)
+        right = _sortable(expected)
+        if op == "lt":
+            return left < right
+        if op == "lte":
+            return left <= right
+        if op == "gt":
+            return left > right
+        return left >= right
+    return False
+
+
+def _sortable(value: Any) -> Any:
+    if isinstance(value, datetime):
+        return value.isoformat()
+    return "" if value is None else str(value)
+
+
 class _FakeQuery:
     """Minimal in-memory table query emulation."""
 
     def __init__(self, table: _FakeTable):
         self._table = table
-        self._filters: list[tuple[str, Any]] = []
+        self._filters: list[tuple[str, str, Any]] = []
         self._op: str = "select"
         self._op_payload: Any = None
         self._order: str | None = None
@@ -40,7 +62,23 @@ class _FakeQuery:
 
     # --- filters
     def eq(self, column: str, value: Any) -> _FakeQuery:
-        self._filters.append((column, value))
+        self._filters.append(("eq", column, value))
+        return self
+
+    def lt(self, column: str, value: Any) -> _FakeQuery:
+        self._filters.append(("lt", column, value))
+        return self
+
+    def lte(self, column: str, value: Any) -> _FakeQuery:
+        self._filters.append(("lte", column, value))
+        return self
+
+    def gt(self, column: str, value: Any) -> _FakeQuery:
+        self._filters.append(("gt", column, value))
+        return self
+
+    def gte(self, column: str, value: Any) -> _FakeQuery:
+        self._filters.append(("gte", column, value))
         return self
 
     def order(self, column: str, desc: bool = False) -> _FakeQuery:
@@ -90,8 +128,8 @@ class _FakeQuery:
     async def execute(self) -> _FakeResponse:
         rows = self._table.rows
         # apply filters
-        for col, val in self._filters:
-            rows = [r for r in rows if str(r.get(col)) == str(val)]
+        for op, col, val in self._filters:
+            rows = [r for r in rows if _matches_filter(r.get(col), op, val)]
 
         if self._op == "select":
             out = list(rows)
@@ -490,7 +528,9 @@ def client(fake_supabase, fake_supabase_admin, monkeypatch):
     monkeypatch.setattr("app.routers.chat.get_supabase", fake_get_supabase)
     monkeypatch.setattr("app.routers.deadlines.get_supabase", fake_get_supabase)
     monkeypatch.setattr("app.routers.push.get_supabase", fake_get_supabase)
+    monkeypatch.setattr("app.routers.tracking.get_supabase", fake_get_supabase)
     monkeypatch.setattr("app.services.limits.get_supabase", fake_get_supabase)
+    monkeypatch.setattr("app.services.push.get_supabase", fake_get_supabase)
     monkeypatch.setattr("app.services.push_notifications.get_supabase", fake_get_supabase)
     monkeypatch.setattr("app.services.chat.get_supabase", fake_get_supabase, raising=False)
     monkeypatch.setattr("app.services.revenuecat.get_supabase", fake_get_supabase)

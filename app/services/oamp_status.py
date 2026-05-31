@@ -5,6 +5,7 @@ import unicodedata
 from contextlib import suppress
 from datetime import UTC, datetime
 
+from app.config import get_settings
 from app.models.schemas import OampStatusCheckRequest, OampStatusCheckResponse, OampStatusOutcome
 
 try:
@@ -16,6 +17,7 @@ except ImportError:  # pragma: no cover - exercised only in misconfigured deploy
 
 OAMP_STATUS_URL = "https://ipc.gov.cz/informace-o-stavu-rizeni/"
 OAMP_STATUS_URL_EN = "https://ipc.gov.cz/en/status-of-your-application/"
+OAMP_DEFAULT_USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36"
 _RESULT_RE = re.compile(
     r"((?:Řízení či oznámení s číslem jednacím|An application or report,\s*reference number|"
     r"Proceedings or notification with reference number).*?)"
@@ -42,7 +44,11 @@ class OampStatusUnsupportedError(OampStatusError):
     """The request kind is accepted by the API but not wired to IPC selectors yet."""
 
 
-def check_oamp_status(payload: OampStatusCheckRequest) -> OampStatusCheckResponse:
+def check_oamp_status(
+    payload: OampStatusCheckRequest,
+    *,
+    user_agent: str | None = None,
+) -> OampStatusCheckResponse:
     """Check OAMP proceedings status through the public IPC form.
 
     This is intentionally synchronous because Playwright's sync API is stable
@@ -58,7 +64,9 @@ def check_oamp_status(payload: OampStatusCheckRequest) -> OampStatusCheckRespons
     if sync_playwright is None:
         raise OampStatusError("Playwright is not installed")
 
+    settings = get_settings()
     source_url = _status_url_for_language(payload.language)
+    timeout_ms = int(settings.oamp_timeout_seconds * 1000)
 
     try:
         with sync_playwright() as playwright:
@@ -73,11 +81,9 @@ def check_oamp_status(payload: OampStatusCheckRequest) -> OampStatusCheckRespons
             try:
                 page = browser.new_page(
                     viewport={"width": 1400, "height": 1000},
-                    user_agent=(
-                        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36"
-                    ),
+                    user_agent=user_agent or OAMP_DEFAULT_USER_AGENT,
                 )
-                page.goto(source_url, wait_until="domcontentloaded", timeout=60000)
+                page.goto(source_url, wait_until="domcontentloaded", timeout=timeout_ms)
 
                 with suppress(PlaywrightTimeoutError):
                     page.wait_for_load_state("networkidle", timeout=30000)
@@ -131,7 +137,9 @@ def _format_case_id(payload: OampStatusCheckRequest) -> str:
 
 
 def _status_url_for_language(language: str | None) -> str:
-    return OAMP_STATUS_URL_EN if language == "en" else OAMP_STATUS_URL
+    settings = get_settings()
+    path = settings.oamp_status_path_en if language == "en" else settings.oamp_status_path
+    return f"{settings.oamp_base_url.rstrip('/')}/{path.lstrip('/')}"
 
 
 def _normalize_text(text: str) -> str:

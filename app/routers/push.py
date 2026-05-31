@@ -31,6 +31,12 @@ async def register_push_token(
     result = (
         await supabase.table("push_tokens").upsert(payload, on_conflict="user_id,expo_push_token").execute()
     )
+    await (
+        supabase.table("profiles")
+        .update({"expo_push_token": body.expo_push_token})
+        .eq("id", str(user_id))
+        .execute()
+    )
     rows = result.data or []
     if not rows:
         fallback = (

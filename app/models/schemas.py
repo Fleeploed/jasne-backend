@@ -33,6 +33,7 @@ MessageType = Literal["text", "image", "result_card"]
 PushPlatform = Literal["ios", "android"]
 OampStatusQueryKind = Literal["proceedings", "visa"]
 OampStatusOutcome = Literal["approved", "processing", "not_found", "rejected", "found", "unknown"]
+OampTrackingStatus = Literal["probiha", "schvaleno", "zamitnuto", "not_found", "error"]
 
 DEFAULT_REMINDER_DAYS: list[int] = [30, 14, 7, 1]
 
@@ -450,6 +451,31 @@ class OampStatusCheckResponse(_Base):
     message: str
     source_url: str
     checked_at: datetime
+
+
+# ---------------------------------------------------------------------------
+# OAMP status tracking
+# ---------------------------------------------------------------------------
+
+
+class TrackingCreate(_Base):
+    cislo_jednaci: str = Field(min_length=3, max_length=80)
+
+    @field_validator("cislo_jednaci")
+    @classmethod
+    def normalize_cislo_jednaci(cls, value: str) -> str:
+        cleaned = re.sub(r"\s+", "", value.strip().upper())
+        cleaned = re.sub(r"^0AM", "OAM", cleaned)
+        if not cleaned:
+            raise ValueError("cislo_jednaci is required")
+        return cleaned
+
+
+class TrackingResponse(_Base):
+    id: UUID
+    cislo_jednaci: str
+    current_status: OampTrackingStatus
+    next_check_at: datetime
 
 
 # ---------------------------------------------------------------------------
