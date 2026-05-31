@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/trackings", tags=["trackings"])
 
-MAX_ACTIVE_TRACKINGS_PER_TYPE = 5
+MAX_ACTIVE_TRACKINGS_PER_TYPE = 1
 
 
 @router.post("", response_model=TrackingResponse, status_code=status.HTTP_201_CREATED)
