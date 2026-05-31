@@ -10,7 +10,7 @@ from jwt import PyJWKClient
 from app.config import Settings, get_settings
 
 logger = logging.getLogger(__name__)
-bearer_scheme = HTTPBearer(auto_error=True)
+bearer_scheme = HTTPBearer(auto_error=False)
 
 
 @lru_cache
@@ -58,9 +58,12 @@ def _decode_token_payload(token: str, settings: Settings) -> dict:
 
 
 def get_current_user_id(
-    credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
     settings: Settings = Depends(get_settings),
 ) -> UUID:
+    if credentials is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+
     token = credentials.credentials
 
     try:

@@ -200,13 +200,27 @@ class _FakeTable:
 
 
 class _FakeStorageBucket:
+    def __init__(self, storage: _FakeStorage, bucket: str):
+        self._storage = storage
+        self._bucket = bucket
+
     async def create_signed_url(self, path: str, ttl: int) -> dict[str, str]:
         return {"signedURL": f"https://fake-storage/{path}?ttl={ttl}"}
 
+    async def remove(self, paths: list[str]) -> dict[str, Any]:
+        if self._storage.remove_error is not None:
+            raise self._storage.remove_error
+        self._storage.removed.append({"bucket": self._bucket, "paths": list(paths)})
+        return {"data": list(paths), "error": None}
+
 
 class _FakeStorage:
+    def __init__(self):
+        self.removed: list[dict[str, Any]] = []
+        self.remove_error: Exception | None = None
+
     def from_(self, bucket: str) -> _FakeStorageBucket:
-        return _FakeStorageBucket()
+        return _FakeStorageBucket(self, bucket)
 
 
 class FakeSupabase:
@@ -317,6 +331,28 @@ class FakeSupabase:
         return q
 
 
+class _FakeAuthAdmin:
+    def __init__(self):
+        self.deleted_user_ids: list[str] = []
+        self.delete_user_error: Exception | None = None
+
+    async def delete_user(self, user_id: str):
+        if self.delete_user_error is not None:
+            raise self.delete_user_error
+        self.deleted_user_ids.append(user_id)
+        return {"id": user_id}
+
+
+class _FakeAuth:
+    def __init__(self):
+        self.admin = _FakeAuthAdmin()
+
+
+class FakeSupabaseAdmin:
+    def __init__(self):
+        self.auth = _FakeAuth()
+
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -325,6 +361,11 @@ class FakeSupabase:
 @pytest.fixture
 def fake_supabase() -> FakeSupabase:
     return FakeSupabase()
+
+
+@pytest.fixture
+def fake_supabase_admin() -> FakeSupabaseAdmin:
+    return FakeSupabaseAdmin()
 
 
 @pytest.fixture
@@ -425,7 +466,7 @@ def mock_rag_empty(monkeypatch):
 
 
 @pytest.fixture
-def client(fake_supabase, monkeypatch):
+def client(fake_supabase, fake_supabase_admin, monkeypatch):
     """FastAPI TestClient with Supabase patched to in-memory fake."""
 
     async def fake_get_supabase():
@@ -437,10 +478,14 @@ def client(fake_supabase, monkeypatch):
     async def fake_close_supabase():
         return None
 
+    async def fake_get_supabase_admin():
+        return fake_supabase_admin
+
     monkeypatch.setattr("app.services.rag.get_supabase", fake_get_supabase)
     monkeypatch.setattr("app.services.rag.init_supabase", fake_init_supabase)
     monkeypatch.setattr("app.services.rag.close_supabase", fake_close_supabase)
     monkeypatch.setattr("app.routers.profile.get_supabase", fake_get_supabase)
+    monkeypatch.setattr("app.routers.profile.get_supabase_admin", fake_get_supabase_admin)
     monkeypatch.setattr("app.routers.scan.get_supabase", fake_get_supabase)
     monkeypatch.setattr("app.routers.chat.get_supabase", fake_get_supabase)
     monkeypatch.setattr("app.routers.deadlines.get_supabase", fake_get_supabase)

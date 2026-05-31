@@ -263,6 +263,8 @@ def test_guide_returns_full_content(client, auth_headers):
     assert len(body["sections"]) >= 1
     assert any(s["type"] == "text" for s in body["sections"])
     assert any(s["type"] == "warning" for s in body["sections"])
+    assert all("pro_only" in s for s in body["sections"])
+    assert any(s["type"] == "checklist" and s["pro_only"] is True for s in body["sections"])
 
 
 def test_guide_returns_seed_czech_content(client, auth_headers):

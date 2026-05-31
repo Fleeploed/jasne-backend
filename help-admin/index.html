@@ -331,6 +331,33 @@
     .section-head .ctrl:hover { background: var(--surface); color: var(--text); }
     .section-head .ctrl.danger:hover { background: var(--red-soft); color: var(--red); }
 
+    /* Pro / non-Pro toggle on each section */
+    .pro-toggle {
+      display: inline-flex;
+      gap: 0;
+      margin: 4px 0 12px;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      overflow: hidden;
+      background: var(--surface);
+    }
+    .pro-toggle button {
+      background: transparent; border: 0; padding: 5px 12px;
+      font: inherit; font-size: 12px; font-weight: 600; cursor: pointer;
+      color: var(--text-muted);
+    }
+    .pro-toggle button + button { border-left: 1px solid var(--border); }
+    .pro-toggle button.active { background: #7C3AED; color: #fff; }
+    .pro-toggle button.active.off { background: var(--surface-3); color: var(--text); }
+    .section-card.pro-on { box-shadow: inset 3px 0 0 #7C3AED; }
+    .preview-body .pv-section.pro-on { box-shadow: inset 3px 0 0 #7C3AED; padding-left: 10px; }
+    .preview-body .pv-section .pv-pro-badge {
+      display: inline-block; margin-left: 8px;
+      background: #7C3AED; color: #fff;
+      font-size: 10px; font-weight: 700; letter-spacing: 0.06em;
+      padding: 2px 6px; border-radius: 4px; vertical-align: middle;
+    }
+
     .item-row {
       display: flex; gap: 8px; margin-bottom: 8px; align-items: center;
     }
@@ -1304,7 +1331,7 @@
 
     function renderSectionCard(section, idx) {
       const card = document.createElement("div");
-      card.className = "section-card type-" + section.type;
+      card.className = "section-card type-" + section.type + (section.pro_only ? " pro-on" : "");
       card.dataset.idx = idx;
       const label = {
         text: "Текст", steps: "Шаги", checklist: "Чеклист", warning: "Предупреждение", cta: "CTA",
@@ -1323,6 +1350,35 @@
       head.querySelector('[data-act="up"]').addEventListener("click", () => moveSection(card, -1));
       head.querySelector('[data-act="down"]').addEventListener("click", () => moveSection(card, 1));
       head.querySelector('[data-act="remove"]').addEventListener("click", () => removeSectionCard(card));
+
+      // Pro / non-Pro toggle. Stored on `section.pro_only` (boolean).
+      // Note: the mobile renderer ignores the flag on warning/cta sections,
+      // but we expose the toggle for all types so the admin shape matches
+      // the schema (which carries pro_only on every section variant).
+      const proWrap = document.createElement("div");
+      proWrap.className = "pro-toggle";
+      const offBtn = document.createElement("button");
+      offBtn.type = "button"; offBtn.textContent = "Не Pro";
+      const onBtn = document.createElement("button");
+      onBtn.type = "button"; onBtn.textContent = "Pro";
+      const syncPro = () => {
+        offBtn.classList.toggle("active", !section.pro_only);
+        offBtn.classList.toggle("off", !section.pro_only);
+        onBtn.classList.toggle("active", !!section.pro_only);
+        card.classList.toggle("pro-on", !!section.pro_only);
+      };
+      offBtn.addEventListener("click", () => {
+        if (!section.pro_only) return;
+        section.pro_only = false; syncPro(); markDirty(); updatePreview();
+      });
+      onBtn.addEventListener("click", () => {
+        if (section.pro_only) return;
+        section.pro_only = true; syncPro(); markDirty(); updatePreview();
+      });
+      proWrap.appendChild(offBtn);
+      proWrap.appendChild(onBtn);
+      syncPro();
+      card.appendChild(proWrap);
 
       card.appendChild(makeField("Заголовок (необязательно)", (input) => {
         input.value = section.title || "";
@@ -1492,25 +1548,32 @@
       if (title) html += `<div class="pv-title">${escapeHtml(title)}</div>`;
       if (subtitle) html += `<div class="pv-subtitle">${escapeHtml(subtitle)}</div>`;
       for (const s of state.sections) {
+        const proCls = s.pro_only ? " pro-on" : "";
+        const proBadge = s.pro_only ? `<span class="pv-pro-badge">PRO</span>` : "";
         if (s.type === "text") {
-          html += `<div class="pv-section text">`;
-          if (s.title) html += `<div class="pv-section-title">${escapeHtml(s.title)}</div>`;
+          html += `<div class="pv-section text${proCls}">`;
+          if (s.title) html += `<div class="pv-section-title">${escapeHtml(s.title)}${proBadge}</div>`;
+          else if (s.pro_only) html += `<div class="pv-section-title">${proBadge}</div>`;
           html += `<p>${escapeHtml(s.body || "")}</p></div>`;
         } else if (s.type === "warning") {
-          html += `<div class="pv-section warning">`;
-          if (s.title) html += `<div class="pv-section-title">${escapeHtml(s.title)}</div>`;
+          html += `<div class="pv-section warning${proCls}">`;
+          if (s.title) html += `<div class="pv-section-title">${escapeHtml(s.title)}${proBadge}</div>`;
+          else if (s.pro_only) html += `<div class="pv-section-title">${proBadge}</div>`;
           html += `<p>${escapeHtml(s.body || "")}</p></div>`;
         } else if (s.type === "steps") {
-          html += `<div class="pv-section steps">`;
-          if (s.title) html += `<div class="pv-section-title">${escapeHtml(s.title)}</div>`;
+          html += `<div class="pv-section steps${proCls}">`;
+          if (s.title) html += `<div class="pv-section-title">${escapeHtml(s.title)}${proBadge}</div>`;
+          else if (s.pro_only) html += `<div class="pv-section-title">${proBadge}</div>`;
           html += `<ol>${(s.items || []).filter(Boolean).map((x) => `<li>${escapeHtml(x)}</li>`).join("")}</ol></div>`;
         } else if (s.type === "checklist") {
-          html += `<div class="pv-section checklist">`;
-          if (s.title) html += `<div class="pv-section-title">${escapeHtml(s.title)}</div>`;
+          html += `<div class="pv-section checklist${proCls}">`;
+          if (s.title) html += `<div class="pv-section-title">${escapeHtml(s.title)}${proBadge}</div>`;
+          else if (s.pro_only) html += `<div class="pv-section-title">${proBadge}</div>`;
           html += `<ul>${(s.items || []).filter(Boolean).map((x) => `<li>${escapeHtml(x)}</li>`).join("")}</ul></div>`;
         } else if (s.type === "cta") {
-          html += `<div class="pv-section cta">`;
-          if (s.title) html += `<div class="pv-section-title">${escapeHtml(s.title)}</div>`;
+          html += `<div class="pv-section cta${proCls}">`;
+          if (s.title) html += `<div class="pv-section-title">${escapeHtml(s.title)}${proBadge}</div>`;
+          else if (s.pro_only) html += `<div class="pv-section-title">${proBadge}</div>`;
           html += (s.actions || []).filter(Boolean).map((a) => `<span class="pv-action">${escapeHtml(previewCtaActionLabel(a))}</span>`).join("");
           html += `</div>`;
         }
@@ -1595,6 +1658,9 @@
         if (s.type === "cta") {
           clean.actions = (s.actions || []).map((x) => (x || "").trim()).filter(Boolean);
         }
+        // Default is false; only persist when explicitly enabled so the DB
+        // payload stays minimal and old rows without the flag keep working.
+        if (s.pro_only) clean.pro_only = true;
         return clean;
       });
       return {
@@ -1828,6 +1894,7 @@
         if (s.body !== undefined && s.body !== null) clean.body = s.body;
         if (s.items) clean.items = s.items;
         if (s.actions) clean.actions = s.actions;
+        if (s.pro_only) clean.pro_only = true;
         return clean;
       });
       return out;
@@ -1861,6 +1928,7 @@
           if (s.body !== undefined && s.body !== null) clean.body = String(s.body);
           if (s.items) clean.items = s.items.map(String);
           if (s.actions) clean.actions = s.actions.map(String);
+          if (s.pro_only) clean.pro_only = true;
           return clean;
         }),
       };

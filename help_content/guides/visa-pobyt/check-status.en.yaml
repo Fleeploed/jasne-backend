@@ -27,6 +27,7 @@ sections:
       - "Read the current status: approved, in progress, not found, or rejected/closed."
 
   - type: checklist
+    pro_only: true
     title: "What to prepare"
     items:
       - "Passport"

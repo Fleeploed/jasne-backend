@@ -27,6 +27,7 @@ sections:
       - "Přečtěte aktuální stav: schváleno, probíhá, nenalezeno nebo zamítnuto/ukončeno."
 
   - type: checklist
+    pro_only: true
     title: "Co si připravit"
     items:
       - "Pas"

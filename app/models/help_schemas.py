@@ -21,36 +21,40 @@ class _Base(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class _HelpSectionBase(_Base):
+    pro_only: bool = False
+
+
 # ---------------------------------------------------------------------------
 # Source models (mirror the YAML files)
 # ---------------------------------------------------------------------------
 
 
-class HelpSectionText(_Base):
+class HelpSectionText(_HelpSectionBase):
     type: Literal["text"]
     title: str | None = None
     body: str
 
 
-class HelpSectionSteps(_Base):
+class HelpSectionSteps(_HelpSectionBase):
     type: Literal["steps"]
     title: str | None = None
     items: list[str] = Field(min_length=1)
 
 
-class HelpSectionChecklist(_Base):
+class HelpSectionChecklist(_HelpSectionBase):
     type: Literal["checklist"]
     title: str | None = None
     items: list[str] = Field(min_length=1)
 
 
-class HelpSectionWarning(_Base):
+class HelpSectionWarning(_HelpSectionBase):
     type: Literal["warning"]
     title: str | None = None
     body: str
 
 
-class HelpSectionCta(_Base):
+class HelpSectionCta(_HelpSectionBase):
     type: Literal["cta"]
     title: str | None = None
     actions: list[str] = Field(min_length=1)
