@@ -18,6 +18,7 @@ except ImportError:  # pragma: no cover - exercised only in misconfigured deploy
 OAMP_STATUS_URL = "https://ipc.gov.cz/informace-o-stavu-rizeni/"
 OAMP_STATUS_URL_EN = "https://ipc.gov.cz/en/status-of-your-application/"
 OAMP_DEFAULT_USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36"
+OAMP_FAST_IDLE_WAIT_MS = 2500
 _RESULT_RE = re.compile(
     r"((?:Řízení či oznámení s číslem jednacím|An application or report,\s*reference number|"
     r"Proceedings or notification with reference number).*?)"
@@ -86,9 +87,12 @@ def check_oamp_status(
                 page.goto(source_url, wait_until="domcontentloaded", timeout=timeout_ms)
 
                 with suppress(PlaywrightTimeoutError):
-                    page.wait_for_load_state("networkidle", timeout=30000)
+                    page.wait_for_load_state(
+                        "networkidle",
+                        timeout=min(timeout_ms, OAMP_FAST_IDLE_WAIT_MS),
+                    )
 
-                page.locator('input[name="proceedings.referenceNumber"]').wait_for(timeout=30000)
+                page.locator('input[name="proceedings.referenceNumber"]').wait_for(timeout=timeout_ms)
                 _fill_input(page, "proceedings.referenceNumber", payload.reference_number or "")
 
                 if payload.additional_suffix:
@@ -100,9 +104,12 @@ def check_oamp_status(
                 page.locator('button[type="submit"]').click(timeout=10000)
 
                 with suppress(PlaywrightTimeoutError):
-                    page.wait_for_load_state("networkidle", timeout=30000)
+                    page.wait_for_load_state(
+                        "networkidle",
+                        timeout=min(timeout_ms, OAMP_FAST_IDLE_WAIT_MS),
+                    )
 
-                page.wait_for_timeout(3000)
+                _wait_for_result_text(page, timeout_ms=timeout_ms)
                 message = _extract_result(page)
             finally:
                 browser.close()
@@ -163,6 +170,18 @@ def _select_react_select(page, hidden_input_name: str, value: str) -> None:
 
     control.click(timeout=10000)
     page.get_by_text(value, exact=True).click(timeout=10000)
+
+
+def _wait_for_result_text(page, timeout_ms: int) -> None:
+    page.wait_for_function(
+        """
+        () => {
+          const text = document.body?.innerText || "";
+          return /Řízení či oznámení s číslem jednacím|An application or report,\\s*reference number|Proceedings or notification with reference number|nebylo nalezeno|not found/i.test(text);
+        }
+        """,
+        timeout=timeout_ms,
+    )
 
 
 def _extract_result(page) -> str:
