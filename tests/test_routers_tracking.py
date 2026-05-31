@@ -190,6 +190,55 @@ class TestGetTracking:
         assert r.json()["id"] == row["id"]
 
 
+class TestCheckTrackingNow:
+    def test_manual_check_updates_tracking(
+        self, client, fake_supabase, auth_headers, test_user_id, monkeypatch
+    ):
+        row = _seed_tracking(fake_supabase, str(test_user_id), metadata={"error_count": 1})
+        tracker = TRACKER_REGISTRY["oamp_status"]
+        calls = []
+
+        async def fake_check(identifier: str, metadata: dict):
+            calls.append((identifier, metadata))
+            return CheckResult(status="probiha", raw_data={"error_count": 0})
+
+        monkeypatch.setattr(tracker, "check", fake_check)
+
+        r = client.post(f"/trackings/{row['id']}/check", headers=auth_headers)
+
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["id"] == row["id"]
+        assert body["current_status"] == "probiha"
+        assert body["metadata"]["error_count"] == 0
+        assert body["last_checked_at"] is not None
+        assert body["is_active"] is True
+        assert calls == [("OAM-19391/ZM-2026", {"error_count": 1})]
+
+    def test_manual_check_deactivates_terminal_status(
+        self, client, fake_supabase, auth_headers, test_user_id, monkeypatch
+    ):
+        row = _seed_tracking(fake_supabase, str(test_user_id))
+        tracker = TRACKER_REGISTRY["oamp_status"]
+
+        async def fake_check(identifier: str, metadata: dict):
+            return CheckResult(status="schvaleno", raw_data={})
+
+        monkeypatch.setattr(tracker, "check", fake_check)
+
+        r = client.post(f"/trackings/{row['id']}/check", headers=auth_headers)
+
+        assert r.status_code == 200
+        assert r.json()["current_status"] == "schvaleno"
+        assert r.json()["is_active"] is False
+        assert fake_supabase.table("trackings").rows[0]["is_active"] is False
+
+    def test_manual_check_unknown_returns_404(self, client, auth_headers):
+        r = client.post(f"/trackings/{uuid4()}/check", headers=auth_headers)
+
+        assert r.status_code == 404
+
+
 class TestDeleteTracking:
     def test_soft_deletes_own_tracking(self, client, fake_supabase, auth_headers, test_user_id):
         row = _seed_tracking(fake_supabase, str(test_user_id))

@@ -136,6 +136,62 @@ async def get_tracking(
     return TrackingResponse.model_validate(rows[0])
 
 
+@router.post("/{tracking_id}/check", response_model=TrackingResponse)
+async def check_tracking_now(
+    tracking_id: UUID,
+    user_id: UUID = Depends(get_current_user_id),
+) -> TrackingResponse:
+    supabase = await get_supabase()
+    row = await _active_tracking_for_user(supabase, str(user_id), tracking_id)
+    tracker = _tracker_or_422(str(row.get("tracking_type") or ""))
+    now = datetime.now(UTC)
+
+    try:
+        check = await tracker.check(str(row["identifier"]), row.get("metadata") or {})
+    except Exception as exc:
+        logger.warning("Manual tracking check failed id=%s type=%s", tracking_id, row.get("tracking_type"))
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Could not check tracking right now",
+        ) from exc
+
+    metadata = _merge_metadata(row.get("metadata") or {}, check.raw_data)
+    projected_tracking = {
+        **row,
+        "current_status": check.status,
+        "metadata": metadata,
+        "last_checked_at": now.isoformat(),
+    }
+    update = {
+        "current_status": check.status,
+        "metadata": metadata,
+        "last_checked_at": now.isoformat(),
+        "next_check_at": (now + tracker.get_next_check_interval(projected_tracking)).isoformat(),
+        "is_active": not tracker.is_terminal_status(check.status),
+    }
+    result = (
+        await supabase.table("trackings")
+        .update(update)
+        .eq("id", str(tracking_id))
+        .eq("user_id", str(user_id))
+        .execute()
+    )
+    rows = result.data or []
+    if not rows:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to update tracking",
+        )
+
+    logger.info(
+        "Manual tracking check id=%s type=%s status=%s",
+        tracking_id,
+        row.get("tracking_type"),
+        check.status,
+    )
+    return TrackingResponse.model_validate(rows[0])
+
+
 @router.delete("/{tracking_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_tracking(
     tracking_id: UUID,
@@ -174,6 +230,22 @@ async def _active_trackings_for_user(supabase, user_id: str, tracking_type: str)
         .execute()
     )
     return result.data or []
+
+
+async def _active_tracking_for_user(supabase, user_id: str, tracking_id: UUID) -> dict:
+    result = (
+        await supabase.table("trackings")
+        .select("*")
+        .eq("id", str(tracking_id))
+        .eq("user_id", user_id)
+        .eq("is_active", True)
+        .limit(1)
+        .execute()
+    )
+    rows = result.data or []
+    if not rows:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tracking not found")
+    return rows[0]
 
 
 def _tracker_or_422(tracking_type: str):
