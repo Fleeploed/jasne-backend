@@ -6,26 +6,26 @@ from typing import Any
 import httpx
 
 from app.config import get_settings
-from app.prompts.push_messages import status_push_copy
 from app.services.rag import get_supabase
 
 logger = logging.getLogger(__name__)
 
 
-async def send_status_change_push(
+async def send_tracking_push(
     user_id: str,
-    cislo_jednaci: str,
-    new_status: str,
-    language: str,
+    tracking_type: str,
+    identifier: str,
+    status: str,
+    title: str,
+    body: str,
 ) -> int:
-    """Send a localized Expo push for an OAMP tracking status change."""
+    """Send a localized Expo push for a generic tracking status change."""
     tokens = await _push_tokens_for_user(user_id)
     if not tokens:
-        logger.info("No push token for status tracking user_id=%s", user_id)
+        logger.info("No push token for tracking user_id=%s type=%s", user_id, tracking_type)
         return 0
 
     settings = get_settings()
-    title, body = status_push_copy(new_status, language, cislo_jednaci)
     messages = [
         {
             "to": token,
@@ -34,9 +34,10 @@ async def send_status_change_push(
             "sound": "default",
             "channelId": "status-tracking",
             "data": {
-                "type": "oamp_status_change",
-                "cislo_jednaci": cislo_jednaci,
-                "status": new_status,
+                "type": "tracking_status_change",
+                "tracking_type": tracking_type,
+                "identifier": identifier,
+                "status": status,
             },
         }
         for token in tokens
@@ -51,7 +52,9 @@ async def send_status_change_push(
             )
             response.raise_for_status()
     except httpx.HTTPError:
-        logger.exception("Expo status push failed user_id=%s status=%s", user_id, new_status)
+        logger.exception(
+            "Expo tracking push failed user_id=%s type=%s status=%s", user_id, tracking_type, status
+        )
         return 0
 
     return len(messages)

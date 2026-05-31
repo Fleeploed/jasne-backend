@@ -120,7 +120,7 @@ app.include_router(deadlines.router)
 app.include_router(profile.router)
 app.include_router(limits.router)  # /limits — usage vs plan caps
 app.include_router(status.router)  # /status/oamp — OAMP proceedings status
-app.include_router(tracking.router)  # /tracking/applications — Pro OAMP status tracking
+app.include_router(tracking.router)  # /trackings — generic Pro background tracking
 app.include_router(webhooks.router)
 app.include_router(push.router)  # /push-tokens — Expo push token registration
 app.include_router(internal.router)  # /internal — cron-only jobs

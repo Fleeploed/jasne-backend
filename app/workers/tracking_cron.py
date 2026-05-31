@@ -3,21 +3,17 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import asdict, dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import Any
 
-from app.models.schemas import OampTrackingStatus
-from app.services.oamp_client import check_status
-from app.services.push import send_status_change_push
+from app.services.push import send_tracking_push
 from app.services.rag import close_supabase, get_supabase
+from app.services.trackers.registry import get_tracker
 
 logger = logging.getLogger(__name__)
 
 CRON_BATCH_LIMIT = 200
-OAMP_REQUEST_DELAY_SECONDS = 0.5
-OAMP_MAX_CONCURRENT_CHECKS = 8
-NOT_FOUND_STOP_THRESHOLD = 3
-ERROR_STOP_THRESHOLD = 5
+TRACKING_REQUEST_DELAY_SECONDS = 0.5
 
 
 @dataclass
@@ -33,15 +29,14 @@ class TrackingCronStats:
 async def run_tracking_cron(
     *,
     limit: int = CRON_BATCH_LIMIT,
-    delay_seconds: float = OAMP_REQUEST_DELAY_SECONDS,
-    max_concurrent_checks: int = OAMP_MAX_CONCURRENT_CHECKS,
+    delay_seconds: float = TRACKING_REQUEST_DELAY_SECONDS,
 ) -> dict[str, int]:
     stats = TrackingCronStats()
     supabase = await get_supabase()
     now = datetime.now(UTC)
 
     result = (
-        await supabase.table("tracked_applications")
+        await supabase.table("trackings")
         .select("*")
         .eq("is_active", True)
         .lt("next_check_at", now.isoformat())
@@ -52,109 +47,91 @@ async def run_tracking_cron(
     rows = result.data or []
     stats.due = len(rows)
 
-    semaphore = asyncio.Semaphore(max(1, max_concurrent_checks))
-    tasks = [
-        asyncio.create_task(_process_row(supabase, row, index, delay_seconds, semaphore, stats))
-        for index, row in enumerate(rows)
-    ]
-    if tasks:
-        await asyncio.gather(*tasks)
+    for index, row in enumerate(rows):
+        if delay_seconds > 0 and index > 0:
+            await asyncio.sleep(delay_seconds)
+        await _process_row(supabase, row, stats)
 
     logger.info("Tracking cron finished stats=%s", asdict(stats))
     return asdict(stats)
 
 
-async def _process_row(
+async def _process_row(supabase, row: dict[str, Any], stats: TrackingCronStats) -> None:
+    tracking_type = str(row.get("tracking_type") or "")
+    identifier = str(row.get("identifier") or "")
+
+    try:
+        tracker = get_tracker(tracking_type)
+        metadata = _metadata(row)
+        result = await tracker.check(identifier, metadata)
+        await _apply_check_result(supabase, row, result.status, result.raw_data, stats)
+        stats.checked += 1
+    except Exception:
+        stats.errors += 1
+        logger.exception(
+            "tracker_check_failed type=%s identifier=%s",
+            tracking_type or "unknown",
+            mask_identifier(identifier),
+        )
+
+
+async def _apply_check_result(
     supabase,
     row: dict[str, Any],
-    index: int,
-    delay_seconds: float,
-    semaphore: asyncio.Semaphore,
-    stats: TrackingCronStats,
-) -> None:
-    if delay_seconds > 0 and index > 0:
-        await asyncio.sleep(index * delay_seconds)
-
-    async with semaphore:
-        try:
-            new_status = await check_status(str(row.get("cislo_jednaci") or ""))
-            await _apply_status_result(supabase, row, new_status, stats)
-            stats.checked += 1
-        except Exception:
-            stats.errors += 1
-            logger.exception("Tracking check crashed id=%s", row.get("id"))
-
-
-async def _apply_status_result(
-    supabase,
-    row: dict[str, Any],
-    new_status: OampTrackingStatus,
+    new_status: str,
+    raw_data: dict[str, Any],
     stats: TrackingCronStats,
 ) -> None:
     now = datetime.now(UTC)
-    old_status = _tracking_status(row.get("current_status"))
-    user_id = str(row["user_id"])
-    cislo_jednaci = str(row["cislo_jednaci"])
-    language = await _language_for_user(supabase, user_id)
+    tracking_type = str(row["tracking_type"])
+    identifier = str(row["identifier"])
+    old_status = str(row.get("current_status") or "")
+    tracker = get_tracker(tracking_type)
+    metadata = _metadata(row)
+    metadata.update(raw_data)
 
+    projected_tracking = {
+        **row,
+        "current_status": new_status,
+        "metadata": metadata,
+    }
+    next_check_at = now + tracker.get_next_check_interval(projected_tracking)
+    is_terminal = tracker.is_terminal_status(new_status)
+    notification_count = int(row.get("notification_count") or 0)
     update: dict[str, Any] = {
         "current_status": new_status,
+        "metadata": metadata,
         "last_checked_at": now.isoformat(),
-        "consecutive_not_found_count": 0,
-        "consecutive_error_count": 0,
+        "next_check_at": next_check_at.isoformat(),
+        "is_active": False if is_terminal else row.get("is_active", True),
+        "notification_count": notification_count,
     }
 
     if new_status != old_status:
         stats.changed += 1
-
-    if new_status in {"schvaleno", "zamitnuto"}:
-        sent = 0
-        notification_count = int(row.get("notification_count") or 0)
-        if new_status != old_status:
-            sent = await send_status_change_push(user_id, cislo_jednaci, new_status, language)
-            notification_count += 1
-        update.update(
-            {
-                "is_active": False,
-                "next_check_at": now.isoformat(),
-                "notification_count": notification_count,
-            }
+        language = await _language_for_user(supabase, str(row["user_id"]))
+        title, body = tracker.get_push_message(language, new_status, identifier, metadata)
+        sent = await send_tracking_push(
+            str(row["user_id"]),
+            tracking_type,
+            identifier,
+            new_status,
+            title,
+            body,
         )
+        update["notification_count"] = notification_count + (1 if sent else 0)
         stats.pushes_attempted += 1 if sent else 0
-        stats.deactivated += 1
-    elif new_status == "not_found":
-        not_found_count = _next_retry_count(row, "consecutive_not_found_count", old_status == "not_found")
-        update["consecutive_not_found_count"] = not_found_count
-        update["next_check_at"] = (now + timedelta(days=1)).isoformat()
-        if not_found_count >= NOT_FOUND_STOP_THRESHOLD:
-            sent = await send_status_change_push(user_id, cislo_jednaci, "not_found_stopped", language)
-            update["is_active"] = False
-            update["notification_count"] = int(row.get("notification_count") or 0) + 1
-            stats.pushes_attempted += 1 if sent else 0
-            stats.deactivated += 1
-    elif new_status == "error":
-        error_count = _next_retry_count(row, "consecutive_error_count", old_status == "error")
-        update["consecutive_error_count"] = error_count
-        update["next_check_at"] = (now + timedelta(hours=1)).isoformat()
-        if error_count >= ERROR_STOP_THRESHOLD:
-            sent = await send_status_change_push(user_id, cislo_jednaci, "error_stopped", language)
-            update["is_active"] = False
-            update["notification_count"] = int(row.get("notification_count") or 0) + 1
-            stats.pushes_attempted += 1 if sent else 0
-            stats.deactivated += 1
-    elif new_status == "probiha":
-        update["next_check_at"] = _next_probiha_check(now, _parse_datetime(row.get("created_at"))).isoformat()
-    else:
-        update["next_check_at"] = (now + timedelta(hours=1)).isoformat()
 
-    await supabase.table("tracked_applications").update(update).eq("id", str(row["id"])).execute()
+    if is_terminal:
+        stats.deactivated += 1
+
+    await supabase.table("trackings").update(update).eq("id", str(row["id"])).execute()
     logger.info(
-        "tracking_check id=%s case=%s old=%s new=%s active=%s",
-        row.get("id"),
-        mask_cislo_jednaci(cislo_jednaci),
-        old_status,
+        "tracker_check type=%s identifier=%s result=%s next_check=%s",
+        tracking_type,
+        mask_identifier(identifier),
         new_status,
-        update.get("is_active", row.get("is_active")),
+        next_check_at.date().isoformat(),
     )
 
 
@@ -165,38 +142,12 @@ async def _language_for_user(supabase, user_id: str) -> str:
     return language if language in {"cs", "en", "uk", "ru"} else "cs"
 
 
-def _next_retry_count(row: dict[str, Any], column: str, was_same_status: bool) -> int:
-    if not was_same_status:
-        return 1
-    return int(row.get(column) or 0) + 1
+def _metadata(row: dict[str, Any]) -> dict[str, Any]:
+    value = row.get("metadata")
+    return dict(value) if isinstance(value, dict) else {}
 
 
-def _next_probiha_check(now: datetime, created_at: datetime) -> datetime:
-    age = now - created_at
-    if age < timedelta(days=30):
-        return now + timedelta(days=7)
-    if age <= timedelta(days=90):
-        return now + timedelta(days=3)
-    return now + timedelta(days=1)
-
-
-def _tracking_status(value: Any) -> OampTrackingStatus:
-    if value in {"probiha", "schvaleno", "zamitnuto", "not_found", "error"}:
-        return value
-    return "error"
-
-
-def _parse_datetime(value: Any) -> datetime:
-    if isinstance(value, datetime):
-        dt = value
-    elif isinstance(value, str):
-        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    else:
-        return datetime.now(UTC)
-    return dt if dt.tzinfo is not None else dt.replace(tzinfo=UTC)
-
-
-def mask_cislo_jednaci(value: str) -> str:
+def mask_identifier(value: str) -> str:
     cleaned = value.strip()
     if "/" in cleaned and cleaned.upper().startswith("OAM-"):
         suffix = cleaned.split("/", 1)[1]
@@ -204,6 +155,9 @@ def mask_cislo_jednaci(value: str) -> str:
     if len(cleaned) <= 8:
         return "***"
     return f"{cleaned[:3]}***{cleaned[-4:]}"
+
+
+mask_cislo_jednaci = mask_identifier
 
 
 async def main() -> None:

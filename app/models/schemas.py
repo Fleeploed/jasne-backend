@@ -34,6 +34,7 @@ PushPlatform = Literal["ios", "android"]
 OampStatusQueryKind = Literal["proceedings", "visa"]
 OampStatusOutcome = Literal["approved", "processing", "not_found", "rejected", "found", "unknown"]
 OampTrackingStatus = Literal["probiha", "schvaleno", "zamitnuto", "not_found", "error"]
+TrackingType = str
 
 DEFAULT_REMINDER_DAYS: list[int] = [30, 14, 7, 1]
 
@@ -459,23 +460,34 @@ class OampStatusCheckResponse(_Base):
 
 
 class TrackingCreate(_Base):
-    cislo_jednaci: str = Field(min_length=3, max_length=80)
+    tracking_type: TrackingType = Field(min_length=2, max_length=80)
+    identifier: str = Field(min_length=3, max_length=120)
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
-    @field_validator("cislo_jednaci")
+    @field_validator("tracking_type")
     @classmethod
-    def normalize_cislo_jednaci(cls, value: str) -> str:
-        cleaned = re.sub(r"\s+", "", value.strip().upper())
-        cleaned = re.sub(r"^0AM", "OAM", cleaned)
-        if not cleaned:
-            raise ValueError("cislo_jednaci is required")
-        return cleaned
+    def normalize_tracking_type(cls, value: str) -> str:
+        return value.strip().lower()
+
+    @field_validator("identifier")
+    @classmethod
+    def normalize_identifier(cls, value: str) -> str:
+        return value.strip()
 
 
 class TrackingResponse(_Base):
     id: UUID
-    cislo_jednaci: str
-    current_status: OampTrackingStatus
+    user_id: UUID
+    tracking_type: str
+    identifier: str
+    current_status: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    last_checked_at: datetime | None = None
     next_check_at: datetime
+    is_active: bool = True
+    notification_count: int = 0
+    created_at: datetime
+    updated_at: datetime
 
 
 # ---------------------------------------------------------------------------
