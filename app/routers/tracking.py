@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from app.middleware.auth import get_current_user_id
 from app.models.schemas import TrackingCreate, TrackingResponse
 from app.services.rag import get_supabase
+from app.services.trackers.base import CheckResult
 from app.services.trackers.registry import get_tracker
 
 logger = logging.getLogger(__name__)
@@ -52,7 +53,12 @@ async def create_tracking(
         )
 
     now = datetime.now(UTC)
-    check = await tracker.check(identifier, body.metadata)
+    initial_status = tracker.initial_status_from_metadata(body.metadata)
+    check = (
+        CheckResult(status=initial_status, raw_data={})
+        if initial_status is not None
+        else await tracker.check(identifier, body.metadata)
+    )
     metadata = _merge_metadata(body.metadata, check.raw_data)
     draft_tracking = {
         "tracking_type": body.tracking_type,

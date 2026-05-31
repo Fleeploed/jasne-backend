@@ -18,6 +18,10 @@ class BaseTracker(ABC):
     def normalize_identifier(self, identifier: str) -> str:
         return " ".join(identifier.strip().split())
 
+    def initial_status_from_metadata(self, metadata: dict[str, Any]) -> str | None:
+        """Return a trusted enough status hint for create-time UX, if this tracker supports one."""
+        return None
+
     @abstractmethod
     async def check(self, identifier: str, metadata: dict[str, Any]) -> CheckResult:
         raise NotImplementedError

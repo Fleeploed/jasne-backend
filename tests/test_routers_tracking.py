@@ -85,6 +85,33 @@ class TestCreateTracking:
         assert rows[0]["is_active"] is True
         assert rows[0]["last_checked_at"] is not None
 
+    def test_uses_initial_status_hint_without_rechecking_oamp(
+        self, client, fake_supabase, auth_headers, test_user_id, monkeypatch
+    ):
+        _seed_profile(fake_supabase, str(test_user_id), plan="pro")
+        tracker = TRACKER_REGISTRY["oamp_status"]
+
+        async def fail_check(identifier: str, metadata: dict):
+            raise AssertionError("OAMP should not be checked when result screen passes current_status")
+
+        monkeypatch.setattr(tracker, "check", fail_check)
+
+        r = client.post(
+            "/trackings",
+            headers=auth_headers,
+            json={
+                "tracking_type": "oamp_status",
+                "identifier": "OAM-19391/ZM-2026",
+                "metadata": {"current_status": "probiha"},
+            },
+        )
+
+        assert r.status_code == 201, r.text
+        body = r.json()
+        assert body["current_status"] == "probiha"
+        assert body["metadata"]["current_status"] == "probiha"
+        assert fake_supabase.table("trackings").rows[0]["last_checked_at"] is not None
+
     def test_rejects_invalid_identifier(self, client, fake_supabase, auth_headers, test_user_id):
         _seed_profile(fake_supabase, str(test_user_id), plan="pro")
 

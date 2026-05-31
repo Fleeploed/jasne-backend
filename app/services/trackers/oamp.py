@@ -11,6 +11,7 @@ from app.services.trackers.base import BaseTracker, CheckResult
 OAMP_IDENTIFIER_RE = re.compile(r"^OAM-\d+/[A-Z]+-\d{4}$")
 NOT_FOUND_STOP_THRESHOLD = 3
 ERROR_STOP_THRESHOLD = 5
+OAMP_STATUS_HINTS = {"probiha", "schvaleno", "zamitnuto", "not_found", "error"}
 
 
 class OampTracker(BaseTracker):
@@ -20,6 +21,12 @@ class OampTracker(BaseTracker):
 
     def validate_identifier(self, identifier: str) -> bool:
         return bool(OAMP_IDENTIFIER_RE.fullmatch(self.normalize_identifier(identifier)))
+
+    def initial_status_from_metadata(self, metadata: dict[str, Any]) -> str | None:
+        status = str(
+            metadata.get("current_status") or metadata.get("initial_status") or metadata.get("status") or ""
+        ).strip()
+        return status if status in OAMP_STATUS_HINTS else None
 
     async def check(self, identifier: str, metadata: dict[str, Any]) -> CheckResult:
         status = await check_status(self.normalize_identifier(identifier))
