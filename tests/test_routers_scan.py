@@ -128,7 +128,7 @@ class TestCreateScan:
     ):
         _seed_profile(fake_supabase, str(test_user_id))
 
-        from app.models.schemas import ClassifierResult
+        from app.models.schemas import ClassifierResult, OcrResult
 
         seen = {}
 
@@ -142,21 +142,23 @@ class TestCreateScan:
             seen["render_path"] = path
             return ["data:image/png;base64,page1", "data:image/png;base64,page2"]
 
-        async def fake_classify(image_urls: list[str]) -> ClassifierResult:
-            seen["classifier_urls"] = image_urls
+        async def fake_extract(image_urls: list[str]) -> OcrResult:
+            seen["ocr_urls"] = image_urls
+            return OcrResult(ocr_text="PDF text", page_count=len(image_urls), document_language="cs")
+
+        async def fake_classify(ocr_text: str, page_count: int, document_language: str) -> ClassifierResult:
+            seen["classifier_ocr"] = ocr_text
             return ClassifierResult(
-                ocr_text="PDF text",
                 category="ostatni",
                 doc_type="pdf_document",
                 sender=None,
-                document_language="cs",
                 confidence=0.95,
-                page_count=1,
             )
 
         monkeypatch.setattr("app.routers.scan._download_signed_object", fake_download)
         monkeypatch.setattr("app.routers.scan._render_pdf_to_png_data_urls", fake_render)
-        monkeypatch.setattr("app.routers.scan.classify_document", fake_classify)
+        monkeypatch.setattr("app.routers.scan.extract_text", fake_extract)
+        monkeypatch.setattr("app.routers.scan.classify_text", fake_classify)
 
         path = f"{test_user_id}/document.pdf"
         r = client.post(
@@ -170,7 +172,8 @@ class TestCreateScan:
         assert seen["download_path"] == path
         assert seen["pdf_bytes"] == b"%PDF-1.6"
         assert seen["render_path"] == path
-        assert seen["classifier_urls"] == ["data:image/png;base64,page1", "data:image/png;base64,page2"]
+        assert seen["ocr_urls"] == ["data:image/png;base64,page1", "data:image/png;base64,page2"]
+        assert seen["classifier_ocr"] == "PDF text"
         assert r.json()["page_count"] == 2
 
     def test_multi_page_pdf_counts_pages_for_quota(
@@ -191,12 +194,16 @@ class TestCreateScan:
         def fake_render(pdf_bytes: bytes, path: str) -> list[str]:
             return [f"data:image/png;base64,page{i}" for i in range(4)]
 
-        async def fake_classify(image_urls: list[str]):
+        async def fake_extract(image_urls: list[str]):
+            raise AssertionError("quota should block before OCR")
+
+        async def fake_classify(ocr_text: str, page_count: int, document_language: str):
             raise AssertionError("quota should block before classifier")
 
         monkeypatch.setattr("app.routers.scan._download_signed_object", fake_download)
         monkeypatch.setattr("app.routers.scan._render_pdf_to_png_data_urls", fake_render)
-        monkeypatch.setattr("app.routers.scan.classify_document", fake_classify)
+        monkeypatch.setattr("app.routers.scan.extract_text", fake_extract)
+        monkeypatch.setattr("app.routers.scan.classify_text", fake_classify)
 
         r = client.post(
             "/scans",
@@ -339,29 +346,27 @@ class TestCreateScan:
         monkeypatch,
         mock_rag_empty,
     ):
-        """If OCR confidence is below gate, don't call analyze — return 422."""
+        """If OCR returns empty text, don't call classify/analyze — return 422."""
         _seed_profile(fake_supabase, str(test_user_id))
 
-        from app.models.schemas import ClassifierResult
+        from app.models.schemas import OcrResult
 
-        async def fake_classify(urls):
-            return ClassifierResult(
-                ocr_text="",
-                category="ostatni",
-                doc_type="unknown",
-                document_language="cs",
-                confidence=0.0,
-                page_count=1,
-                error="Photo too blurry",
-            )
+        async def fake_extract(urls):
+            return OcrResult(ocr_text="", page_count=1, document_language="cs")
 
+        classify_called = {"count": 0}
         analyze_called = {"count": 0}
+
+        async def fake_classify(*a, **kw):
+            classify_called["count"] += 1
+            raise AssertionError("should not reach classifier")
 
         async def fake_analyze(*a, **kw):
             analyze_called["count"] += 1
             raise AssertionError("should not reach analyze")
 
-        monkeypatch.setattr("app.routers.scan.classify_document", fake_classify)
+        monkeypatch.setattr("app.routers.scan.extract_text", fake_extract)
+        monkeypatch.setattr("app.routers.scan.classify_text", fake_classify)
         monkeypatch.setattr("app.routers.scan.analyze_document", fake_analyze)
 
         r = client.post(
@@ -370,7 +375,8 @@ class TestCreateScan:
             json={"image_paths": [f"{test_user_id}/x.jpg"]},
         )
         assert r.status_code == 422
-        assert "blurry" in r.json()["detail"].lower() or "document" in r.json()["detail"].lower()
+        assert "document" in r.json()["detail"].lower()
+        assert classify_called["count"] == 0
         assert analyze_called["count"] == 0
 
     def test_empty_image_paths_rejected(self, client, auth_headers):

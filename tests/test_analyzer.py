@@ -98,15 +98,19 @@ class TestAnalyzeDocument:
         )
 
         classifier = ClassifierResult(
-            ocr_text=f"Platební výměr se splatností {future.isoformat()}",
             category="danove",  # → escalation
             doc_type="platebni_vymer",
             sender="FÚ",
-            document_language="cs",
             confidence=0.9,
-            page_count=1,
         )
-        result, model = await analyze_document(classifier, [], "cs", False)
+        result, model = await analyze_document(
+            classifier,
+            f"Platební výměr se splatností {future.isoformat()}",
+            1,
+            [],
+            "cs",
+            False,
+        )
 
         assert result.document_type == "platebni_vymer"
         assert len(result.deadlines) == 1  # validator kept the future deadline
@@ -127,14 +131,13 @@ class TestAnalyzeDocument:
             }
         )
         classifier = ClassifierResult(
-            ocr_text="Faktura bez termínu splatnosti",
             category="ucty",  # → default model
             doc_type="faktura",
-            document_language="cs",
             confidence=0.8,
-            page_count=1,
         )
-        _, model = await analyze_document(classifier, [], "cs", False)
+        _, model = await analyze_document(
+            classifier, "Faktura bez termínu splatnosti", 1, [], "cs", False
+        )
         assert model == "gpt-4o-mini"
 
     @pytest.mark.asyncio
@@ -156,14 +159,13 @@ class TestAnalyzeDocument:
             }
         )
         classifier = ClassifierResult(
-            ocr_text=f"Faktura se splatností {future.isoformat()}",
             category="ucty",
             doc_type="faktura",
-            document_language="cs",
             confidence=0.9,
-            page_count=1,
         )
-        result, _ = await analyze_document(classifier, [], "cs", False)
+        result, _ = await analyze_document(
+            classifier, f"Faktura se splatností {future.isoformat()}", 1, [], "cs", False
+        )
         # Past deadline filtered out, future kept
         assert len(result.deadlines) == 1
         assert result.deadlines[0].description == "new"
@@ -195,19 +197,19 @@ class TestAnalyzeDocument:
             }
         )
         classifier = ClassifierResult(
-            ocr_text=(
-                "POTVRZENÍ O PODÁNÍ ŽÁDOSTI. Tímto potvrzujeme, že výše uvedený cizinec "
-                "dne 25.03.2026 podal žádost o prodloužení doby platnosti zaměstnanecké karty."
-            ),
             category="cizinecka",
             doc_type="potvrzeni_o_podani_zadosti",
             sender="Ministerstvo vnitra ČR",
-            document_language="cs",
             confidence=0.95,
-            page_count=1,
+        )
+        ocr_text = (
+            "POTVRZENÍ O PODÁNÍ ŽÁDOSTI. Tímto potvrzujeme, že výše uvedený cizinec "
+            "dne 25.03.2026 podal žádost o prodloužení doby platnosti zaměstnanecké karty."
         )
         result, _ = await analyze_document(
             classifier,
+            ocr_text,
+            1,
             ["Obecný RAG o přílohách k zaměstnanecké kartě."],
             "cs",
             False,
@@ -248,19 +250,17 @@ class TestAnalyzeDocument:
             }
         )
         classifier = ClassifierResult(
-            ocr_text=(
-                "Výzva k převzetí průkazu o povolení k dlouhodobému pobytu. "
-                "S sebou je třeba si přinést platný cestovní doklad a uhradit správní poplatek "
-                "VE FORMĚ KOLKU ve výši: [ ] bez poplatku (0 Kč) [ ] 2 500 Kč [ ] 300 Kč [ ] 1 000 Kč."
-            ),
             category="cizinecka",
             doc_type="vyzva_k_prevzeti_prukazu",
             sender="Ministerstvo vnitra ČR",
-            document_language="cs",
             confidence=0.95,
-            page_count=1,
         )
-        result, _ = await analyze_document(classifier, [], "cs", False)
+        ocr_text = (
+            "Výzva k převzetí průkazu o povolení k dlouhodobému pobytu. "
+            "S sebou je třeba si přinést platný cestovní doklad a uhradit správní poplatek "
+            "VE FORMĚ KOLKU ve výši: [ ] bez poplatku (0 Kč) [ ] 2 500 Kč [ ] 300 Kč [ ] 1 000 Kč."
+        )
+        result, _ = await analyze_document(classifier, ocr_text, 1, [], "cs", False)
 
         assert "poplatek" not in result.summary.lower()
         assert "kolk" not in result.summary.lower()
@@ -287,18 +287,16 @@ class TestAnalyzeDocument:
             }
         )
         classifier = ClassifierResult(
-            ocr_text=(
-                "Výzva k převzetí průkazu. Poplatek ve formě kolku ve výši: "
-                "[ ] bez poplatku (0 Kč) [ ] 2 500 Kč [x] 300 Kč [ ] 1 000 Kč."
-            ),
             category="cizinecka",
             doc_type="vyzva_k_prevzeti_prukazu",
             sender="Ministerstvo vnitra ČR",
-            document_language="cs",
             confidence=0.95,
-            page_count=1,
         )
-        result, _ = await analyze_document(classifier, [], "cs", False)
+        ocr_text = (
+            "Výzva k převzetí průkazu. Poplatek ve formě kolku ve výši: "
+            "[ ] bez poplatku (0 Kč) [ ] 2 500 Kč [x] 300 Kč [ ] 1 000 Kč."
+        )
+        result, _ = await analyze_document(classifier, ocr_text, 1, [], "cs", False)
 
         assert result.actions_required == ["Uhradit správní poplatek 300 Kč ve formě kolku."]
         assert "Kolek 300 Kč." in result.documents_needed
@@ -313,15 +311,12 @@ class TestAnalyzeDocument:
         monkeypatch.setattr("app.services.analyzer.get_openai_client", lambda: mock_client)
 
         classifier = ClassifierResult(
-            ocr_text="x",
             category="ucty",
             doc_type="faktura",
-            document_language="cs",
             confidence=0.8,
-            page_count=1,
         )
         with pytest.raises(ValueError, match="invalid JSON"):
-            await analyze_document(classifier, [], "cs", False)
+            await analyze_document(classifier, "x", 1, [], "cs", False)
 
     @pytest.mark.asyncio
     async def test_schema_violation_raises(self, openai_chat_mock):
@@ -334,12 +329,9 @@ class TestAnalyzeDocument:
             }
         )
         classifier = ClassifierResult(
-            ocr_text="x",
             category="ucty",
             doc_type="faktura",
-            document_language="cs",
             confidence=0.8,
-            page_count=1,
         )
         with pytest.raises(ValueError, match="schema"):
-            await analyze_document(classifier, [], "cs", False)
+            await analyze_document(classifier, "x", 1, [], "cs", False)

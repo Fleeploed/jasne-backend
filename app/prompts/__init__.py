@@ -2,7 +2,7 @@
 
 Layout podle skill spec — jeden modul na jeden účel:
 
-  classifier.py — call 1 (GPT-4o Vision): OCR + klasifikace
+  classifier.py — call 1 (GPT-4o text-only): klasifikace OCR textu z Azure DI
   base.py       — call 2 (analyzer): společná šablona, proměnné se vyplňují
   language_*.py — call 2 add-on: samostatná pravidla výstupního jazyka
   <kategorie>.py — call 2 add-on: pravidla pro lhůty/sankce dané kategorie

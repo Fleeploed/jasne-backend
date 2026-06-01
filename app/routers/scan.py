@@ -20,6 +20,7 @@ from app.models.schemas import (
     AnalysisResult,
     ClassifierResult,
     DeadlineItem,
+    OcrResult,
     ScanBulkDeleteResponse,
     ScanCountsResponse,
     ScanImageUrlsResponse,
@@ -30,8 +31,9 @@ from app.models.schemas import (
 )
 from app.routers.profile import _ensure_profile
 from app.services.analyzer import analyze_document, stream_analyze_document
-from app.services.classifier import classify_document
+from app.services.classifier import classify_text
 from app.services.limits import check_scan_quota, increment_scan_count, usage_period_for_profile
+from app.services.ocr import extract_text
 from app.services.rag import get_supabase, retrieve_chunks
 
 logger = logging.getLogger(__name__)
@@ -45,7 +47,12 @@ MAX_PDF_BYTES = 20 * 1024 * 1024
 
 @dataclass(frozen=True)
 class PreparedVisionInputs:
-    """Prepared GPT Vision inputs after storage validation and PDF rendering."""
+    """Prepared OCR inputs after storage validation and PDF rendering.
+
+    Name kept for backwards compatibility — these URLs now feed Azure Document
+    Intelligence, not GPT Vision. PDF rendering still produces one image per
+    page so Azure DI's prebuilt-read sees pre-segmented inputs.
+    """
 
     urls: list[str]
     page_count: int
@@ -79,6 +86,7 @@ async def _yield_heartbeats_until_complete(
 
 async def _stream_analyzer_phase(
     classifier: ClassifierResult,
+    ocr: OcrResult,
     rag_chunks: list[str],
     language: UserLanguage,
     has_datova_schranka: bool,
@@ -87,6 +95,8 @@ async def _stream_analyzer_phase(
     (analysis, model_used) tuple. Raises RuntimeError if the stream ends without a result."""
     analyzer_iter = stream_analyze_document(
         classifier=classifier,
+        ocr_text=ocr.ocr_text,
+        page_count=ocr.page_count,
         rag_chunks=rag_chunks,
         language=language,
         has_datova_schranka=has_datova_schranka,
@@ -132,10 +142,28 @@ async def _scan_stream_events(
         )
 
         yield _sse("status", {"step": "ocr", "message": "Reading document text"})
-        classifier_task = asyncio.create_task(classify_document(vision_inputs.urls))
-        async for heartbeat in _yield_heartbeats_until_complete(classifier_task):
+        ocr_task = asyncio.create_task(extract_text(vision_inputs.urls))
+        async for heartbeat in _yield_heartbeats_until_complete(ocr_task):
             yield heartbeat
-        classifier = classifier_task.result().model_copy(update={"page_count": vision_inputs.page_count})
+        ocr = ocr_task.result()
+        # The OCR service returns whatever Azure detected; for safety we anchor
+        # page_count to the prepared input count so downstream UI sees a stable
+        # number even if Azure DI miscounted.
+        ocr = ocr.model_copy(update={"page_count": vision_inputs.page_count})
+
+        if not ocr.ocr_text.strip():
+            detail = "Could not read document — try a better photo."
+            logger.warning("OCR quality gate failed (empty text) user_id=%s", user_id)
+            yield _sse("error", {"status_code": status.HTTP_422_UNPROCESSABLE_ENTITY, "detail": detail})
+            return
+
+        yield _sse("status", {"step": "classify", "message": "Classifying document"})
+        classify_task = asyncio.create_task(
+            classify_text(ocr.ocr_text, ocr.page_count, ocr.document_language)
+        )
+        async for heartbeat in _yield_heartbeats_until_complete(classify_task):
+            yield heartbeat
+        classifier = classify_task.result()
         yield _sse(
             "status",
             {
@@ -146,24 +174,13 @@ async def _scan_stream_events(
             },
         )
 
-        if not classifier.ocr_text.strip():
-            detail = f"Could not read document — try a better photo. {classifier.error or ''}".strip()
-            logger.warning(
-                "OCR quality gate failed (empty text) user_id=%s confidence=%.2f error=%s",
-                user_id,
-                classifier.confidence,
-                classifier.error,
-            )
-            yield _sse("error", {"status_code": status.HTTP_422_UNPROCESSABLE_ENTITY, "detail": detail})
-            return
-
         yield _sse("status", {"step": "rag", "message": "Checking relevant Czech rules"})
-        rag_chunks = await retrieve_chunks(classifier.ocr_text, classifier.category)
+        rag_chunks = await retrieve_chunks(ocr.ocr_text, classifier.category)
 
         yield _sse("status", {"step": "analysis", "message": "Finding summary, actions, and risks"})
         analysis: AnalysisResult | None = None
         model_used: str | None = None
-        async for item in _stream_analyzer_phase(classifier, rag_chunks, language, has_datova_schranka):
+        async for item in _stream_analyzer_phase(classifier, ocr, rag_chunks, language, has_datova_schranka):
             if isinstance(item, str):
                 yield item
             else:
@@ -177,6 +194,7 @@ async def _scan_stream_events(
             user_id,
             body,
             classifier,
+            ocr,
             analysis,
             language,
             model_used,
@@ -409,6 +427,7 @@ async def _persist_completed_scan(
     user_id: UUID,
     body: ScanRequest,
     classifier: ClassifierResult,
+    ocr: OcrResult,
     analysis: AnalysisResult,
     language: UserLanguage,
     model_used: str,
@@ -418,14 +437,14 @@ async def _persist_completed_scan(
     scan_row = {
         "user_id": str(user_id),
         "image_paths": body.image_paths,
-        "ocr_text": classifier.ocr_text,
+        "ocr_text": ocr.ocr_text,
         "category": classifier.category,
         "doc_type": classifier.doc_type,
         "category_confidence": classifier.confidence,
         "result": analysis.model_dump(mode="json"),
         "language": language,
         "model_used": model_used,
-        "page_count": classifier.page_count,
+        "page_count": ocr.page_count,
     }
     try:
         inserted = await supabase.table("scans").insert(scan_row).execute()
@@ -446,7 +465,7 @@ async def _persist_completed_scan(
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to save scan")
 
     scan_data = inserted.data[0]
-    scan_data["page_count"] = classifier.page_count
+    scan_data["page_count"] = ocr.page_count
     scan_id = UUID(scan_data["id"])
 
     await increment_scan_count(user_id, month=usage_period)
@@ -468,7 +487,7 @@ async def _persist_completed_scan(
     logger.info(
         "Scan created scan_id=%s pages=%d category=%s model=%s ocr_conf=%.2f deadlines=%d",
         scan_id,
-        classifier.page_count,
+        ocr.page_count,
         classifier.category,
         model_used,
         classifier.confidence,
@@ -499,28 +518,28 @@ async def create_scan(
         usage_period=usage_period,
     )
 
-    # Call 1 — OCR + classification (multi-page, single Vision call)
-    classifier = await classify_document(vision_inputs.urls)
-    classifier = classifier.model_copy(update={"page_count": vision_inputs.page_count})
+    # Step 1 — OCR via Azure Document Intelligence
+    ocr = await extract_text(vision_inputs.urls)
+    ocr = ocr.model_copy(update={"page_count": vision_inputs.page_count})
 
-    if not classifier.ocr_text.strip():
-        logger.warning(
-            "OCR quality gate failed (empty text) user_id=%s confidence=%.2f error=%s",
-            user_id,
-            classifier.confidence,
-            classifier.error,
-        )
+    if not ocr.ocr_text.strip():
+        logger.warning("OCR quality gate failed (empty text) user_id=%s", user_id)
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=f"Could not read document — try a better photo. {classifier.error or ''}".strip(),
+            detail="Could not read document — try a better photo.",
         )
 
+    # Step 2 — GPT-4o text-only classifier
+    classifier = await classify_text(ocr.ocr_text, ocr.page_count, ocr.document_language)
+
     # RAG — pull category-specific knowledge chunks
-    rag_chunks = await retrieve_chunks(classifier.ocr_text, classifier.category)
+    rag_chunks = await retrieve_chunks(ocr.ocr_text, classifier.category)
 
     # Call 2 — analyzer (default model or escalation, picked by category)
     analysis, model_used = await analyze_document(
         classifier=classifier,
+        ocr_text=ocr.ocr_text,
+        page_count=ocr.page_count,
         rag_chunks=rag_chunks,
         language=language,
         has_datova_schranka=has_datova_schranka,
@@ -530,6 +549,7 @@ async def create_scan(
         user_id,
         body,
         classifier,
+        ocr,
         analysis,
         language,
         model_used,

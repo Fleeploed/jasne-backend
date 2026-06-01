@@ -53,6 +53,18 @@ class Settings(BaseSettings):
     openai_max_output_tokens: int = 2000
 
     # =====================================================================
+    # Azure Document Intelligence — OCR (prebuilt-read)
+    # =====================================================================
+    # Replaces GPT-4o Vision for OCR. Both endpoint and key are required;
+    # app fails to start if missing. Endpoint format:
+    # https://<resource>.cognitiveservices.azure.com/
+    azure_document_intelligence_endpoint: str
+    azure_document_intelligence_key: str
+    # Azure DI per-call timeout. Multi-page docs can take a while; the
+    # prebuilt-read poller normally returns within ~10s but we leave room.
+    azure_document_intelligence_timeout_seconds: float = 60.0
+
+    # =====================================================================
     # Supabase
     # =====================================================================
     supabase_url: str

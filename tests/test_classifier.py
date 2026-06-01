@@ -1,70 +1,84 @@
-"""Tests for classifier.classify_document with mocked OpenAI (multi-page Vision)."""
+"""Tests for classify_text — text-only GPT-4o classifier (no Vision)."""
 
 import pytest
 
 from app.prompts.classifier import CLASSIFIER_SYSTEM_PROMPT
-from app.services.classifier import classify_document
+from app.services.classifier import classify_text
 
 
-def test_classifier_prompt_preserves_checkbox_state():
-    assert "[x]" in CLASSIFIER_SYSTEM_PROMPT
-    assert "[ ]" in CLASSIFIER_SYSTEM_PROMPT
-    assert "bez poplatku (0 Kč)" in CLASSIFIER_SYSTEM_PROMPT
+def test_classifier_prompt_lists_all_categories():
+    for category in (
+        "danove",
+        "socialni",
+        "zdravotni",
+        "cizinecka",
+        "smlouvy",
+        "ucty",
+        "soudni",
+        "urad_prace",
+        "skolstvi",
+        "ostatni",
+    ):
+        assert category in CLASSIFIER_SYSTEM_PROMPT
 
 
-class TestClassifyDocument:
+class TestClassifyText:
     @pytest.mark.asyncio
-    async def test_happy_path_single_page(self, openai_chat_mock):
+    async def test_classify_text_danove(self, openai_chat_mock):
         openai_chat_mock(
             {
-                "ocr_text": "Platební výměr č. 12345",
                 "category": "danove",
-                "doc_type": "platebni_vymer",
-                "sender": "Finanční úřad",
-                "document_language": "cs",
+                "doc_type": "Platební výměr daně z příjmů",
+                "sender": "Finanční úřad pro Prahu 3",
                 "confidence": 0.95,
-                "page_count": 1,
                 "error": None,
             }
         )
 
-        result = await classify_document(["https://fake-url/img.jpg"])
-
+        ocr = (
+            "Platební výměr na daň z přidané hodnoty. Finanční úřad pro Prahu 3, "
+            "DIČ CZ12345678, variabilní symbol 9876, částka k úhradě 4 320 Kč. "
+            "Daňový subjekt je povinen uhradit nedoplatek na dani."
+        )
+        result = await classify_text(ocr, page_count=1, document_language="cs")
         assert result.category == "danove"
-        assert result.doc_type == "platebni_vymer"
+        assert result.doc_type == "Platební výměr daně z příjmů"
         assert result.confidence == 0.95
-        assert result.page_count == 1
-        assert "Platební výměr" in result.ocr_text
+        assert result.error is None
 
     @pytest.mark.asyncio
-    async def test_happy_path_multi_page(self, openai_chat_mock):
-        mock_client = openai_chat_mock(
+    async def test_classify_text_low_confidence(self, openai_chat_mock):
+        # The model returns a non-ostatni guess with confidence < 0.5;
+        # the service should coerce it to ostatni.
+        openai_chat_mock(
             {
-                "ocr_text": "page 1\n\npage 2\n\npage 3",
-                "category": "smlouvy",
-                "doc_type": "najemni_smlouva",
-                "sender": "Pronajímatel",
-                "document_language": "cs",
-                "confidence": 0.9,
-                "page_count": 3,
+                "category": "soudni",
+                "doc_type": "neznámý",
+                "sender": None,
+                "confidence": 0.3,
                 "error": None,
             }
         )
 
-        urls = [f"https://fake-url/p{i}.jpg" for i in range(3)]
-        result = await classify_document(urls)
-
-        assert result.page_count == 3
-        assert "page 2" in result.ocr_text
-        call_kwargs = mock_client.chat.completions.create.call_args.kwargs
-        assert call_kwargs["max_tokens"] == 8000
+        ocr = " ".join(["lorem ipsum dolor sit amet consectetur"] * 5)
+        result = await classify_text(ocr, page_count=1, document_language="cs")
+        assert result.category == "ostatni"
+        assert result.confidence < 0.5
 
     @pytest.mark.asyncio
-    async def test_empty_urls_returns_fallback(self):
-        result = await classify_document([])
+    async def test_classify_text_too_short(self):
+        # Skipped entirely — the service refuses to call the LLM.
+        result = await classify_text("only five words here total", page_count=1, document_language="cs")
         assert result.category == "ostatni"
         assert result.confidence == 0.0
-        assert "No image URLs" in (result.error or "")
+        assert result.error is not None
+
+    @pytest.mark.asyncio
+    async def test_classify_empty_text(self):
+        result = await classify_text("", page_count=1, document_language="cs")
+        assert result.category == "ostatni"
+        assert result.confidence == 0.0
+        assert result.error is not None
 
     @pytest.mark.asyncio
     async def test_invalid_json_returns_fallback(self, monkeypatch):
@@ -76,59 +90,22 @@ class TestClassifyDocument:
         mock_client.chat.completions.create = AsyncMock(return_value=mock_response)
         monkeypatch.setattr("app.services.classifier.get_openai_client", lambda: mock_client)
 
-        result = await classify_document(["https://fake/img.jpg"])
-
+        ocr = " ".join(["faktura splatnost zaplatit termín"] * 10)
+        result = await classify_text(ocr, page_count=1, document_language="cs")
         assert result.category == "ostatni"
         assert result.confidence == 0.0
         assert "Invalid JSON" in (result.error or "")
 
     @pytest.mark.asyncio
     async def test_schema_violation_returns_fallback(self, openai_chat_mock):
-        # confidence out of range
         openai_chat_mock(
             {
-                "ocr_text": "x",
                 "category": "danove",
                 "doc_type": "x",
-                "document_language": "cs",
-                "confidence": 2.0,  # invalid
-                "page_count": 1,
-                "error": None,
+                "confidence": 2.0,  # invalid range
             }
         )
-        result = await classify_document(["https://fake/img.jpg"])
+        ocr = " ".join(["daň finanční úřad pdph nedoplatek"] * 10)
+        result = await classify_text(ocr, page_count=1, document_language="cs")
         assert result.category == "ostatni"
         assert result.confidence == 0.0
-
-    @pytest.mark.asyncio
-    async def test_missing_page_count_defaults_to_input_size(self, openai_chat_mock):
-        openai_chat_mock(
-            {
-                "ocr_text": "x",
-                "category": "ucty",
-                "doc_type": "faktura",
-                "document_language": "cs",
-                "confidence": 0.8,
-                # page_count missing — service should default to len(image_urls)
-                "error": None,
-            }
-        )
-        result = await classify_document(["https://a.jpg", "https://b.jpg", "https://c.jpg"])
-        assert result.page_count == 3
-
-    @pytest.mark.asyncio
-    async def test_low_confidence_preserved(self, openai_chat_mock):
-        openai_chat_mock(
-            {
-                "ocr_text": "",
-                "category": "ostatni",
-                "doc_type": "unreadable",
-                "document_language": "cs",
-                "confidence": 0.0,
-                "page_count": 1,
-                "error": "Photo too blurry",
-            }
-        )
-        result = await classify_document(["https://fake/img.jpg"])
-        assert result.confidence == 0.0
-        assert result.error == "Photo too blurry"

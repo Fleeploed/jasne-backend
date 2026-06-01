@@ -82,18 +82,28 @@ class ProfileUpdate(_Base):
 
 
 # ---------------------------------------------------------------------------
-# Classifier (LLM call 1 output)
+# OCR (Azure Document Intelligence output) and Classifier (LLM call 1 output)
 # ---------------------------------------------------------------------------
 
 
-class ClassifierResult(_Base):
+class OcrResult(_Base):
+    """Raw text extraction result from Azure Document Intelligence.
+
+    `ocr_text` is the full text of all pages joined with "\\n\\n---\\n\\n".
+    On failure (Azure error, empty result, etc.) we return an OcrResult with
+    `ocr_text=""` and let the downstream classifier handle the gate.
+    """
+
     ocr_text: str
+    page_count: int = Field(default=1, ge=1, le=MAX_PAGES_HARD_LIMIT)
+    document_language: str = "cs"
+
+
+class ClassifierResult(_Base):
     category: DocumentCategory
     doc_type: str
     sender: str | None = None
-    document_language: str = "cs"
     confidence: float = Field(ge=0.0, le=1.0)
-    page_count: int = Field(default=1, ge=1, le=MAX_PAGES_HARD_LIMIT)
     error: str | None = None
 
 

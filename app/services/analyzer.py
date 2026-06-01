@@ -60,9 +60,9 @@ _CONFIRMATION_ACTION_BLOCKLIST = (
 )
 
 
-def _looks_like_submission_confirmation(classifier: ClassifierResult) -> bool:
+def _looks_like_submission_confirmation(classifier: ClassifierResult, ocr_text: str) -> bool:
     doc_type = classifier.doc_type.lower()
-    ocr = classifier.ocr_text.lower()
+    ocr = ocr_text.lower()
     return (
         "potvrzeni_o_podani_zadosti" in doc_type
         or "potvrzeni o podani zadosti" in doc_type
@@ -70,8 +70,8 @@ def _looks_like_submission_confirmation(classifier: ClassifierResult) -> bool:
     )
 
 
-def _classifier_should_suppress_fee_guidance(classifier: ClassifierResult) -> bool:
-    return should_suppress_fee_guidance(classifier.doc_type, classifier.ocr_text)
+def _classifier_should_suppress_fee_guidance(classifier: ClassifierResult, ocr_text: str) -> bool:
+    return should_suppress_fee_guidance(classifier.doc_type, ocr_text)
 
 
 def _strip_unconfirmed_fee_text(text: str | None) -> str | None:
@@ -108,8 +108,10 @@ def _clean_confirmation_actions(actions: list[str], language: UserLanguage) -> l
     return kept or [_confirmation_followup_action(language)]
 
 
-def _apply_card_pickup_fee_guardrail(result: AnalysisResult, classifier: ClassifierResult) -> AnalysisResult:
-    if not _classifier_should_suppress_fee_guidance(classifier):
+def _apply_card_pickup_fee_guardrail(
+    result: AnalysisResult, classifier: ClassifierResult, ocr_text: str
+) -> AnalysisResult:
+    if not _classifier_should_suppress_fee_guidance(classifier, ocr_text):
         return result
 
     result.summary = _strip_unconfirmed_fee_text(result.summary) or result.summary
@@ -122,12 +124,13 @@ def _apply_card_pickup_fee_guardrail(result: AnalysisResult, classifier: Classif
 def _apply_analysis_guardrails(
     result: AnalysisResult,
     classifier: ClassifierResult,
+    ocr_text: str,
     language: UserLanguage,
 ) -> AnalysisResult:
     """Last-line defense against RAG-driven hallucinations for known doc types."""
-    result = _apply_card_pickup_fee_guardrail(result, classifier)
+    result = _apply_card_pickup_fee_guardrail(result, classifier, ocr_text)
 
-    if not _looks_like_submission_confirmation(classifier):
+    if not _looks_like_submission_confirmation(classifier, ocr_text):
         return result
 
     result.documents_needed = []
@@ -141,10 +144,11 @@ def _sanitize_stream_field(
     field: str,
     value: Any,
     classifier: ClassifierResult,
+    ocr_text: str,
     language: UserLanguage,
 ) -> Any:
-    if not _looks_like_submission_confirmation(classifier):
-        if not _classifier_should_suppress_fee_guidance(classifier):
+    if not _looks_like_submission_confirmation(classifier, ocr_text):
+        if not _classifier_should_suppress_fee_guidance(classifier, ocr_text):
             return value
         if field in {"summary", "tips"} and isinstance(value, str):
             return _strip_unconfirmed_fee_text(value)
@@ -171,7 +175,13 @@ def _build_system_prompt(category: str, language: UserLanguage, has_datova_schra
     )
 
 
-def _build_user_message(classifier: ClassifierResult, rag_chunks: list[str], language: UserLanguage) -> str:
+def _build_user_message(
+    classifier: ClassifierResult,
+    ocr_text: str,
+    page_count: int,
+    rag_chunks: list[str],
+    language: UserLanguage,
+) -> str:
     rag_context = (
         "\n\n---\n".join(rag_chunks)
         if rag_chunks
@@ -183,17 +193,19 @@ def _build_user_message(classifier: ClassifierResult, rag_chunks: list[str], lan
         f"TYP DOKUMENTU: {classifier.doc_type}\n"
         f"ODESÍLATEL: {classifier.sender or 'neznámý'}\n"
         f"OCR CONFIDENCE: {classifier.confidence:.2f}\n"
-        f"POČET STRAN: {classifier.page_count}\n\n"
+        f"POČET STRAN: {page_count}\n\n"
         f"CÍLOVÝ JAZYK VÝSTUPU: {language}\n"
         "POZOR: OCR dokument může být česky, ale uživatelská textová pole "
         "musí být v cílovém jazyce výstupu.\n\n"
-        f"OCR TEXT:\n{classifier.ocr_text}\n\n"
+        f"OCR TEXT:\n{ocr_text}\n\n"
         f"BÁZE ZNALOSTÍ (RAG):\n{rag_context}"
     )
 
 
 def _build_messages(
     classifier: ClassifierResult,
+    ocr_text: str,
+    page_count: int,
     rag_chunks: list[str],
     language: UserLanguage,
     has_datova_schranka: bool,
@@ -203,7 +215,10 @@ def _build_messages(
             "role": "system",
             "content": _build_system_prompt(classifier.category, language, has_datova_schranka),
         },
-        {"role": "user", "content": _build_user_message(classifier, rag_chunks, language)},
+        {
+            "role": "user",
+            "content": _build_user_message(classifier, ocr_text, page_count, rag_chunks, language),
+        },
     ]
 
 
@@ -246,11 +261,13 @@ def _parse_analysis_result(raw: str) -> AnalysisResult:
         raise ValueError(f"LLM output failed schema: {exc.errors()[0]['msg']}") from exc
 
 
-def _filter_deadlines(result: AnalysisResult, classifier: ClassifierResult) -> AnalysisResult:
+def _filter_deadlines(
+    result: AnalysisResult, classifier: ClassifierResult, ocr_text: str
+) -> AnalysisResult:
     # Last-line defense against hallucinated deadlines.
     kept, rejected = filter_valid_deadlines(
         result.deadlines,
-        source_text=classifier.ocr_text,
+        source_text=ocr_text,
         category=classifier.category,
     )
     if rejected:
@@ -266,6 +283,8 @@ def _filter_deadlines(result: AnalysisResult, classifier: ClassifierResult) -> A
 
 async def analyze_document(
     classifier: ClassifierResult,
+    ocr_text: str,
+    page_count: int,
     rag_chunks: list[str],
     language: UserLanguage,
     has_datova_schranka: bool,
@@ -280,12 +299,15 @@ async def analyze_document(
         temperature=0.2,
         max_tokens=settings.openai_max_output_tokens,
         response_format={"type": "json_object"},
-        messages=_build_messages(classifier, rag_chunks, language, has_datova_schranka),
+        messages=_build_messages(classifier, ocr_text, page_count, rag_chunks, language, has_datova_schranka),
     )
 
     raw = response.choices[0].message.content or "{}"
     result = _apply_analysis_guardrails(
-        _filter_deadlines(_parse_analysis_result(raw), classifier), classifier, language
+        _filter_deadlines(_parse_analysis_result(raw), classifier, ocr_text),
+        classifier,
+        ocr_text,
+        language,
     )
 
     logger.info(
@@ -301,6 +323,8 @@ async def analyze_document(
 
 async def stream_analyze_document(
     classifier: ClassifierResult,
+    ocr_text: str,
+    page_count: int,
     rag_chunks: list[str],
     language: UserLanguage,
     has_datova_schranka: bool,
@@ -316,7 +340,7 @@ async def stream_analyze_document(
         max_tokens=settings.openai_max_output_tokens,
         response_format={"type": "json_object"},
         stream=True,
-        messages=_build_messages(classifier, rag_chunks, language, has_datova_schranka),
+        messages=_build_messages(classifier, ocr_text, page_count, rag_chunks, language, has_datova_schranka),
     )
 
     emitted: set[str] = set()
@@ -334,12 +358,15 @@ async def stream_analyze_document(
             yield {
                 "type": "field",
                 "field": field,
-                "value": _sanitize_stream_field(field, value, classifier, language),
+                "value": _sanitize_stream_field(field, value, classifier, ocr_text, language),
             }
 
     raw = "".join(raw_parts) or "{}"
     result = _apply_analysis_guardrails(
-        _filter_deadlines(_parse_analysis_result(raw), classifier), classifier, language
+        _filter_deadlines(_parse_analysis_result(raw), classifier, ocr_text),
+        classifier,
+        ocr_text,
+        language,
     )
     data = result.model_dump(mode="json")
     for field in STREAM_ANALYSIS_FIELDS:

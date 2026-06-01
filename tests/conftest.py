@@ -440,27 +440,38 @@ def auth_headers(jwt_token: str) -> dict[str, str]:
 
 @pytest.fixture
 def mock_openai_classify(monkeypatch):
-    """Patch classify_document to return a preset ClassifierResult.
+    """Patch the OCR + classifier pair used by the scan router.
 
-    Signature matches the new multi-page API: takes list[str] of URLs.
+    After the Azure DI migration the scan flow is two steps:
+      1. extract_text(urls) -> OcrResult
+      2. classify_text(ocr_text, page_count, document_language) -> ClassifierResult
+
+    We patch both so existing tests that depend on a stubbed classifier
+    don't need to know about the new OCR boundary.
     """
-    from app.models.schemas import ClassifierResult
+    from app.models.schemas import ClassifierResult, OcrResult
 
-    result = ClassifierResult(
+    ocr = OcrResult(
         ocr_text="Platební výměr č. 12345 VS 9876 částka 4 320 Kč",
+        page_count=1,
+        document_language="cs",
+    )
+    classifier = ClassifierResult(
         category="danove",
         doc_type="platebni_vymer",
         sender="Finanční úřad pro Prahu 3",
-        document_language="cs",
         confidence=0.95,
-        page_count=1,
     )
 
-    async def fake(image_urls: list[str]):
-        return result
+    async def fake_extract(image_urls: list[str]) -> OcrResult:
+        return ocr.model_copy(update={"page_count": max(1, len(image_urls))})
 
-    monkeypatch.setattr("app.routers.scan.classify_document", fake)
-    return result
+    async def fake_classify(ocr_text: str, page_count: int, document_language: str) -> ClassifierResult:
+        return classifier
+
+    monkeypatch.setattr("app.routers.scan.extract_text", fake_extract)
+    monkeypatch.setattr("app.routers.scan.classify_text", fake_classify)
+    return classifier
 
 
 @pytest.fixture
@@ -488,7 +499,7 @@ def mock_openai_analyze(monkeypatch):
         tips=None,
     )
 
-    async def fake(classifier, rag_chunks, language, has_datova_schranka):
+    async def fake(classifier, ocr_text, page_count, rag_chunks, language, has_datova_schranka):
         return result, "gpt-4o"
 
     monkeypatch.setattr("app.routers.scan.analyze_document", fake)
@@ -550,6 +561,20 @@ def client(fake_supabase, fake_supabase_admin, monkeypatch):
     fake_openai = MagicMock()
     fake_openai.models.list = AsyncMock(return_value=MagicMock(data=[]))
     monkeypatch.setattr("app.main.get_openai_client", lambda: fake_openai)
+
+    # By default, no test should hit Azure DI. Patch the OCR extractor at
+    # module level so unrelated router tests can't accidentally make a real
+    # network call if someone forgets to compose `mock_openai_classify`.
+    from app.models.schemas import OcrResult
+
+    async def fake_extract(image_urls: list[str]) -> OcrResult:
+        return OcrResult(
+            ocr_text="ocr",
+            page_count=max(1, len(image_urls) or 1),
+            document_language="cs",
+        )
+
+    monkeypatch.setattr("app.routers.scan.extract_text", fake_extract)
 
     from app.main import app
 

@@ -1,7 +1,8 @@
-"""Classifier service — call 1 (GPT-4o Vision, multi-page, detail: high).
+"""Classifier service — call 1 (GPT-4o text-only).
 
-Skill: "Vision ВСЕГДА на полном GPT-4o" — see config.openai_classifier_model.
-Multi-page: takes a list of signed Storage URLs, sends them all in one call.
+Accepts OCR text already extracted by Azure Document Intelligence and returns
+a category, doc_type, sender, and confidence. No images are ever sent to
+OpenAI here — vision has moved out entirely.
 """
 
 import json
@@ -16,35 +17,49 @@ from app.services.embeddings import get_openai_client
 
 logger = logging.getLogger(__name__)
 
+# A document with fewer than this many words almost certainly didn't OCR
+# correctly. Match the prompt's "too short" rule so we don't even call the LLM.
+_MIN_WORDS_FOR_CLASSIFICATION = 20
 
-def _fallback(reason: str, page_count: int = 1) -> ClassifierResult:
+
+def _fallback(reason: str) -> ClassifierResult:
     return ClassifierResult(
-        ocr_text="",
         category="ostatni",
         doc_type="unknown",
         sender=None,
-        document_language="cs",
         confidence=0.0,
-        page_count=page_count,
         error=reason,
     )
 
 
-async def classify_document(image_urls: list[str]) -> ClassifierResult:
-    """Run OCR + classification on one or more pages of the same document.
+async def classify_text(
+    ocr_text: str,
+    page_count: int,
+    document_language: str,
+) -> ClassifierResult:
+    """Classify already-extracted OCR text into one of the 10 categories.
 
-    All pages are sent in a single Vision call so the model can use
-    cross-page context (running header, page numbering, "pokračování na další
-    straně", etc).
+    Returns a fallback `ostatni` result with confidence 0.0 and an `error`
+    field set when the OCR is empty, too short, or when GPT returns invalid
+    JSON. Never raises.
     """
-    if not image_urls:
-        # page_count must be >=1 by schema; the `error` field carries the truth.
-        return _fallback("No image URLs provided")
+    text = (ocr_text or "").strip()
+    if not text:
+        return _fallback("OCR text is empty")
+
+    if len(text.split()) < _MIN_WORDS_FOR_CLASSIFICATION:
+        # The prompt also enforces this, but skipping the call saves a token
+        # roundtrip on obvious blanks/garbage.
+        return _fallback("OCR text too short to classify")
 
     client = get_openai_client()
     settings = get_settings()
 
-    image_parts = [{"type": "image_url", "image_url": {"url": url, "detail": "high"}} for url in image_urls]
+    user_message = (
+        f"DOCUMENT LANGUAGE: {document_language}\n"
+        f"PAGE COUNT: {page_count}\n\n"
+        f"OCR TEXT:\n{text}"
+    )
 
     response = await client.chat.completions.create(
         model=settings.openai_classifier_model,
@@ -53,7 +68,7 @@ async def classify_document(image_urls: list[str]) -> ClassifierResult:
         response_format={"type": "json_object"},
         messages=[
             {"role": "system", "content": CLASSIFIER_SYSTEM_PROMPT},
-            {"role": "user", "content": image_parts},
+            {"role": "user", "content": user_message},
         ],
     )
 
@@ -63,26 +78,23 @@ async def classify_document(image_urls: list[str]) -> ClassifierResult:
         data = json.loads(raw)
     except json.JSONDecodeError as exc:
         logger.error("Classifier returned invalid JSON: %s | %s", exc, raw[:200])
-        return _fallback("Invalid JSON from classifier", page_count=len(image_urls))
-
-    # Default page_count from input if model didn't return one (some prompt drift).
-    data.setdefault("page_count", len(image_urls))
+        return _fallback("Invalid JSON from classifier")
 
     try:
         result = ClassifierResult.model_validate(data)
     except ValidationError as exc:
         logger.error("Classifier JSON failed validation: %s | data=%s", exc, data)
-        return _fallback(
-            f"Schema validation failed: {exc.errors()[0]['msg']}",
-            page_count=len(image_urls),
-        )
+        return _fallback(f"Schema validation failed: {exc.errors()[0]['msg']}")
+
+    # Enforce the "<0.5 → ostatni" rule prompt-side, but guard defensively here
+    # in case the LLM ignores it.
+    if result.confidence < 0.5 and result.category != "ostatni":
+        result = result.model_copy(update={"category": "ostatni"})
 
     logger.info(
-        "Classified pages=%d category=%s doc_type=%s confidence=%.2f lang=%s",
-        result.page_count,
+        "Classified category=%s doc_type=%s confidence=%.2f",
         result.category,
         result.doc_type,
         result.confidence,
-        result.document_language,
     )
     return result
