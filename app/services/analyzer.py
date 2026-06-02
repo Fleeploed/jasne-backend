@@ -261,9 +261,7 @@ def _parse_analysis_result(raw: str) -> AnalysisResult:
         raise ValueError(f"LLM output failed schema: {exc.errors()[0]['msg']}") from exc
 
 
-def _filter_deadlines(
-    result: AnalysisResult, classifier: ClassifierResult, ocr_text: str
-) -> AnalysisResult:
+def _filter_deadlines(result: AnalysisResult, classifier: ClassifierResult, ocr_text: str) -> AnalysisResult:
     # Last-line defense against hallucinated deadlines.
     kept, rejected = filter_valid_deadlines(
         result.deadlines,

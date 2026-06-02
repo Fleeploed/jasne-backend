@@ -55,11 +55,7 @@ async def classify_text(
     client = get_openai_client()
     settings = get_settings()
 
-    user_message = (
-        f"DOCUMENT LANGUAGE: {document_language}\n"
-        f"PAGE COUNT: {page_count}\n\n"
-        f"OCR TEXT:\n{text}"
-    )
+    user_message = f"DOCUMENT LANGUAGE: {document_language}\nPAGE COUNT: {page_count}\n\nOCR TEXT:\n{text}"
 
     response = await client.chat.completions.create(
         model=settings.openai_classifier_model,

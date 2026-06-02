@@ -135,9 +135,7 @@ class TestAnalyzeDocument:
             doc_type="faktura",
             confidence=0.8,
         )
-        _, model = await analyze_document(
-            classifier, "Faktura bez termínu splatnosti", 1, [], "cs", False
-        )
+        _, model = await analyze_document(classifier, "Faktura bez termínu splatnosti", 1, [], "cs", False)
         assert model == "gpt-4o-mini"
 
     @pytest.mark.asyncio
