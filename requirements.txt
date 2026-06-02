@@ -4,6 +4,9 @@ pydantic==2.13.2
 pydantic-settings==2.13.1
 openai==2.32.0
 azure-ai-documentintelligence>=1.0.0
+# azure-core's async pipeline uses aiohttp transport by default — required
+# for DocumentIntelligenceClient.aio. Without it imports fail at runtime.
+aiohttp>=3.10.0
 supabase==2.28.3
 pyjwt[crypto]==2.10.1
 python-multipart==0.0.26
