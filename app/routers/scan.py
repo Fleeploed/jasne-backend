@@ -153,7 +153,16 @@ async def _scan_stream_events(
 
         if not ocr.ocr_text.strip():
             detail = "Could not read document — try a better photo."
-            logger.warning("OCR quality gate failed (empty text) user_id=%s", user_id)
+            if ocr.error:
+                # Pipe the underlying Azure / SDK error to the client so we
+                # can debug failures without trawling Render logs. Frontend
+                # may choose to display only the leading human-readable bit.
+                detail = f"{detail} ({ocr.error})"
+            logger.warning(
+                "OCR quality gate failed (empty text) user_id=%s error=%s",
+                user_id,
+                ocr.error,
+            )
             yield _sse("error", {"status_code": status.HTTP_422_UNPROCESSABLE_ENTITY, "detail": detail})
             return
 
@@ -523,10 +532,17 @@ async def create_scan(
     ocr = ocr.model_copy(update={"page_count": vision_inputs.page_count})
 
     if not ocr.ocr_text.strip():
-        logger.warning("OCR quality gate failed (empty text) user_id=%s", user_id)
+        logger.warning(
+            "OCR quality gate failed (empty text) user_id=%s error=%s",
+            user_id,
+            ocr.error,
+        )
+        detail = "Could not read document — try a better photo."
+        if ocr.error:
+            detail = f"{detail} ({ocr.error})"
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="Could not read document — try a better photo.",
+            detail=detail,
         )
 
     # Step 2 — GPT-4o text-only classifier

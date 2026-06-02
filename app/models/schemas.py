@@ -92,11 +92,16 @@ class OcrResult(_Base):
     `ocr_text` is the full text of all pages joined with "\\n\\n---\\n\\n".
     On failure (Azure error, empty result, etc.) we return an OcrResult with
     `ocr_text=""` and let the downstream classifier handle the gate.
+
+    `error` carries a short diagnostic string when OCR failed; the scan router
+    surfaces it on the 422 SSE event so we can see WHY a document failed
+    without hunting through Render logs.
     """
 
     ocr_text: str
     page_count: int = Field(default=1, ge=1, le=MAX_PAGES_HARD_LIMIT)
     document_language: str = "cs"
+    error: str | None = None
 
 
 class ClassifierResult(_Base):

@@ -121,6 +121,36 @@ async def _analyze_data_url(client_kwargs: dict, data_url: str) -> object | None
         return await poller.result()
 
 
+async def _safe_analyze(client_kwargs: dict, url: str, index: int) -> tuple[object | None, Exception | None]:
+    """Run Azure DI on one URL (http or data URI), capturing any exception."""
+    is_data_url = url.startswith("data:")
+    try:
+        if is_data_url:
+            return await _analyze_data_url(client_kwargs, url), None
+        return await _analyze_single_url(client_kwargs, url), None
+    except httpx.HTTPError as exc:
+        logger.warning(
+            "Azure DI HTTP error on page %d (%s): %s",
+            index + 1,
+            type(exc).__name__,
+            exc,
+            exc_info=True,
+        )
+        return None, exc
+    except Exception as exc:
+        # Azure SDK raises a variety of exceptions (HttpResponseError,
+        # ServiceRequestError, ...). Log with traceback so Render logs surface
+        # the real cause.
+        logger.warning(
+            "Azure DI failed on page %d (%s): %s",
+            index + 1,
+            type(exc).__name__,
+            exc,
+            exc_info=True,
+        )
+        return None, exc
+
+
 async def extract_text(image_urls: list[str]) -> OcrResult:
     """Run Azure Document Intelligence prebuilt-read against a list of signed URLs.
 
@@ -146,50 +176,18 @@ async def extract_text(image_urls: list[str]) -> OcrResult:
     page_texts: list[str] = []
     detected_languages: list[str] = []
     inferred_page_count = 0
+    first_error: str | None = None
+
+    def _capture(exc: Exception) -> None:
+        nonlocal first_error
+        if first_error is None:
+            first_error = f"{type(exc).__name__}: {exc}"[:300]
 
     for index, url in enumerate(image_urls):
-        is_data_url = url.startswith("data:")
-        if is_data_url:
-            # Azure DI's `url_source` only accepts http(s) URLs. PDF input
-            # currently gets rendered to base64 data URIs (legacy from the
-            # Vision flow), which Azure rejects. Switch to `bytes_source`.
-            try:
-                result = await _analyze_data_url(client_kwargs, url)
-            except Exception as exc:
-                logger.warning(
-                    "Azure DI failed on data-url page %d: %s: %s",
-                    index + 1,
-                    type(exc).__name__,
-                    exc,
-                    exc_info=True,
-                )
-                continue
-        else:
-            try:
-                result = await _analyze_single_url(client_kwargs, url)
-            except httpx.HTTPError as exc:
-                logger.warning(
-                    "Azure DI HTTP error on page %d (%s): %s",
-                    index + 1,
-                    type(exc).__name__,
-                    exc,
-                    exc_info=True,
-                )
-                continue
-            except Exception as exc:
-                # Azure SDK raises a variety of exceptions
-                # (ResourceNotFoundError, HttpResponseError,
-                # ServiceRequestError, ...). Log with traceback so Render logs
-                # surface the real cause.
-                logger.warning(
-                    "Azure DI failed on page %d (%s): %s",
-                    index + 1,
-                    type(exc).__name__,
-                    exc,
-                    exc_info=True,
-                )
-                continue
-
+        result, error = await _safe_analyze(client_kwargs, url, index)
+        if error is not None:
+            _capture(error)
+            continue
         if result is None:
             continue
 
@@ -211,6 +209,7 @@ async def extract_text(image_urls: list[str]) -> OcrResult:
             ocr_text="",
             page_count=max(1, min(len(image_urls), MAX_PAGES_HARD_LIMIT)),
             document_language="cs",
+            error=first_error or "Azure DI returned no text",
         )
 
     # If any page reported a language, prefer the first non-Czech detection so
