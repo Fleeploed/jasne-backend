@@ -32,7 +32,7 @@ class TestDeepHealth:
         assert r.status_code == 200
         body = r.json()
         assert body["status"] == "ok"
-        assert set(body["deps"].keys()) == {"supabase", "openai"}
+        assert set(body["deps"].keys()) == {"supabase", "openai", "azure_di"}
         for name, dep in body["deps"].items():
             assert dep["status"] == "ok", f"{name} should be ok"
             assert dep["latency_ms"] is not None

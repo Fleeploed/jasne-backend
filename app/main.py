@@ -276,6 +276,38 @@ async def _check_openai() -> DepStatus:
         return DepStatus(status="error", error=f"{type(exc).__name__}: {exc}"[:200])
 
 
+async def _check_azure_di() -> DepStatus:
+    """Cheap reachability probe — TCP/TLS connect to Azure DI endpoint.
+
+    We don't run an analyze call here (it would burn quota and take seconds).
+    A 401/200 from the resource means the endpoint is reachable and the key
+    format is correct enough to be recognised.
+    """
+    started = time.perf_counter()
+    try:
+        endpoint = settings.azure_document_intelligence_endpoint.rstrip("/")
+        # GET / on the resource root returns 404 on success, which is fine —
+        # we only care that the host is reachable and TLS handshake works.
+        import httpx  # local import keeps cold-import cost off /health
+
+        async with httpx.AsyncClient(timeout=_DEEP_DEP_TIMEOUT_SECONDS) as client:
+            response = await client.get(
+                f"{endpoint}/documentintelligence/info?api-version=2024-11-30",
+                headers={"Ocp-Apim-Subscription-Key": settings.azure_document_intelligence_key},
+            )
+        if response.status_code in (200, 401, 403, 404):
+            return DepStatus(
+                status="ok" if response.status_code == 200 else "error",
+                latency_ms=int((time.perf_counter() - started) * 1000),
+                error=None if response.status_code == 200 else f"HTTP {response.status_code}",
+            )
+        return DepStatus(status="error", error=f"HTTP {response.status_code}")
+    except TimeoutError:
+        return DepStatus(status="error", error=f"timeout after {_DEEP_DEP_TIMEOUT_SECONDS}s")
+    except Exception as exc:
+        return DepStatus(status="error", error=f"{type(exc).__name__}: {exc}"[:200])
+
+
 @app.get(
     "/health/deep",
     response_model=DeepHealthResponse,
@@ -289,8 +321,10 @@ async def health_deep() -> JSONResponse:
     for external uptime monitors (GitHub cron, UptimeRobot, etc.) — NOT for
     platform healthchecks (would cause crash-loops on Supabase/OpenAI outages).
     """
-    supabase_status, openai_status = await asyncio.gather(_check_supabase(), _check_openai())
-    deps = {"supabase": supabase_status, "openai": openai_status}
+    supabase_status, openai_status, azure_status = await asyncio.gather(
+        _check_supabase(), _check_openai(), _check_azure_di()
+    )
+    deps = {"supabase": supabase_status, "openai": openai_status, "azure_di": azure_status}
     overall_ok = all(d.status == "ok" for d in deps.values())
 
     if not overall_ok:

@@ -15,7 +15,7 @@ import logging
 import httpx
 
 from app.config import get_settings
-from app.models.schemas import OcrResult
+from app.models.schemas import MAX_PAGES_HARD_LIMIT, OcrResult
 
 logger = logging.getLogger(__name__)
 
@@ -73,7 +73,7 @@ def _result_text(result: object) -> str:
 
 
 async def _analyze_single_url(client_kwargs: dict, url: str) -> object | None:
-    """Run prebuilt-read on a single URL. Returns the AnalyzeResult or None on error."""
+    """Run prebuilt-read on a single http(s) URL."""
     # Imported lazily so test environments without the SDK installed can still
     # import this module (e.g. when only OcrResult tests are exercised).
     from azure.ai.documentintelligence.aio import DocumentIntelligenceClient  # type: ignore
@@ -88,6 +88,35 @@ async def _analyze_single_url(client_kwargs: dict, url: str) -> object | None:
         poller = await client.begin_analyze_document(
             "prebuilt-read",
             AnalyzeDocumentRequest(url_source=url),
+        )
+        return await poller.result()
+
+
+async def _analyze_data_url(client_kwargs: dict, data_url: str) -> object | None:
+    """Run prebuilt-read on a base64 `data:` URI by sending raw bytes."""
+    import base64
+
+    from azure.ai.documentintelligence.aio import DocumentIntelligenceClient  # type: ignore
+    from azure.ai.documentintelligence.models import AnalyzeDocumentRequest  # type: ignore
+    from azure.core.credentials import AzureKeyCredential  # type: ignore
+
+    # data:image/png;base64,XXXX
+    try:
+        header, payload = data_url.split(",", 1)
+    except ValueError as exc:
+        raise ValueError("Invalid data URL passed to OCR") from exc
+    if ";base64" not in header:
+        raise ValueError("Only base64-encoded data URLs are supported")
+    raw_bytes = base64.b64decode(payload)
+
+    credential = AzureKeyCredential(client_kwargs["key"])
+    async with DocumentIntelligenceClient(
+        endpoint=client_kwargs["endpoint"],
+        credential=credential,
+    ) as client:
+        poller = await client.begin_analyze_document(
+            "prebuilt-read",
+            AnalyzeDocumentRequest(bytes_source=raw_bytes),
         )
         return await poller.result()
 
@@ -119,18 +148,47 @@ async def extract_text(image_urls: list[str]) -> OcrResult:
     inferred_page_count = 0
 
     for index, url in enumerate(image_urls):
-        try:
-            result = await _analyze_single_url(client_kwargs, url)
-        except httpx.HTTPError as exc:
-            logger.warning("Azure DI HTTP error on page %d: %s", index + 1, exc)
-            continue
-        except Exception as exc:
-            # Azure SDK can raise a variety of exceptions (ResourceNotFoundError,
-            # HttpResponseError, ServiceRequestError, ...). We don't want any of
-            # them to break the scan flow — the classifier will report the empty
-            # OCR via confidence 0.0 / error.
-            logger.warning("Azure DI failed on page %d: %s", index + 1, exc)
-            continue
+        is_data_url = url.startswith("data:")
+        if is_data_url:
+            # Azure DI's `url_source` only accepts http(s) URLs. PDF input
+            # currently gets rendered to base64 data URIs (legacy from the
+            # Vision flow), which Azure rejects. Switch to `bytes_source`.
+            try:
+                result = await _analyze_data_url(client_kwargs, url)
+            except Exception as exc:
+                logger.warning(
+                    "Azure DI failed on data-url page %d: %s: %s",
+                    index + 1,
+                    type(exc).__name__,
+                    exc,
+                    exc_info=True,
+                )
+                continue
+        else:
+            try:
+                result = await _analyze_single_url(client_kwargs, url)
+            except httpx.HTTPError as exc:
+                logger.warning(
+                    "Azure DI HTTP error on page %d (%s): %s",
+                    index + 1,
+                    type(exc).__name__,
+                    exc,
+                    exc_info=True,
+                )
+                continue
+            except Exception as exc:
+                # Azure SDK raises a variety of exceptions
+                # (ResourceNotFoundError, HttpResponseError,
+                # ServiceRequestError, ...). Log with traceback so Render logs
+                # surface the real cause.
+                logger.warning(
+                    "Azure DI failed on page %d (%s): %s",
+                    index + 1,
+                    type(exc).__name__,
+                    exc,
+                    exc_info=True,
+                )
+                continue
 
         if result is None:
             continue
@@ -143,8 +201,6 @@ async def extract_text(image_urls: list[str]) -> OcrResult:
 
         inferred_page_count += _page_count(result, fallback=1)
         detected_languages.append(_detect_language(result))
-
-    from app.models.schemas import MAX_PAGES_HARD_LIMIT
 
     if not page_texts:
         logger.warning(
@@ -170,8 +226,6 @@ async def extract_text(image_urls: list[str]) -> OcrResult:
         sum(len(t) for t in page_texts),
     )
     # Clamp to the schema-level page hard cap (MAX_PAGES_HARD_LIMIT = 10).
-    from app.models.schemas import MAX_PAGES_HARD_LIMIT
-
     return OcrResult(
         ocr_text=_PAGE_SEPARATOR.join(page_texts),
         page_count=max(1, min(page_count, MAX_PAGES_HARD_LIMIT)),

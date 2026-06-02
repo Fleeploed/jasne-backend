@@ -562,6 +562,14 @@ def client(fake_supabase, fake_supabase_admin, monkeypatch):
     fake_openai.models.list = AsyncMock(return_value=MagicMock(data=[]))
     monkeypatch.setattr("app.main.get_openai_client", lambda: fake_openai)
 
+    # Stub Azure DI deep-health check so tests don't hit real Azure.
+    from app.models.schemas import DepStatus
+
+    async def fake_azure_di() -> DepStatus:
+        return DepStatus(status="ok", latency_ms=1, error=None)
+
+    monkeypatch.setattr("app.main._check_azure_di", fake_azure_di)
+
     # By default, no test should hit Azure DI. Patch the OCR extractor at
     # module level so unrelated router tests can't accidentally make a real
     # network call if someone forgets to compose `mock_openai_classify`.
