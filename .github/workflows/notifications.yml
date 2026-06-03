@@ -14,8 +14,26 @@ jobs:
   due-reminders:
     name: POST /internal/notifications/due
     runs-on: ubuntu-latest
-    timeout-minutes: 3
+    timeout-minutes: 5
     steps:
+      - name: Wake Render service
+        env:
+          BASE_URL: ${{ vars.NOTIFICATION_CRON_BASE_URL || vars.RENDER_STAGING_URL || 'https://jasne-backend.onrender.com' }}
+        # Render Free spins down when idle and can take 30-60s to cold-start.
+        # Hit /health first with a generous timeout so the POST below lands warm.
+        run: |
+          set -uo pipefail
+          URL="${BASE_URL%/}/health"
+          for attempt in 1 2 3; do
+            code=$(curl -s -o /dev/null -m 90 -w "%{http_code}" "$URL" || echo "000")
+            echo "Wake attempt $attempt: HTTP $code"
+            if [ "$code" = "200" ]; then
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "::warning::Service did not respond OK after 3 wake attempts; continuing anyway"
+
       - name: Trigger backend notification job
         env:
           BASE_URL: ${{ vars.NOTIFICATION_CRON_BASE_URL || vars.RENDER_STAGING_URL || 'https://jasne-backend.onrender.com' }}
@@ -29,7 +47,7 @@ jobs:
           fi
 
           URL="${BASE_URL%/}/internal/notifications/due"
-          response=$(curl -s -m 30 -w "\n%{http_code}\n%{time_total}" \
+          response=$(curl -s -m 120 -w "\n%{http_code}\n%{time_total}" \
             -X POST \
             -H "X-Cron-Secret: $CRON_SECRET" \
             -H "Content-Type: application/json" \
