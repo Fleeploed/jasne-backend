@@ -6,7 +6,12 @@ from contextlib import suppress
 from datetime import UTC, datetime
 
 from app.config import get_settings
-from app.models.schemas import OampStatusCheckRequest, OampStatusCheckResponse, OampStatusOutcome
+from app.models.schemas import (
+    OampStatusCheckRequest,
+    OampStatusCheckResponse,
+    OampStatusOutcome,
+    OampStatusQueryKind,
+)
 
 try:
     from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
@@ -50,17 +55,15 @@ def check_oamp_status(
     *,
     user_agent: str | None = None,
 ) -> OampStatusCheckResponse:
-    """Check OAMP proceedings status through the public IPC form.
+    """Check OAMP proceedings or visa application status through the public IPC form.
 
     This is intentionally synchronous because Playwright's sync API is stable
     and mirrors the working local script. The FastAPI router runs it in a
     worker thread so it does not block the event loop.
     """
 
-    if payload.visa_number and not _has_proceedings_fields(payload):
-        raise OampStatusUnsupportedError("ŽOV lookup is not wired yet; send OAMP proceedings fields")
-
-    case_id = _format_case_id(payload)
+    query_kind = _query_kind(payload)
+    query_id = _format_query_id(payload, query_kind)
 
     if sync_playwright is None:
         raise OampStatusError("Playwright is not installed")
@@ -92,14 +95,18 @@ def check_oamp_status(
                         timeout=min(timeout_ms, OAMP_FAST_IDLE_WAIT_MS),
                     )
 
-                page.locator('input[name="proceedings.referenceNumber"]').wait_for(timeout=timeout_ms)
-                _fill_input(page, "proceedings.referenceNumber", payload.reference_number or "")
+                if query_kind == "proceedings":
+                    page.locator('input[name="proceedings.referenceNumber"]').wait_for(timeout=timeout_ms)
+                    _fill_input(page, "proceedings.referenceNumber", payload.reference_number or "")
 
-                if payload.additional_suffix:
-                    _fill_input(page, "proceedings.additionalSuffix", payload.additional_suffix)
+                    if payload.additional_suffix:
+                        _fill_input(page, "proceedings.additionalSuffix", payload.additional_suffix)
 
-                _select_react_select(page, "proceedings.category", payload.category or "")
-                _select_react_select(page, "proceedings.year", payload.year or "")
+                    _select_react_select(page, "proceedings.category", payload.category or "")
+                    _select_react_select(page, "proceedings.year", payload.year or "")
+                else:
+                    page.locator('input[name="visaApplicationNumber"]').wait_for(timeout=timeout_ms)
+                    _fill_input(page, "visaApplicationNumber", payload.visa_number or "")
 
                 page.locator('button[type="submit"]').click(timeout=10000)
 
@@ -122,13 +129,21 @@ def check_oamp_status(
         raise OampStatusError(f"Could not check OAMP status: {type(exc).__name__}") from exc
 
     return OampStatusCheckResponse(
-        kind="proceedings",
-        query=case_id,
+        kind=query_kind,
+        query=query_id,
         status=_classify_result(message),
         message=message,
         source_url=source_url,
         checked_at=datetime.now(UTC),
     )
+
+
+def _query_kind(payload: OampStatusCheckRequest) -> OampStatusQueryKind:
+    if _has_proceedings_fields(payload):
+        return "proceedings"
+    if payload.visa_number:
+        return "visa"
+    raise OampStatusUnsupportedError("Send either OAMP proceedings fields or visa_number")
 
 
 def _has_proceedings_fields(payload: OampStatusCheckRequest) -> bool:
@@ -141,6 +156,14 @@ def _format_case_id(payload: OampStatusCheckRequest) -> str:
 
     optional = f"-{payload.additional_suffix}" if payload.additional_suffix else ""
     return f"OAM-{payload.reference_number}{optional}/{payload.category}-{payload.year}"
+
+
+def _format_query_id(payload: OampStatusCheckRequest, query_kind: OampStatusQueryKind) -> str:
+    if query_kind == "visa":
+        if not payload.visa_number:
+            raise OampStatusUnsupportedError("visa_number is required")
+        return payload.visa_number
+    return _format_case_id(payload)
 
 
 def _status_url_for_language(language: str | None) -> str:

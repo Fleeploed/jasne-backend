@@ -2,13 +2,13 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "meta": {
     "project": "Jasne backend",
-    "snapshot_date": "2026-05-27",
+    "snapshot_date": "2026-06-03",
     "repo": "https://github.com/Fleeploed/jasne-backend",
     "default_branch": "develop",
     "current_branch": "develop",
     "current_commit": "54541b3",
     "current_version": "0.1.0",
-    "phase": "MVP backend on Render Free with scan/chat streaming, PDF input, Help CMS, RevenueCat sync, and OAMP status lookup"
+    "phase": "MVP backend on Render Free with scan/chat streaming, PDF input, Help CMS, RevenueCat sync, and OAMP status lookup for OAM proceedings and ŽOV visa numbers"
   },
   "deployment": {
     "live_url": "https://jasne-backend.onrender.com",
@@ -237,8 +237,7 @@
         "source": "https://ipc.gov.cz/informace-o-stavu-rizeni/",
         "english_source": "https://ipc.gov.cz/en/status-of-your-application/",
         "implementation": "Playwright Chromium in a worker thread",
-        "supported": "proceedings fields / formatted OAM case number",
-        "not_supported_yet": "ZOV visa-number lookup selectors"
+        "supported": "proceedings fields / formatted OAM case number / visa application number (ŽOV)"
       },
       "help": {
         "content_model": "categories and UI strings from YAML; published guides from Postgres help_guides",
@@ -346,7 +345,7 @@
     { "id": "be-10", "title": "Scan list, counts, image preview URLs, single delete, bulk delete", "status": "done" },
     { "id": "be-11", "title": "Help mobile API backed by YAML metadata plus Postgres published guides", "status": "done" },
     { "id": "be-12", "title": "Single-file Help admin with DeepL proxy endpoints", "status": "done" },
-    { "id": "be-13", "title": "OAMP status lookup endpoint with Playwright Chromium", "status": "done" },
+    { "id": "be-13", "title": "OAMP status lookup endpoint with Playwright Chromium for OAM proceedings and ŽOV visa numbers", "status": "done" },
     { "id": "be-14", "title": "Supabase migrations through 0011_help_admin", "status": "done" },
     { "id": "be-15", "title": "310-test backend suite passing locally and in CI", "status": "done" }
   ],
@@ -413,12 +412,6 @@
         "title": "Signed upload URL helper",
         "priority": "medium",
         "details": "POST /scans/upload-urls for mobile parallel upload workflow."
-      },
-      {
-        "id": "be-todo-5",
-        "title": "Wire ZOV visa-number lookup in OAMP status",
-        "priority": "low",
-        "details": "API accepts visa_number shape but the Playwright selectors are not implemented."
       }
     ],
     "mobile_and_monetization": [
@@ -467,13 +460,6 @@
       "title": "Production verification job is disabled",
       "impact": "Only staging Render verification runs in CI.",
       "fix": "infra-todo-3"
-    },
-    {
-      "id": "issue-5",
-      "severity": "low",
-      "title": "OAMP visa-number lookup is not wired",
-      "impact": "Proceedings case lookups work; ZOV visa-number-only lookups return unsupported.",
-      "fix": "be-todo-5"
     }
   ],
   "git_state": {

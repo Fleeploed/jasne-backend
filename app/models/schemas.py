@@ -392,8 +392,8 @@ class OampStatusCheckRequest(_Base):
 
     Frontend can either send a preformatted `case_number`
     (`OAM-19391-4/ZM-2026`) or separate fields from the segmented form.
-    `visa_number` is accepted as a distinct query kind, but the current
-    Playwright integration only has verified selectors for proceedings.
+    `visa_number` is accepted as a distinct query kind and is submitted through
+    the public IPC visa application number (ŽOV) field.
     """
 
     case_number: str | None = Field(default=None, max_length=80)

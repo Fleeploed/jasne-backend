@@ -91,6 +91,42 @@ def test_oamp_status_accepts_segmented_case_fields(client, auth_headers, monkeyp
     assert payload.year == "2026"
 
 
+def test_oamp_status_accepts_visa_number(client, auth_headers, monkeypatch):
+    captured = {}
+
+    def fake_check(payload):
+        captured["payload"] = payload
+        return OampStatusCheckResponse(
+            kind="visa",
+            query="352532",
+            status="not_found",
+            message="An application or report, reference number 352532 not found.",
+            source_url="https://ipc.gov.cz/en/status-of-your-application/",
+            checked_at=datetime.now(UTC),
+        )
+
+    monkeypatch.setattr("app.routers.status.check_oamp_status", fake_check)
+
+    r = client.post(
+        "/status/oamp",
+        headers=auth_headers,
+        json={"visa_number": " 352532 ", "language": "en"},
+    )
+
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["kind"] == "visa"
+    assert body["query"] == "352532"
+    assert body["status"] == "not_found"
+
+    payload = captured["payload"]
+    assert payload.visa_number == "352532"
+    assert payload.reference_number is None
+    assert payload.category is None
+    assert payload.year is None
+    assert payload.language == "en"
+
+
 def test_oamp_status_requires_query(client, auth_headers):
     r = client.post("/status/oamp", headers=auth_headers, json={})
 
@@ -202,6 +238,20 @@ class _FakePage:
             "písemného rozhodnutí či sdělení o splnění podmínek, pobytového průkazu "
             "či vyznačení vízového štítku. Do té doby ministerstvo stále vyhodnocuje "
             "plnění všech nezbytných náležitostí.",
+        ),
+        (
+            "AGREE WITH ALL REFUSE ALL MORE SETTINGS HOME STATUS OF YOUR APPLICATION "
+            "Status of your Application An application or report, reference number "
+            "352532 not found. Enter the reference number of your application. "
+            "Item -XX is optional. OAM - 12345 - XX / Type - Year or visa "
+            "application number (ŽOV) Visa application number VALIDATE ABOUT US GLOSSARY",
+            "An application or report, reference number 352532 not found.",
+        ),
+        (
+            "HOME STAV ŘÍZENÍ Stav řízení Řízení či oznámení s číslem jednacím "
+            "352532 nebylo nalezeno. Zadejte číslo jednací vaší žádosti. "
+            "Položka -XX je volitelná.",
+            "Řízení či oznámení s číslem jednacím 352532 nebylo nalezeno.",
         ),
         (
             "AGREE WITH ALL REFUSE ALL MORE SETTINGS HOME STATUS OF YOUR APPLICATION "
