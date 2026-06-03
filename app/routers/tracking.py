@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
 
@@ -10,7 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from app.middleware.auth import get_current_user_id
 from app.models.schemas import TrackingCreate, TrackingResponse
 from app.services.rag import get_supabase
-from app.services.trackers.base import CheckResult
+from app.services.trackers.base import BaseTracker, CheckResult
 from app.services.trackers.registry import get_tracker
 
 logger = logging.getLogger(__name__)
@@ -54,11 +55,19 @@ async def create_tracking(
 
     now = datetime.now(UTC)
     initial_status = tracker.initial_status_from_metadata(body.metadata)
-    check = (
-        CheckResult(status=initial_status, raw_data={})
-        if initial_status is not None
-        else await tracker.check(identifier, body.metadata)
-    )
+
+    # Synchronous first check used to block the response for tens of seconds
+    # (Playwright + OAMP page load), which made the UI feel like nothing
+    # happened until the whole probe finished. Instead we create the row
+    # immediately with a placeholder "probiha" status when no trusted hint is
+    # available, and run the real first check in the background.
+    if initial_status is not None:
+        check = CheckResult(status=initial_status, raw_data={})
+        run_background_check = False
+    else:
+        check = CheckResult(status="probiha", raw_data={})
+        run_background_check = True
+
     metadata = _merge_metadata(body.metadata, check.raw_data)
     draft_tracking = {
         "tracking_type": body.tracking_type,
@@ -67,14 +76,19 @@ async def create_tracking(
         "metadata": metadata,
         "created_at": now.isoformat(),
     }
+    # When we still need to do the first probe, schedule the next check window
+    # immediately so the periodic cron picks it up if the background task is
+    # killed (e.g. container redeploy before it finishes).
+    next_check_at = now if run_background_check else now + tracker.get_next_check_interval(draft_tracking)
     payload = {
         "user_id": user_id_str,
         "tracking_type": body.tracking_type,
         "identifier": identifier,
         "current_status": check.status,
         "metadata": metadata,
-        "last_checked_at": now.isoformat(),
-        "next_check_at": (now + tracker.get_next_check_interval(draft_tracking)).isoformat(),
+        # last_checked_at stays null until the first probe really lands.
+        "last_checked_at": None if run_background_check else now.isoformat(),
+        "next_check_at": next_check_at.isoformat(),
         "is_active": not tracker.is_terminal_status(check.status),
         "notification_count": 0,
     }
@@ -87,14 +101,30 @@ async def create_tracking(
             detail="Failed to create tracking",
         )
 
+    created = rows[0]
     logger.info(
-        "Created tracking id=%s type=%s user_id=%s status=%s",
-        rows[0].get("id"),
+        "Created tracking id=%s type=%s user_id=%s status=%s background=%s",
+        created.get("id"),
         body.tracking_type,
         user_id,
         check.status,
+        run_background_check,
     )
-    return TrackingResponse.model_validate(rows[0])
+
+    if run_background_check:
+        # Fire-and-forget. Errors are swallowed inside the task; the cron will
+        # retry from `next_check_at = now`.
+        asyncio.create_task(
+            _run_first_check(
+                tracking_id=UUID(str(created["id"])),
+                user_id=user_id_str,
+                tracker=tracker,
+                identifier=identifier,
+                metadata=body.metadata,
+            )
+        )
+
+    return TrackingResponse.model_validate(created)
 
 
 @router.get("", response_model=list[TrackingResponse])
@@ -259,3 +289,73 @@ def _merge_metadata(metadata: dict[str, Any] | None, raw_data: dict[str, Any]) -
     merged = dict(metadata or {})
     merged.update(raw_data)
     return merged
+
+
+async def _run_first_check(
+    tracking_id: UUID,
+    user_id: str,
+    tracker: BaseTracker,
+    identifier: str,
+    metadata: dict[str, Any],
+) -> None:
+    """Run the first tracker probe in the background and persist the result.
+
+    Best-effort: any failure (Playwright crash, network blip, cancellation
+    during redeploy) leaves the row with placeholder status `probiha` and
+    `next_check_at = now`, which the periodic cron will pick up.
+    """
+    try:
+        check = await tracker.check(identifier, metadata)
+    except Exception:
+        logger.exception("First tracking check failed in background id=%s", tracking_id)
+        return
+
+    try:
+        supabase = await get_supabase()
+        now = datetime.now(UTC)
+        row = (
+            await supabase.table("trackings")
+            .select("*")
+            .eq("id", str(tracking_id))
+            .eq("user_id", user_id)
+            .limit(1)
+            .execute()
+        )
+        existing = (row.data or [None])[0]
+        if existing is None:
+            logger.warning("Tracking %s vanished before background check could write back", tracking_id)
+            return
+
+        merged_metadata = _merge_metadata(existing.get("metadata") or {}, check.raw_data)
+        projected = {
+            **existing,
+            "current_status": check.status,
+            "metadata": merged_metadata,
+            "last_checked_at": now.isoformat(),
+        }
+        update = {
+            "current_status": check.status,
+            "metadata": merged_metadata,
+            "last_checked_at": now.isoformat(),
+            "next_check_at": (now + tracker.get_next_check_interval(projected)).isoformat(),
+            "is_active": not tracker.is_terminal_status(check.status),
+        }
+        await (
+            supabase.table("trackings")
+            .update(update)
+            .eq("id", str(tracking_id))
+            .eq("user_id", user_id)
+            .execute()
+        )
+        logger.info(
+            "Background first-check landed id=%s status=%s",
+            tracking_id,
+            check.status,
+        )
+    except Exception:
+        logger.exception("Failed to persist background first-check id=%s", tracking_id)
+
+
+# Re-exported for tests that want to assert on the type. Re-export avoids a
+# circular import when conftest patches `_run_first_check`.
+__all__ = ["router", "_run_first_check", "MAX_ACTIVE_TRACKINGS_PER_TYPE", "timedelta"]
