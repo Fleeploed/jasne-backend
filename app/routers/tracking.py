@@ -291,6 +291,9 @@ def _merge_metadata(metadata: dict[str, Any] | None, raw_data: dict[str, Any]) -
     return merged
 
 
+_FIRST_CHECK_TIMEOUT_SECONDS = 90.0
+
+
 async def _run_first_check(
     tracking_id: UUID,
     user_id: str,
@@ -300,14 +303,25 @@ async def _run_first_check(
 ) -> None:
     """Run the first tracker probe in the background and persist the result.
 
-    Best-effort: any failure (Playwright crash, network blip, cancellation
-    during redeploy) leaves the row with placeholder status `probiha` and
-    `next_check_at = now`, which the periodic cron will pick up.
+    Always writes back to the row — even on failure — so the frontend can't
+    get stuck on a "Проверяем…" UI when last_checked_at never flips. A
+    failure path lands `status="error"` + a populated `last_checked_at`; the
+    periodic cron will retry from `next_check_at`.
     """
     try:
-        check = await tracker.check(identifier, metadata)
-    except Exception:
-        logger.exception("First tracking check failed in background id=%s", tracking_id)
+        check = await asyncio.wait_for(
+            tracker.check(identifier, metadata),
+            timeout=_FIRST_CHECK_TIMEOUT_SECONDS,
+        )
+    except (TimeoutError, Exception) as exc:
+        logger.exception(
+            "First tracking check failed in background id=%s: %s",
+            tracking_id,
+            exc,
+        )
+        # Make sure the UI sees *something* — otherwise the row stays at
+        # last_checked_at=null forever and the spinner is stuck.
+        await _persist_first_check_failure(tracking_id, user_id, tracker)
         return
 
     try:
@@ -354,6 +368,38 @@ async def _run_first_check(
         )
     except Exception:
         logger.exception("Failed to persist background first-check id=%s", tracking_id)
+
+
+async def _persist_first_check_failure(
+    tracking_id: UUID,
+    user_id: str,
+    tracker: BaseTracker,
+) -> None:
+    """Mark a tracking as errored so the UI exits the "Проверяем…" state.
+
+    Keeps the row active and pushes `next_check_at` forward by an
+    error-appropriate interval so the cron will retry.
+    """
+    try:
+        supabase = await get_supabase()
+        now = datetime.now(UTC)
+        projected = {"current_status": "error"}
+        await (
+            supabase.table("trackings")
+            .update(
+                {
+                    "current_status": "error",
+                    "last_checked_at": now.isoformat(),
+                    "next_check_at": (now + tracker.get_next_check_interval(projected)).isoformat(),
+                    "is_active": True,
+                }
+            )
+            .eq("id", str(tracking_id))
+            .eq("user_id", user_id)
+            .execute()
+        )
+    except Exception:
+        logger.exception("Failed to persist first-check failure id=%s", tracking_id)
 
 
 # Re-exported for tests that want to assert on the type. Re-export avoids a
