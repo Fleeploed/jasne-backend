@@ -139,7 +139,9 @@ async def _delete_user_rows(supabase: Any, user_id: str) -> None:
         try:
             await supabase.table(table_name).delete().eq("user_id", user_id).execute()
         except Exception:
-            logger.warning("Table purge failed table=%s user_prefix=%s", table_name, user_id[:8], exc_info=True)
+            logger.warning(
+                "Table purge failed table=%s user_prefix=%s", table_name, user_id[:8], exc_info=True
+            )
 
     try:
         await supabase.rpc("delete_user_scans", {"p_user_id": user_id}).execute()

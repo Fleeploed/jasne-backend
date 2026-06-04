@@ -112,12 +112,7 @@ async def restore_profile(user_id: UUID = Depends(get_current_user_id)) -> Profi
         return ProfileResponse.model_validate(profile)
 
     supabase = await get_supabase()
-    result = (
-        await supabase.table("profiles")
-        .update(build_restore_update())
-        .eq("id", str(user_id))
-        .execute()
-    )
+    result = await supabase.table("profiles").update(build_restore_update()).eq("id", str(user_id)).execute()
     if not result.data:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Profile not found")
 
