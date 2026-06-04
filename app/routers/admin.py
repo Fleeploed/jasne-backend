@@ -21,7 +21,7 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
-from app.middleware.auth import get_current_user_id
+from app.middleware.auth import get_active_user_id
 from app.services.rag import get_supabase
 
 logger = logging.getLogger(__name__)
@@ -87,7 +87,7 @@ class TranslateResponse(BaseModel):
 @router.post("/translate", response_model=TranslateResponse)
 async def translate(
     body: TranslateRequest,
-    user_id: UUID = Depends(get_current_user_id),
+    user_id: UUID = Depends(get_active_user_id),
 ) -> TranslateResponse:
     await require_admin(user_id)
     key = _deepl_key()
@@ -141,7 +141,7 @@ class UsageResponse(BaseModel):
 
 @router.get("/translate/usage", response_model=UsageResponse)
 async def translate_usage(
-    user_id: UUID = Depends(get_current_user_id),
+    user_id: UUID = Depends(get_active_user_id),
 ) -> UsageResponse:
     await require_admin(user_id)
     key = _deepl_key()

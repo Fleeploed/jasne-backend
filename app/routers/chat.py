@@ -10,7 +10,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
 
-from app.middleware.auth import get_current_user_id
+from app.middleware.auth import get_active_user_id
 from app.models.schemas import ChatAskRequest, ChatAskResponse, ScanMessage, UserLanguage
 from app.routers.profile import _ensure_profile
 from app.services.chat import answer_question, fetch_scan_history, stream_answer_chunks
@@ -105,7 +105,7 @@ def _build_chat_rag_query(question: str, scan_row: dict) -> str:
 @router.get("", response_model=list[ScanMessage])
 async def list_messages(
     scan_id: UUID,
-    user_id: UUID = Depends(get_current_user_id),
+    user_id: UUID = Depends(get_active_user_id),
 ) -> list[ScanMessage]:
     # Ownership check via the scan first — also gives a clean 404.
     await _load_scan(scan_id, user_id)
@@ -126,7 +126,7 @@ async def list_messages(
 async def ask_question(
     scan_id: UUID,
     body: ChatAskRequest,
-    user_id: UUID = Depends(get_current_user_id),
+    user_id: UUID = Depends(get_active_user_id),
 ) -> ChatAskResponse:
     profile = await _ensure_profile(user_id)
     plan = profile.get("plan", "free")
@@ -176,7 +176,7 @@ async def ask_question(
 async def ask_question_stream(
     scan_id: UUID,
     body: ChatAskRequest,
-    user_id: UUID = Depends(get_current_user_id),
+    user_id: UUID = Depends(get_active_user_id),
 ) -> StreamingResponse:
     profile = await _ensure_profile(user_id)
     plan = profile.get("plan", "free")

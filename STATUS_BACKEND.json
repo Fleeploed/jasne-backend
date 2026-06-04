@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "meta": {
     "project": "Jasne backend",
-    "snapshot_date": "2026-06-03",
+    "snapshot_date": "2026-06-04",
     "repo": "https://github.com/Fleeploed/jasne-backend",
     "default_branch": "develop",
     "current_branch": "develop",
@@ -84,7 +84,7 @@
       "region": "eu-west-1",
       "postgres_version": "17",
       "extensions": ["vector (pgvector)", "pgcrypto"],
-      "schema_version": "0011_help_admin",
+      "schema_version": "0014_account_soft_delete",
       "migration_files": [
         "0001_init.sql",
         "0002_skill_overhaul.sql",
@@ -96,7 +96,10 @@
         "0008_cascade_delete_scans.sql",
         "0009_keep_usage_on_scan_delete.sql",
         "0010_pro_usage_subscription_period.sql",
-        "0011_help_admin.sql"
+        "0011_help_admin.sql",
+        "0012_push_notifications.sql",
+        "0013_oamp_status_tracking.sql",
+        "0014_account_soft_delete.sql"
       ],
       "rls_enabled": true,
       "tier": "Free"
@@ -165,8 +168,11 @@
         { "method": "GET", "path": "/docs", "auth": false, "purpose": "Swagger UI outside production" }
       ],
       "profile": [
-        { "method": "GET", "path": "/profile", "auth": true },
-        { "method": "PUT", "path": "/profile", "auth": true, "note": "plan is owned by RevenueCat and is not user-updatable" }
+        { "method": "GET", "path": "/profile", "auth": true, "purpose": "profile plus deletion_status so mobile can show restore gate" },
+        { "method": "GET", "path": "/profile/deletion-status", "auth": true, "purpose": "lightweight account deletion status" },
+        { "method": "PUT", "path": "/profile", "auth": true, "note": "plan is owned by RevenueCat and is not user-updatable; rejected while account deletion is pending" },
+        { "method": "POST", "path": "/profile/restore", "auth": true, "purpose": "restore account during the 7-day deletion grace period" },
+        { "method": "DELETE", "path": "/profile", "auth": true, "purpose": "schedule account deletion with 7-day restore window; data is purged later by /internal/accounts/purge-deleted" }
       ],
       "scans": [
         { "method": "POST", "path": "/scans", "auth": true, "supports": ["png", "jpg", "jpeg", "gif", "webp", "pdf"] },
@@ -209,6 +215,10 @@
       ],
       "webhooks": [
         { "method": "POST", "path": "/webhooks/revenuecat", "auth": "RevenueCat Authorization header", "purpose": "sync subscription entitlement into profiles" }
+      ],
+      "internal": [
+        { "method": "POST", "path": "/internal/notifications/due", "auth": "X-Cron-Secret", "purpose": "send due deadline notifications" },
+        { "method": "POST", "path": "/internal/accounts/purge-deleted", "auth": "X-Cron-Secret", "purpose": "permanently purge accounts whose 7-day deletion grace period elapsed" }
       ]
     },
     "core_flows": {
@@ -243,6 +253,12 @@
         "content_model": "categories and UI strings from YAML; published guides from Postgres help_guides",
         "admin_ui": "help-admin/index.html",
         "admin_role": "profiles.role = admin"
+      },
+      "account_deletion": {
+        "delete_profile": "DELETE /profile now marks profiles.deletion_status=pending, sets deletion_requested_at/deletion_scheduled_at/deletion_reason, clears expo_push_token, and leaves user data intact for 7 days.",
+        "normal_api_guard": "get_active_user_id blocks normal app endpoints with 403 detail.code=account_pending_deletion while pending. /profile and /profile/restore remain available.",
+        "restore": "POST /profile/restore clears deletion fields and returns ProfileResponse.",
+        "final_purge": "POST /internal/accounts/purge-deleted deletes due pending accounts after the grace period: RevenueCat subscriber best-effort, storage best-effort, push_tokens/deadlines/trackings/usage_limits/scans/profile rows, and Supabase Auth identity."
       }
     },
     "ai_models": {
@@ -269,7 +285,7 @@
     },
     "database_schema": {
       "tables": {
-        "profiles": ["id", "display_name", "language", "has_datova_schranka", "plan", "subscription_product_id", "subscription_expires_at", "subscription_will_renew", "role", "created_at", "updated_at"],
+        "profiles": ["id", "display_name", "language", "has_datova_schranka", "plan", "subscription_product_id", "subscription_expires_at", "subscription_will_renew", "role", "expo_push_token", "deletion_status", "deletion_requested_at", "deletion_scheduled_at", "deletion_reason", "deletion_restored_at", "created_at", "updated_at"],
         "scans": ["id", "user_id", "image_paths", "page_count", "ocr_text", "category", "doc_type", "category_confidence", "result", "language", "model_used", "created_at"],
         "scan_messages": ["id", "scan_id", "user_id", "role", "content", "message_type", "created_at"],
         "deadlines": ["id", "user_id", "scan_id", "title", "description", "due_date", "reminder_days", "deadline_type", "status", "auto_created", "created_at"],
@@ -289,22 +305,23 @@
       "important_constraints": [
         "usage_limits.month accepts YYYY-MM and pro:start:end subscription-period keys",
         "deadlines.scan_id cascades on scan delete",
-        "bulk scan delete does not reset usage_limits after migration 0009"
+        "bulk scan delete does not reset usage_limits after migration 0009",
+        "profiles.deletion_status accepts active/pending; profiles_pending_deletion_idx accelerates purge lookup by deletion_scheduled_at"
       ]
     },
     "tests": {
       "framework": "pytest + pytest-asyncio",
       "test_files": 21,
-      "collected_tests": 310,
+      "collected_tests": 362,
       "local_latest": {
-        "date": "2026-05-27",
+        "date": "2026-06-04",
         "command": "venv/bin/python -m pytest",
-        "result": "310 passed in 4.31s",
+        "result": "362 passed in 5.46s",
         "local_python": "3.14.4"
       },
       "lint_latest": {
-        "date": "2026-05-27",
-        "command": "venv/bin/python -m ruff check app tests scripts",
+        "date": "2026-06-04",
+        "command": "env RUFF_CACHE_DIR=/private/tmp/jasne-ruff-cache venv/bin/python -m ruff check changed backend files",
         "result": "All checks passed"
       },
       "coverage_areas": [
@@ -320,6 +337,7 @@
         "chat routes",
         "deadline routes",
         "profile routes",
+        "account soft-delete and purge routes",
         "help routes/search/loader",
         "OAMP status route/service",
         "schemas",
@@ -346,8 +364,9 @@
     { "id": "be-11", "title": "Help mobile API backed by YAML metadata plus Postgres published guides", "status": "done" },
     { "id": "be-12", "title": "Single-file Help admin with DeepL proxy endpoints", "status": "done" },
     { "id": "be-13", "title": "OAMP status lookup endpoint with Playwright Chromium for OAM proceedings and ŽOV visa numbers", "status": "done" },
-    { "id": "be-14", "title": "Supabase migrations through 0011_help_admin", "status": "done" },
-    { "id": "be-15", "title": "310-test backend suite passing locally and in CI", "status": "done" }
+    { "id": "be-14", "title": "Supabase migrations through 0014_account_soft_delete", "status": "done" },
+    { "id": "be-15", "title": "362-test backend suite passing locally", "status": "done" },
+    { "id": "be-16", "title": "Soft-delete account flow with 7-day restore window, normal API guard, restore endpoint, and internal purge endpoint", "status": "done" }
   ],
   "pending": {
     "infrastructure": [
@@ -412,6 +431,12 @@
         "title": "Signed upload URL helper",
         "priority": "medium",
         "details": "POST /scans/upload-urls for mobile parallel upload workflow."
+      },
+      {
+        "id": "be-todo-5",
+        "title": "Schedule internal account purge cron",
+        "priority": "high",
+        "details": "Call POST /internal/accounts/purge-deleted with X-Cron-Secret on a daily/hourly schedule after deployment so due pending-deletion accounts are physically removed after the 7-day grace period."
       }
     ],
     "mobile_and_monetization": [
@@ -460,6 +485,13 @@
       "title": "Production verification job is disabled",
       "impact": "Only staging Render verification runs in CI.",
       "fix": "infra-todo-3"
+    },
+    {
+      "id": "issue-5",
+      "severity": "medium",
+      "title": "Account purge endpoint still needs external schedule",
+      "impact": "Pending-deletion accounts are blocked and restorable, but final physical deletion after 7 days depends on a cron/scheduler calling /internal/accounts/purge-deleted.",
+      "fix": "be-todo-5"
     }
   ],
   "git_state": {
@@ -475,12 +507,14 @@
       "3. Remove old Railway GitHub secrets",
       "4. Add branch protection on main",
       "5. Configure Supabase SMTP",
-      "6. Add Sentry/error tracking",
-      "7. Continue RAG content for non-cizinecka categories",
-      "8. Build deadline push notification scheduler"
+      "6. Deploy migration 0014_account_soft_delete and schedule /internal/accounts/purge-deleted",
+      "7. Add Sentry/error tracking",
+      "8. Continue RAG content for non-cizinecka categories",
+      "9. Build deadline push notification scheduler"
     ],
     "before_mobile_launch_must_have": [
       "Supabase SMTP",
+      "Scheduled account purge cron for the 7-day restore window",
       "Push notification scheduler",
       "RevenueCat client offerings",
       "Production-grade RAG for top non-cizinecka categories"

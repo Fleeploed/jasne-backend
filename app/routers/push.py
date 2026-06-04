@@ -4,7 +4,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
-from app.middleware.auth import get_current_user_id
+from app.middleware.auth import get_active_user_id
 from app.models.schemas import PushTokenCreate, PushTokenResponse
 from app.services.rag import get_supabase
 
@@ -15,7 +15,7 @@ router = APIRouter(prefix="/push-tokens", tags=["push"])
 @router.post("", response_model=PushTokenResponse, status_code=status.HTTP_201_CREATED)
 async def register_push_token(
     body: PushTokenCreate,
-    user_id: UUID = Depends(get_current_user_id),
+    user_id: UUID = Depends(get_active_user_id),
 ) -> PushTokenResponse:
     supabase = await get_supabase()
     now = datetime.now(UTC).isoformat()
@@ -61,7 +61,7 @@ async def register_push_token(
 @router.delete("/{token_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def disable_push_token(
     token_id: UUID,
-    user_id: UUID = Depends(get_current_user_id),
+    user_id: UUID = Depends(get_active_user_id),
 ) -> None:
     supabase = await get_supabase()
     await (

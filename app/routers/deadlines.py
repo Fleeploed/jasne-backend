@@ -9,7 +9,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
-from app.middleware.auth import get_current_user_id
+from app.middleware.auth import get_active_user_id
 from app.models.schemas import DeadlineCreate, DeadlineResponse, DeadlineStatus, DeadlineUpdate
 from app.services.rag import get_supabase
 
@@ -38,7 +38,7 @@ async def list_deadlines(
     status_filter: DeadlineStatus | None = None,
     limit: int = 50,
     offset: int = 0,
-    user_id: UUID = Depends(get_current_user_id),
+    user_id: UUID = Depends(get_active_user_id),
 ) -> list[DeadlineResponse]:
     limit = max(1, min(limit, 100))
     offset = max(0, offset)
@@ -61,7 +61,7 @@ async def list_deadlines(
 @router.get("/{deadline_id}", response_model=DeadlineResponse)
 async def get_deadline(
     deadline_id: UUID,
-    user_id: UUID = Depends(get_current_user_id),
+    user_id: UUID = Depends(get_active_user_id),
 ) -> DeadlineResponse:
     supabase = await get_supabase()
     result = (
@@ -80,7 +80,7 @@ async def get_deadline(
 @router.post("", response_model=DeadlineResponse, status_code=status.HTTP_201_CREATED)
 async def create_deadline(
     body: DeadlineCreate,
-    user_id: UUID = Depends(get_current_user_id),
+    user_id: UUID = Depends(get_active_user_id),
 ) -> DeadlineResponse:
     supabase = await get_supabase()
     if body.scan_id is not None:
@@ -104,7 +104,7 @@ async def create_deadline(
 async def update_deadline(
     deadline_id: UUID,
     body: DeadlineUpdate,
-    user_id: UUID = Depends(get_current_user_id),
+    user_id: UUID = Depends(get_active_user_id),
 ) -> DeadlineResponse:
     updates = body.model_dump(exclude_none=True, mode="json")
     if not updates:
@@ -131,7 +131,7 @@ async def update_deadline(
 @router.delete("/{deadline_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_deadline(
     deadline_id: UUID,
-    user_id: UUID = Depends(get_current_user_id),
+    user_id: UUID = Depends(get_active_user_id),
 ) -> None:
     supabase = await get_supabase()
     await (

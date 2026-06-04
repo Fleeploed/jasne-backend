@@ -80,3 +80,15 @@ def get_current_user_id(
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Malformed token payload"
         ) from exc
+
+
+async def get_active_user_id(user_id: UUID = Depends(get_current_user_id)) -> UUID:
+    """Authenticated user dependency for normal app actions.
+
+    `/profile` uses `get_current_user_id` directly so a pending-deletion user
+    can still fetch their deletion status or restore the account.
+    """
+    from app.services.account_deletion import ensure_account_active
+
+    await ensure_account_active(user_id)
+    return user_id

@@ -6,7 +6,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
-from app.middleware.auth import get_current_user_id
+from app.middleware.auth import get_active_user_id
 from app.models.schemas import OampStatusCheckRequest, OampStatusCheckResponse
 from app.services.oamp_status import (
     OampStatusError,
@@ -22,7 +22,7 @@ router = APIRouter(prefix="/status", tags=["status"])
 @router.post("/oamp", response_model=OampStatusCheckResponse)
 async def check_oamp_status_endpoint(
     payload: OampStatusCheckRequest,
-    _user_id: UUID = Depends(get_current_user_id),
+    _user_id: UUID = Depends(get_active_user_id),
 ) -> OampStatusCheckResponse:
     try:
         return await asyncio.to_thread(check_oamp_status, payload)

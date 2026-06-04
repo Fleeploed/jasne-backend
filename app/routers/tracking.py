@@ -8,7 +8,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 
-from app.middleware.auth import get_current_user_id
+from app.middleware.auth import get_active_user_id
 from app.models.schemas import TrackingCreate, TrackingResponse
 from app.services.rag import get_supabase
 from app.services.trackers.base import BaseTracker, CheckResult
@@ -25,7 +25,7 @@ MAX_ACTIVE_TRACKINGS_PER_TYPE = 1
 async def create_tracking(
     body: TrackingCreate,
     response: Response,
-    user_id: UUID = Depends(get_current_user_id),
+    user_id: UUID = Depends(get_active_user_id),
 ) -> TrackingResponse:
     tracker = _tracker_or_422(body.tracking_type)
     identifier = tracker.normalize_identifier(body.identifier)
@@ -130,7 +130,7 @@ async def create_tracking(
 @router.get("", response_model=list[TrackingResponse])
 async def list_trackings(
     tracking_type: str | None = Query(default=None, alias="type"),
-    user_id: UUID = Depends(get_current_user_id),
+    user_id: UUID = Depends(get_active_user_id),
 ) -> list[TrackingResponse]:
     supabase = await get_supabase()
     query = (
@@ -149,7 +149,7 @@ async def list_trackings(
 @router.get("/{tracking_id}", response_model=TrackingResponse)
 async def get_tracking(
     tracking_id: UUID,
-    user_id: UUID = Depends(get_current_user_id),
+    user_id: UUID = Depends(get_active_user_id),
 ) -> TrackingResponse:
     supabase = await get_supabase()
     result = (
@@ -169,7 +169,7 @@ async def get_tracking(
 @router.post("/{tracking_id}/check", response_model=TrackingResponse)
 async def check_tracking_now(
     tracking_id: UUID,
-    user_id: UUID = Depends(get_current_user_id),
+    user_id: UUID = Depends(get_active_user_id),
 ) -> TrackingResponse:
     supabase = await get_supabase()
     row = await _active_tracking_for_user(supabase, str(user_id), tracking_id)
@@ -225,7 +225,7 @@ async def check_tracking_now(
 @router.delete("/{tracking_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_tracking(
     tracking_id: UUID,
-    user_id: UUID = Depends(get_current_user_id),
+    user_id: UUID = Depends(get_active_user_id),
 ) -> Response:
     supabase = await get_supabase()
     result = (

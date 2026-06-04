@@ -28,6 +28,7 @@ DeadlineType = Literal["payment", "action", "response", "expiration"]
 DeadlineStatus = Literal["active", "completed", "missed"]
 UserLanguage = Literal["cs", "en", "uk", "ru"]
 UserPlan = Literal["free", "pro"]
+AccountDeletionStatus = Literal["active", "pending"]
 MessageRole = Literal["user", "assistant"]
 MessageType = Literal["text", "image", "result_card"]
 PushPlatform = Literal["ios", "android"]
@@ -69,6 +70,11 @@ class ProfileResponse(_Base):
     subscription_product_id: str | None = None
     subscription_expires_at: datetime | None = None
     subscription_will_renew: bool = False
+    deletion_status: AccountDeletionStatus = "active"
+    deletion_requested_at: datetime | None = None
+    deletion_scheduled_at: datetime | None = None
+    deletion_reason: str | None = None
+    deletion_restored_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -79,6 +85,13 @@ class ProfileUpdate(_Base):
     has_datova_schranka: bool | None = None
     # `plan` is intentionally NOT updatable via this endpoint — it's owned by
     # the RevenueCat webhook (server-to-server) once payments are wired up.
+
+
+class ProfileDeletionStatusResponse(_Base):
+    deletion_status: AccountDeletionStatus = "active"
+    deletion_requested_at: datetime | None = None
+    deletion_scheduled_at: datetime | None = None
+    deletion_reason: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -353,6 +366,12 @@ class NotificationRunResponse(_Base):
     sent: int
     failed: int
     skipped: int
+
+
+class AccountDeletionPurgeResponse(_Base):
+    scanned_profiles: int
+    purged: int
+    failed: int
 
 
 # ---------------------------------------------------------------------------

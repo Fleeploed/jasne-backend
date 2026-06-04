@@ -15,7 +15,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
 
 from app.config import get_settings
-from app.middleware.auth import get_current_user_id
+from app.middleware.auth import get_active_user_id
 from app.models.schemas import (
     AnalysisResult,
     ClassifierResult,
@@ -508,7 +508,7 @@ async def _persist_completed_scan(
 @router.post("", response_model=ScanResponse, status_code=status.HTTP_201_CREATED)
 async def create_scan(
     body: ScanRequest,
-    user_id: UUID = Depends(get_current_user_id),
+    user_id: UUID = Depends(get_active_user_id),
 ) -> ScanResponse:
     profile = await _ensure_profile(user_id)
     plan = profile.get("plan", "free")
@@ -576,7 +576,7 @@ async def create_scan(
 @router.post("/stream")
 async def create_scan_stream(
     body: ScanRequest,
-    user_id: UUID = Depends(get_current_user_id),
+    user_id: UUID = Depends(get_active_user_id),
 ) -> StreamingResponse:
     profile = await _ensure_profile(user_id)
     plan = profile.get("plan", "free")
@@ -600,7 +600,7 @@ async def create_scan_stream(
 async def list_scans(
     limit: int = 20,
     offset: int = 0,
-    user_id: UUID = Depends(get_current_user_id),
+    user_id: UUID = Depends(get_active_user_id),
 ) -> list[ScanListItem]:
     limit = max(1, min(limit, 100))
     offset = max(0, offset)
@@ -615,7 +615,7 @@ async def list_scans(
 
 @router.get("/counts", response_model=ScanCountsResponse)
 async def get_scan_counts(
-    user_id: UUID = Depends(get_current_user_id),
+    user_id: UUID = Depends(get_active_user_id),
 ) -> ScanCountsResponse:
     """Return total scan count and per-category counts for the current user.
 
@@ -640,7 +640,7 @@ async def get_scan_counts(
 @router.get("/{scan_id}", response_model=ScanResponse)
 async def get_scan(
     scan_id: UUID,
-    user_id: UUID = Depends(get_current_user_id),
+    user_id: UUID = Depends(get_active_user_id),
 ) -> ScanResponse:
     supabase = await get_supabase()
     result = (
@@ -660,7 +660,7 @@ async def get_scan(
 async def get_scan_image_urls(
     scan_id: UUID,
     render_pdf: bool = False,
-    user_id: UUID = Depends(get_current_user_id),
+    user_id: UUID = Depends(get_active_user_id),
 ) -> ScanImageUrlsResponse:
     """Return signed preview URLs for files attached to a scan owned by the user."""
     supabase = await get_supabase()
@@ -693,7 +693,7 @@ async def get_scan_image_urls(
 
 @router.delete("", response_model=ScanBulkDeleteResponse)
 async def delete_all_scans(
-    user_id: UUID = Depends(get_current_user_id),
+    user_id: UUID = Depends(get_active_user_id),
 ) -> ScanBulkDeleteResponse:
     """Delete every scan owned by the authenticated user.
 
@@ -729,7 +729,7 @@ async def delete_all_scans(
 @router.delete("/{scan_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_scan(
     scan_id: UUID,
-    user_id: UUID = Depends(get_current_user_id),
+    user_id: UUID = Depends(get_active_user_id),
 ) -> None:
     """Delete a single scan owned by the authenticated user.
 

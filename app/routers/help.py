@@ -20,7 +20,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import ValidationError
 
-from app.middleware.auth import get_current_user_id
+from app.middleware.auth import get_active_user_id
 from app.models.help_schemas import (
     HelpCategoryHero,
     HelpCategoryResponse,
@@ -132,7 +132,7 @@ async def _snapshot() -> HelpContent:
 @router.get("/home", response_model=HelpHomeResponse)
 async def help_home(
     language: HelpLanguage = Query("cs"),
-    _user_id: UUID = Depends(get_current_user_id),
+    _user_id: UUID = Depends(get_active_user_id),
 ) -> HelpHomeResponse:
     content = await _snapshot()
     ui = _resolve_ui(content, language)
@@ -172,7 +172,7 @@ async def help_home(
 async def help_category(
     slug: str,
     language: HelpLanguage = Query("cs"),
-    _user_id: UUID = Depends(get_current_user_id),
+    _user_id: UUID = Depends(get_active_user_id),
 ) -> HelpCategoryResponse:
     content = await _snapshot()
     category = content.find_category(slug)
@@ -215,7 +215,7 @@ async def help_category(
 async def help_guide(
     slug: str,
     language: HelpLanguage = Query("cs"),
-    _user_id: UUID = Depends(get_current_user_id),
+    _user_id: UUID = Depends(get_active_user_id),
 ) -> HelpGuideResponse:
     content = await _snapshot()
     langs = content.guides_by_slug.get(slug)
@@ -258,7 +258,7 @@ async def help_guide(
 async def help_search(
     q: str = Query("", min_length=0, max_length=200),
     language: HelpLanguage = Query("cs"),
-    _user_id: UUID = Depends(get_current_user_id),
+    _user_id: UUID = Depends(get_active_user_id),
 ) -> HelpSearchResponse:
     content = await _snapshot()
     results = run_search(content, q, language)
