@@ -99,6 +99,52 @@ async def test_sends_due_pro_deadline_once(fake_supabase, monkeypatch, test_user
 
 
 @pytest.mark.asyncio
+async def test_skips_deadlines_beyond_reminder_horizon(fake_supabase, monkeypatch, test_user_id):
+    """A deadline further out than the longest reminder window (30 days) can't
+    fire today, so the cron query must not even pull it."""
+    today = date(2026, 5, 30)
+    _seed_profile(fake_supabase, str(test_user_id), plan="pro", language="ru")
+    _seed_token(fake_supabase, str(test_user_id))
+    _seed_deadline(fake_supabase, str(test_user_id), today + timedelta(days=60))
+    _patch_supabase(monkeypatch, fake_supabase)
+
+    async def fake_post(_client, _url, messages):
+        raise AssertionError("No push should be sent for a deadline 60 days out")
+
+    monkeypatch.setattr("app.services.push_notifications._post_expo_messages", fake_post)
+
+    stats = await send_due_deadline_notifications(today)
+
+    assert stats["scanned_deadlines"] == 0
+    assert stats["candidate_notifications"] == 0
+    assert stats["attempted"] == 0
+
+
+@pytest.mark.asyncio
+async def test_skips_user_pending_deletion(fake_supabase, monkeypatch, test_user_id):
+    """push_tokens rows stay enabled during the 7-day grace period (for a clean
+    restore), so the cron must filter on profiles.deletion_status."""
+    today = date(2026, 5, 30)
+    _seed_profile(fake_supabase, str(test_user_id), plan="pro", language="ru", deletion_status="pending")
+    _seed_token(fake_supabase, str(test_user_id))
+    _seed_deadline(fake_supabase, str(test_user_id), today + timedelta(days=14))
+    _patch_supabase(monkeypatch, fake_supabase)
+
+    async def fake_post(_client, _url, messages):
+        raise AssertionError("No push should be sent to an account pending deletion")
+
+    monkeypatch.setattr("app.services.push_notifications._post_expo_messages", fake_post)
+
+    stats = await send_due_deadline_notifications(today)
+
+    assert stats["scanned_deadlines"] == 1
+    assert stats["candidate_notifications"] == 0
+    assert stats["attempted"] == 0
+    assert stats["skipped"] == 1
+    assert fake_supabase.table("notification_deliveries").rows == []
+
+
+@pytest.mark.asyncio
 async def test_free_plan_only_sends_one_day_reminders(fake_supabase, monkeypatch, test_user_id):
     today = date(2026, 5, 30)
     _seed_profile(fake_supabase, str(test_user_id), plan="free", language="ru")

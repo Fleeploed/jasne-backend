@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hmac
 import logging
 from uuid import UUID
 
@@ -47,7 +48,9 @@ async def revenuecat_webhook(  # noqa: C901
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="RevenueCat webhook is not configured",
         )
-    if authorization != settings.revenuecat_webhook_auth:
+    # Constant-time comparison — a plain `!=` leaks the secret length/prefix
+    # through response timing to an attacker probing the webhook.
+    if not hmac.compare_digest(authorization or "", settings.revenuecat_webhook_auth):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid webhook auth")
 
     payload = await request.json()

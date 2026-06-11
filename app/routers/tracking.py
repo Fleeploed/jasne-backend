@@ -20,6 +20,17 @@ router = APIRouter(prefix="/trackings", tags=["trackings"])
 
 MAX_ACTIVE_TRACKINGS_PER_TYPE = 1
 
+# Holds strong references to fire-and-forget first-check tasks. asyncio only
+# keeps weak references to tasks, so without this the GC can cancel a running
+# background check mid-flight before it persists its result.
+_BACKGROUND_TASKS: set[asyncio.Task[Any]] = set()
+
+
+def _spawn_background(coro) -> None:
+    task = asyncio.create_task(coro)
+    _BACKGROUND_TASKS.add(task)
+    task.add_done_callback(_BACKGROUND_TASKS.discard)
+
 
 @router.post("", response_model=TrackingResponse, status_code=status.HTTP_201_CREATED)
 async def create_tracking(
@@ -113,8 +124,9 @@ async def create_tracking(
 
     if run_background_check:
         # Fire-and-forget. Errors are swallowed inside the task; the cron will
-        # retry from `next_check_at = now`.
-        asyncio.create_task(
+        # retry from `next_check_at = now`. The task is kept alive via
+        # _BACKGROUND_TASKS so the GC can't drop it before it finishes.
+        _spawn_background(
             _run_first_check(
                 tracking_id=UUID(str(created["id"])),
                 user_id=user_id_str,

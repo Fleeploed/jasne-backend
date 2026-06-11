@@ -240,4 +240,7 @@ def _classify_result(message: str) -> OampStatusOutcome:
         return "rejected"
     if "zpracovava se" in normalized or "v rizeni" in normalized or "being processed" in normalized:
         return "processing"
-    return "rejected"
+    # Fall back to "unknown" rather than "rejected": when the portal returns a
+    # result block we can't map to a known outcome, telling the user they were
+    # rejected is a far worse error than admitting we don't know.
+    return "unknown"

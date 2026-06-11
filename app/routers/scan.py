@@ -46,12 +46,11 @@ MAX_PDF_BYTES = 20 * 1024 * 1024
 
 
 @dataclass(frozen=True)
-class PreparedVisionInputs:
+class PreparedOcrInputs:
     """Prepared OCR inputs after storage validation and PDF rendering.
 
-    Name kept for backwards compatibility — these URLs now feed Azure Document
-    Intelligence, not GPT Vision. PDF rendering still produces one image per
-    page so Azure DI's prebuilt-read sees pre-segmented inputs.
+    These URLs feed Azure Document Intelligence. PDF rendering produces one
+    image per page so Azure DI's prebuilt-read sees pre-segmented inputs.
     """
 
     urls: list[str]
@@ -64,7 +63,7 @@ def _sse(event: str, payload: dict[str, Any]) -> str:
 
 # iOS NSURLSession-backed XHR drops the connection after ~60s of silence.
 # Heartbeats are SSE comment lines (ignored by parsers) keeping the socket alive
-# during long blocking calls (10-page GPT-4o Vision can take 30-60+ seconds).
+# during long blocking calls (10-page Azure DI OCR can take 30-60+ seconds).
 SSE_HEARTBEAT_INTERVAL = 10.0
 SSE_HEARTBEAT = ":keep-alive\n\n"
 
@@ -133,23 +132,23 @@ async def _scan_stream_events(
     usage_period = usage_period_for_profile(profile)
     try:
         yield _sse("status", {"step": "preparing_inputs", "message": "Preparing document pages"})
-        vision_inputs = await _prepare_vision_inputs(user_id, body.image_paths)
+        ocr_inputs = await _prepare_ocr_inputs(user_id, body.image_paths)
         await _check_scan_quota_or_402(
             user_id,
             plan,
-            page_count=vision_inputs.page_count,
+            page_count=ocr_inputs.page_count,
             usage_period=usage_period,
         )
 
         yield _sse("status", {"step": "ocr", "message": "Reading document text"})
-        ocr_task = asyncio.create_task(extract_text(vision_inputs.urls))
+        ocr_task = asyncio.create_task(extract_text(ocr_inputs.urls))
         async for heartbeat in _yield_heartbeats_until_complete(ocr_task):
             yield heartbeat
         ocr = ocr_task.result()
         # The OCR service returns whatever Azure detected; for safety we anchor
         # page_count to the prepared input count so downstream UI sees a stable
         # number even if Azure DI miscounted.
-        ocr = ocr.model_copy(update={"page_count": vision_inputs.page_count})
+        ocr = ocr.model_copy(update={"page_count": ocr_inputs.page_count})
 
         if not ocr.ocr_text.strip():
             detail = "Could not read document — try a better photo."
@@ -270,7 +269,7 @@ async def _sign_storage_url(path: str) -> str:
 
 
 async def _download_signed_object(url: str, path: str) -> bytes:
-    """Download a signed Supabase object that must be transformed before GPT Vision."""
+    """Download a signed Supabase object that must be transformed before OCR."""
     try:
         async with httpx.AsyncClient(follow_redirects=True, timeout=30.0) as client:
             response = await client.get(url)
@@ -297,7 +296,7 @@ async def _download_signed_object(url: str, path: str) -> bytes:
 
 
 def _render_pdf_to_png_data_urls(pdf_bytes: bytes, path: str) -> list[str]:
-    """Render a PDF into PNG data URLs accepted by OpenAI Vision."""
+    """Render a PDF into PNG data URLs that Azure DI can OCR page by page."""
     try:
         import fitz
     except ImportError as exc:
@@ -365,15 +364,15 @@ async def _prepare_single_input(user_id: UUID, raw_path: str) -> list[str]:
     )
 
 
-async def _prepare_vision_inputs(user_id: UUID, image_paths: list[str]) -> PreparedVisionInputs:
-    """Validate storage paths and convert supported inputs into GPT Vision URLs.
+async def _prepare_ocr_inputs(user_id: UUID, image_paths: list[str]) -> PreparedOcrInputs:
+    """Validate storage paths and convert supported inputs into OCR-ready URLs.
 
     Inputs are resolved concurrently — signing + downloading happens in
     parallel so a 5-page upload doesn't pay 5× the network latency.
     """
     grouped = await asyncio.gather(*(_prepare_single_input(user_id, raw_path) for raw_path in image_paths))
     urls = [url for group in grouped for url in group]
-    return PreparedVisionInputs(urls=urls, page_count=len(urls))
+    return PreparedOcrInputs(urls=urls, page_count=len(urls))
 
 
 async def _check_scan_quota_or_402(
@@ -519,17 +518,17 @@ async def create_scan(
     # Plan-based quota check (monthly scans + per-scan page cap)
     await _check_scan_quota_or_402(user_id, plan, page_count=len(body.image_paths), usage_period=usage_period)
 
-    vision_inputs = await _prepare_vision_inputs(user_id, body.image_paths)
+    ocr_inputs = await _prepare_ocr_inputs(user_id, body.image_paths)
     await _check_scan_quota_or_402(
         user_id,
         plan,
-        page_count=vision_inputs.page_count,
+        page_count=ocr_inputs.page_count,
         usage_period=usage_period,
     )
 
     # Step 1 — OCR via Azure Document Intelligence
-    ocr = await extract_text(vision_inputs.urls)
-    ocr = ocr.model_copy(update={"page_count": vision_inputs.page_count})
+    ocr = await extract_text(ocr_inputs.urls)
+    ocr = ocr.model_copy(update={"page_count": ocr_inputs.page_count})
 
     if not ocr.ocr_text.strip():
         logger.warning(
@@ -613,20 +612,23 @@ async def list_scans(
     return [ScanListItem.from_row(row) for row in (result.data or [])]
 
 
-@router.get("/counts", response_model=ScanCountsResponse)
-async def get_scan_counts(
-    user_id: UUID = Depends(get_active_user_id),
-) -> ScanCountsResponse:
-    """Return total scan count and per-category counts for the current user.
+def _looks_like_missing_rpc(exc: Exception, function_name: str) -> bool:
+    """Detect Supabase/PostgREST schema-cache misses for newly added RPCs."""
+    text = str(exc)
+    return (
+        "PGRST202" in text
+        and function_name in text
+        and ("Could not find the function" in text or "schema cache" in text)
+    )
 
-    Used by the frontend to render filter chips with true DB counts instead of
-    counting only what's been paginated into the list view. Aggregation is done
-    in Python over a single-column fetch — cheap, no migration needed.
+
+async def _count_scans_by_category_fallback(user_id: UUID) -> dict[str, int]:
+    """Python aggregation used until migration 0015 is applied.
+
+    Pulls only the category column. Range covers any realistic user; if a single
+    user ever exceeds it the chips under-count, but the list page stays correct.
     """
     supabase = await get_supabase()
-    # Pull only the category column. Range covers any realistic user; if a
-    # single user ever exceeds it, the chips will under-count but the page
-    # itself stays correct.
     result = (
         await supabase.table("scans").select("category").eq("user_id", str(user_id)).range(0, 9999).execute()
     )
@@ -634,6 +636,37 @@ async def get_scan_counts(
     for row in result.data or []:
         key = row.get("category") or "ostatni"
         by_category[key] = by_category.get(key, 0) + 1
+    return by_category
+
+
+@router.get("/counts", response_model=ScanCountsResponse)
+async def get_scan_counts(
+    user_id: UUID = Depends(get_active_user_id),
+) -> ScanCountsResponse:
+    """Return total scan count and per-category counts for the current user.
+
+    Used by the frontend to render filter chips with true DB counts instead of
+    counting only what's been paginated into the list view. Aggregation runs in
+    Postgres (GROUP BY) with a Python fallback for environments where migration
+    0015 hasn't landed yet.
+    """
+    supabase = await get_supabase()
+    try:
+        result = await supabase.rpc("count_scans_by_category", {"p_user_id": str(user_id)}).execute()
+        by_category = {
+            str(row["category"]): int(row["count"])
+            for row in (result.data or [])
+            if row.get("category") is not None
+        }
+    except Exception as exc:
+        if not _looks_like_missing_rpc(exc, "count_scans_by_category"):
+            raise
+        logger.warning(
+            "Supabase RPC count_scans_by_category is missing; using Python fallback. "
+            "Apply supabase/migrations/0015_count_scans_by_category.sql."
+        )
+        by_category = await _count_scans_by_category_fallback(user_id)
+
     return ScanCountsResponse(total=sum(by_category.values()), by_category=by_category)
 
 

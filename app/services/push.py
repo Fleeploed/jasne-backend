@@ -63,10 +63,18 @@ async def send_tracking_push(
 async def _push_tokens_for_user(user_id: str) -> list[str]:
     supabase = await get_supabase()
     profile_res = (
-        await supabase.table("profiles").select("id,expo_push_token").eq("id", user_id).limit(1).execute()
+        await supabase.table("profiles")
+        .select("id,expo_push_token,deletion_status")
+        .eq("id", user_id)
+        .limit(1)
+        .execute()
     )
     tokens: list[str] = []
     profile = profile_res.data[0] if profile_res.data else None
+    # Accounts inside the deletion grace period must not receive pushes:
+    # push_tokens rows stay enabled for a clean restore, so filter here.
+    if profile and profile.get("deletion_status") == "pending":
+        return []
     if profile:
         _append_token(tokens, profile.get("expo_push_token"))
 

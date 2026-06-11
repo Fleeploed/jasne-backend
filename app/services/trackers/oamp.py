@@ -4,11 +4,15 @@ import re
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from app.models.schemas import OAMP_CASE_RE
 from app.prompts.push_messages import tracking_push_copy
 from app.services.oamp_client import OampTrackedStatus, check_status
 from app.services.trackers.base import BaseTracker, CheckResult
 
-OAMP_IDENTIFIER_RE = re.compile(r"^OAM-\d+/[A-Z]+-\d{4}$")
+# Reuse the canonical case-number regex from schemas so /status/oamp and
+# tracking accept identical identifiers — including the optional `-4` suffix in
+# OAM-19391-4/ZM-2026, which the old tracker-local regex rejected.
+OAMP_IDENTIFIER_RE = OAMP_CASE_RE
 NOT_FOUND_STOP_THRESHOLD = 3
 ERROR_STOP_THRESHOLD = 5
 OAMP_STATUS_HINTS = {"probiha", "schvaleno", "zamitnuto", "not_found", "error"}

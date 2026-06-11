@@ -10,6 +10,7 @@ Errors never raise out — empty/failed runs return an OcrResult with an empty
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 import httpx
@@ -23,6 +24,13 @@ logger = logging.getLogger(__name__)
 # and analyzer prompts are tolerant of any whitespace, but a stable marker
 # helps when debugging or when humans inspect saved scans.ocr_text.
 _PAGE_SEPARATOR = "\n\n---\n\n"
+
+# Cap on simultaneous Azure DI calls. prebuilt-read takes one URL per request,
+# so a 10-page doc fans out into 10 calls — running them all at once would risk
+# Azure's per-resource rate limit, while running them serially makes a 10-page
+# scan take 20-30s. A small bound gives most of the speedup while staying well
+# under standard-tier concurrency limits.
+_MAX_CONCURRENT_OCR_CALLS = 5
 
 
 def _detect_language(result: object) -> str:
@@ -121,8 +129,17 @@ async def _analyze_data_url(client_kwargs: dict, data_url: str) -> object | None
         return await poller.result()
 
 
-async def _safe_analyze(client_kwargs: dict, url: str, index: int) -> tuple[object | None, Exception | None]:
+async def _safe_analyze(
+    client_kwargs: dict,
+    url: str,
+    index: int,
+    semaphore: asyncio.Semaphore | None = None,
+) -> tuple[object | None, Exception | None]:
     """Run Azure DI on one URL (http or data URI), capturing any exception."""
+    if semaphore is not None:
+        async with semaphore:
+            return await _safe_analyze(client_kwargs, url, index)
+
     is_data_url = url.startswith("data:")
     try:
         if is_data_url:
@@ -183,8 +200,15 @@ async def extract_text(image_urls: list[str]) -> OcrResult:
         if first_error is None:
             first_error = f"{type(exc).__name__}: {exc}"[:300]
 
-    for index, url in enumerate(image_urls):
-        result, error = await _safe_analyze(client_kwargs, url, index)
+    # Fan out across pages concurrently (bounded). asyncio.gather preserves the
+    # input order regardless of completion order, so page concatenation and the
+    # "first error" diagnostic stay deterministic.
+    semaphore = asyncio.Semaphore(_MAX_CONCURRENT_OCR_CALLS)
+    outcomes = await asyncio.gather(
+        *(_safe_analyze(client_kwargs, url, index, semaphore) for index, url in enumerate(image_urls))
+    )
+
+    for index, (result, error) in enumerate(outcomes):
         if error is not None:
             _capture(error)
             continue

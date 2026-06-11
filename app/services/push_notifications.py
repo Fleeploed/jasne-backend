@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import asdict, dataclass
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 import httpx
@@ -16,6 +16,11 @@ logger = logging.getLogger(__name__)
 FREE_REMINDER_DAYS = {1}
 PRO_REMINDER_DAYS = {30, 14, 7, 1}
 EXPO_PUSH_CHUNK_SIZE = 100
+
+# The furthest-out reminder any plan can fire (Pro's 30-day notice). A deadline
+# due beyond this window can't produce a reminder today, so the cron query
+# bounds itself to [today, today + this] instead of scanning every active row.
+MAX_REMINDER_HORIZON_DAYS = max(PRO_REMINDER_DAYS)
 
 
 @dataclass
@@ -39,7 +44,18 @@ async def send_due_deadline_notifications(today: date | None = None) -> dict[str
     supabase = await get_supabase()
     profile_cache: dict[str, dict[str, Any]] = {}
 
-    result = await supabase.table("deadlines").select("*").eq("status", "active").execute()
+    # Only pull rows that could fire a reminder today: due on/after today and
+    # no further out than the longest reminder window. due_date is stored as an
+    # ISO date string, which sorts lexicographically, so range filters are safe.
+    horizon = run_date + timedelta(days=MAX_REMINDER_HORIZON_DAYS)
+    result = (
+        await supabase.table("deadlines")
+        .select("*")
+        .eq("status", "active")
+        .gte("due_date", run_date.isoformat())
+        .lte("due_date", horizon.isoformat())
+        .execute()
+    )
     pending: list[dict[str, Any]] = []
 
     for deadline in result.data or []:
@@ -59,7 +75,7 @@ async def send_due_deadline_notifications(today: date | None = None) -> dict[str
             continue
 
         profile = await _profile_for_user(user_id, profile_cache)
-        if reminder_day not in _allowed_reminder_days(profile.get("plan", "free")):
+        if not _profile_allows_reminder(profile, reminder_day):
             stats.skipped += 1
             continue
 
@@ -120,12 +136,26 @@ def _allowed_reminder_days(plan: str) -> set[int]:
     return PRO_REMINDER_DAYS if plan == "pro" else FREE_REMINDER_DAYS
 
 
+def _profile_allows_reminder(profile: dict[str, Any], reminder_day: int) -> bool:
+    # Accounts inside the deletion grace period must not receive reminders:
+    # push_tokens rows stay enabled for a clean restore, so filter here.
+    if profile.get("deletion_status") == "pending":
+        return False
+    return reminder_day in _allowed_reminder_days(profile.get("plan", "free"))
+
+
 async def _profile_for_user(user_id: str, cache: dict[str, dict[str, Any]]) -> dict[str, Any]:
     if user_id in cache:
         return cache[user_id]
 
     supabase = await get_supabase()
-    result = await supabase.table("profiles").select("id,plan,language").eq("id", user_id).limit(1).execute()
+    result = (
+        await supabase.table("profiles")
+        .select("id,plan,language,deletion_status")
+        .eq("id", user_id)
+        .limit(1)
+        .execute()
+    )
     profile = result.data[0] if result.data else {"id": user_id, "plan": "free", "language": "cs"}
     cache[user_id] = profile
     return profile

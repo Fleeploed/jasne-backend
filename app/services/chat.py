@@ -219,11 +219,10 @@ async def fetch_scan_history(scan_id: UUID, user_id: UUID) -> list[dict[str, str
     supabase = await get_supabase()
     result = (
         await supabase.table("scan_messages")
-        .select("id,role,content,message_type,created_at")
+        .select("id,role,content,message_type,seq")
         .eq("scan_id", str(scan_id))
         .eq("user_id", str(user_id))
-        .order("created_at")
-        .order("id")
+        .order("seq")
         .execute()
     )
 

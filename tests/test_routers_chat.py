@@ -127,6 +127,43 @@ class TestListMessages:
         r = client.get(f"/scans/{uuid4()}/chat", headers=auth_headers)
         assert r.status_code == 404
 
+    def test_pair_with_identical_created_at_keeps_insert_order(
+        self, client, fake_supabase, auth_headers, test_user_id
+    ):
+        # A Q/A pair inserted in one statement shares created_at (now() is
+        # per-transaction) and ids are random uuids — only `seq` keeps order.
+        _seed_profile(fake_supabase, str(test_user_id), plan="pro")
+        sid = _seed_scan(fake_supabase, str(test_user_id))
+        ts = datetime.now(UTC).isoformat()
+        fake_supabase.table("scan_messages").rows.extend(
+            [
+                {
+                    # id sorts AFTER the assistant's — created_at/id ordering would flip the pair
+                    "id": "ffffffff-0000-0000-0000-000000000001",
+                    "scan_id": sid,
+                    "user_id": str(test_user_id),
+                    "role": "user",
+                    "content": "Otázka",
+                    "message_type": "text",
+                    "created_at": ts,
+                    "seq": 1,
+                },
+                {
+                    "id": "00000000-0000-0000-0000-000000000002",
+                    "scan_id": sid,
+                    "user_id": str(test_user_id),
+                    "role": "assistant",
+                    "content": "Odpověď",
+                    "message_type": "text",
+                    "created_at": ts,
+                    "seq": 2,
+                },
+            ]
+        )
+        r = client.get(f"/scans/{sid}/chat", headers=auth_headers)
+        assert r.status_code == 200
+        assert [m["role"] for m in r.json()] == ["user", "assistant"]
+
 
 class TestAskQuestion:
     def test_free_user_blocked(self, client, fake_supabase, auth_headers, test_user_id):

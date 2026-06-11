@@ -21,25 +21,31 @@ logger = logging.getLogger(__name__)
 MAX_DEADLINE_HORIZON: timedelta = timedelta(days=3 * 365)
 
 VALID_TYPES: frozenset[str] = frozenset({"payment", "action", "response", "expiration"})
+# Matched against an accent-stripped description, so keys are accent-free.
 SMLUVY_CRITICAL_KEYWORDS: frozenset[str] = frozenset(
     {
         "konec",
         "konci",
-        "končí",
         "ukonceni",
-        "ukončení",
         "vypoved",
-        "výpověď",
         "vypovedni",
-        "výpovědní",
         "termination",
         "expires",
         "expiration",
+        "expirace",
         "price increase",
         "zvyseni",
-        "zvýšení",
         "zdrazeni",
-        "zdražení",
+        # Real contract-end phrasings that previously slipped through as
+        # "non-critical": vyprší, platnost do, fixace, doba určitá.
+        "vyprsi",
+        "vyprseni",
+        "platnost",
+        "fixace",
+        "fixovan",
+        "doba urcita",
+        "doba urciteho",
+        "prodlouzeni",
     }
 )
 
@@ -67,7 +73,26 @@ def _strip_accents(text: str) -> str:
     return text.lower().translate(table)
 
 
+# Czech month names in genitive, as they appear in dates ("15. května 2026").
+# Accent-stripped to match the normalized source.
+_CZECH_MONTHS_GENITIVE: dict[int, str] = {
+    1: "ledna",
+    2: "unora",
+    3: "brezna",
+    4: "dubna",
+    5: "kvetna",
+    6: "cervna",
+    7: "cervence",
+    8: "srpna",
+    9: "zari",
+    10: "rijna",
+    11: "listopadu",
+    12: "prosince",
+}
+
+
 def _date_variants(value: date) -> set[str]:
+    month_name = _CZECH_MONTHS_GENITIVE[value.month]
     return {
         value.isoformat(),
         f"{value.day}.{value.month}.{value.year}",
@@ -76,12 +101,32 @@ def _date_variants(value: date) -> set[str]:
         f"{value.day:02d}. {value.month:02d}. {value.year}",
         f"{value.day:02d}.{value.month:02d}.{str(value.year)[2:]}",
         f"{value.day}. {value.month}. {str(value.year)[2:]}",
+        # Written-out Czech dates ("15. května 2026", "15.května 2026").
+        f"{value.day}. {month_name} {value.year}",
+        f"{value.day}.{month_name} {value.year}",
+        f"{value.day}. {month_name}",
     }
 
 
 def _date_appears_in_source(value: date, source_text: str) -> bool:
-    compact_source = re.sub(r"\s+", " ", source_text)
-    return any(variant in compact_source for variant in _date_variants(value))
+    # Strip accents so written-out month names and any accented numeric forms
+    # match; numeric variants are accent-free, so this is lossless for them.
+    normalized_source = re.sub(r"\s+", " ", _strip_accents(source_text))
+    return any(variant in normalized_source for variant in _date_variants(value))
+
+
+# Relative deadlines ("odvolání do 15 dnů od doručení", "ve lhůtě 30 dnů") have
+# no absolute date in OCR, so the analyzer's computed date never matches and the
+# deadline is dropped. These (soudní/cizinecká lhůty) are the most dangerous to
+# miss, so the analyzer surfaces a manual-reminder tip instead of silently
+# dropping them. Returns the day count when such a phrase is present.
+_RELATIVE_DEADLINE_RE = re.compile(r"\b(?:do|ve lhute|lhuta|lhute)\s+(\d{1,3})\s+(?:dnu|dni|dnech|den)\b")
+
+
+def detect_relative_deadline_days(source_text: str) -> int | None:
+    normalized = re.sub(r"\s+", " ", _strip_accents(source_text))
+    match = _RELATIVE_DEADLINE_RE.search(normalized)
+    return int(match.group(1)) if match else None
 
 
 def filter_valid_deadlines(
@@ -117,8 +162,13 @@ def filter_valid_deadlines(
             rejected.append(f"category ostatni has no automatic deadlines: {d.date.isoformat()}")
             continue
         if category == "smlouvy":
+            # An explicit expiration type IS the critical signal for a contract
+            # end; only the fuzzier types need a keyword to qualify as critical.
             normalized_description = _strip_accents(d.description)
-            if not any(keyword in normalized_description for keyword in SMLUVY_CRITICAL_KEYWORDS):
+            is_critical = d.type == "expiration" or any(
+                keyword in normalized_description for keyword in SMLUVY_CRITICAL_KEYWORDS
+            )
+            if not is_critical:
                 rejected.append(f"non-critical smlouvy deadline: {d.date.isoformat()} '{d.description[:40]}'")
                 continue
         kept.append(d)

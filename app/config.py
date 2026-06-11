@@ -52,6 +52,12 @@ class Settings(BaseSettings):
     openai_max_retries: int = 3
     openai_max_output_tokens: int = 2000
 
+    # The analyzer emits a JSON object with ~10 fields plus several arrays
+    # (deadlines, actions_required, documents_needed). A dense 10-page document
+    # can blow past the shared 2k cap mid-object, which truncates the JSON and
+    # surfaces as a bogus "LLM returned invalid JSON" 500. Give it more room.
+    openai_analyzer_max_output_tokens: int = 4000
+
     # =====================================================================
     # Azure Document Intelligence — OCR (prebuilt-read)
     # =====================================================================

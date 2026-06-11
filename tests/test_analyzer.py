@@ -6,7 +6,13 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from app.models.schemas import ClassifierResult
-from app.services.analyzer import _build_system_prompt, _extract_completed_json_fields, analyze_document
+from app.services.analyzer import (
+    STREAM_ANALYSIS_FIELDS,
+    STREAM_INCREMENTAL_FIELDS,
+    _build_system_prompt,
+    _extract_completed_json_fields,
+    analyze_document,
+)
 
 
 class TestBuildSystemPrompt:
@@ -48,6 +54,20 @@ class TestBuildSystemPrompt:
         buffer += '"Pokuta nehrozí","where_to_go":'
         fields = _extract_completed_json_fields(buffer, emitted)
         assert fields == {"penalty": "Pokuta nehrozí"}
+
+    def test_deadlines_never_streamed_before_validation(self):
+        # Raw deadlines must not leak to the client as a field event — they go
+        # through filter_valid_deadlines first and are emitted only at the end.
+        buffer = (
+            '{"deadlines":[{"date":"2020-01-01","description":"hallucinated","type":"payment"}],'
+            '"summary":"Hotovo",'
+        )
+        fields = _extract_completed_json_fields(buffer, set(), fields=STREAM_INCREMENTAL_FIELDS)
+        assert "deadlines" not in fields
+        assert fields == {"summary": "Hotovo"}
+        # But the validated value is still delivered via the final field pass.
+        assert "deadlines" in STREAM_ANALYSIS_FIELDS
+        assert "deadlines" not in STREAM_INCREMENTAL_FIELDS
 
     def test_datova_schranka_yes(self):
         prompt = _build_system_prompt("ucty", "cs", True)
@@ -167,6 +187,35 @@ class TestAnalyzeDocument:
         # Past deadline filtered out, future kept
         assert len(result.deadlines) == 1
         assert result.deadlines[0].description == "new"
+
+    @pytest.mark.asyncio
+    async def test_relative_deadline_surfaced_as_tip(self, openai_chat_mock):
+        # The model can't produce a valid absolute date for "do 15 dnů od
+        # doručení", so it's dropped — but we must not lose it silently.
+        openai_chat_mock(
+            {
+                "document_type": "rozhodnuti",
+                "document_type_cz": "Rozhodnutí",
+                "summary": "Rozhodnutí soudu.",
+                "deadlines": [],
+                "actions_required": [],
+                "documents_needed": [],
+                "tips": "Uschovejte dokument.",
+                "confidence": 0.9,
+            }
+        )
+        classifier = ClassifierResult(category="soudni", doc_type="rozhodnuti", confidence=0.9)
+        result, _ = await analyze_document(
+            classifier,
+            "Proti rozhodnutí lze podat odvolání do 15 dnů od doručení.",
+            1,
+            [],
+            "cs",
+            False,
+        )
+        assert result.deadlines == []
+        assert "15 dnů" in (result.tips or "")
+        assert "Uschovejte dokument." in (result.tips or "")
 
     @pytest.mark.asyncio
     async def test_submission_confirmation_drops_rag_hallucinated_requirements(self, openai_chat_mock):

@@ -1,9 +1,16 @@
+import hmac
+
 from fastapi import APIRouter, Header, HTTPException, status
 
 from app.config import get_settings
-from app.models.schemas import AccountDeletionPurgeResponse, NotificationRunResponse
+from app.models.schemas import (
+    AccountDeletionPurgeResponse,
+    NotificationRunResponse,
+    TrackingCronResponse,
+)
 from app.services.account_deletion import purge_due_deleted_accounts
 from app.services.push_notifications import send_due_deadline_notifications
+from app.workers.tracking_cron import run_tracking_cron
 
 router = APIRouter(prefix="/internal", tags=["internal"])
 
@@ -12,7 +19,8 @@ def _verify_cron_secret(value: str | None) -> None:
     settings = get_settings()
     expected = settings.internal_cron_secret
     if expected:
-        if value != expected:
+        # Constant-time comparison so the secret isn't recoverable via timing.
+        if not hmac.compare_digest(value or "", expected):
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid cron secret")
         return
 
@@ -39,3 +47,18 @@ async def run_account_deletion_purge_job(
     _verify_cron_secret(x_cron_secret)
     stats = await purge_due_deleted_accounts()
     return AccountDeletionPurgeResponse(**stats)
+
+
+@router.post("/trackings/run-cron", response_model=TrackingCronResponse)
+async def run_tracking_cron_job(
+    x_cron_secret: str | None = Header(default=None, alias="X-Cron-Secret"),
+) -> TrackingCronResponse:
+    """Re-check every background tracking whose `next_check_at` is due.
+
+    Without this entrypoint, OAMP trackings only ever ran their one-shot
+    first check — periodic re-checks and status-change pushes never fired in
+    production. Driven by the tracking-cron GitHub Action.
+    """
+    _verify_cron_secret(x_cron_secret)
+    stats = await run_tracking_cron()
+    return TrackingCronResponse(**stats)

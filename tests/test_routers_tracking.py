@@ -123,6 +123,28 @@ class TestCreateTracking:
 
         assert r.status_code == 422
 
+    def test_accepts_case_number_with_suffix(
+        self, client, fake_supabase, auth_headers, test_user_id, monkeypatch
+    ):
+        # /status/oamp parses OAM-19391-4/ZM-2026 (optional `-4` suffix); tracking
+        # must accept the exact same identifiers — previously rejected with 422.
+        _seed_profile(fake_supabase, str(test_user_id), plan="pro")
+        tracker = TRACKER_REGISTRY["oamp_status"]
+
+        async def fake_check(identifier: str, metadata: dict):
+            return CheckResult(status="probiha", raw_data={"not_found_count": 0, "error_count": 0})
+
+        monkeypatch.setattr(tracker, "check", fake_check)
+
+        r = client.post(
+            "/trackings",
+            headers=auth_headers,
+            json={"tracking_type": "oamp_status", "identifier": " oam-19391-4/zm-2026 "},
+        )
+
+        assert r.status_code == 201, r.text
+        assert r.json()["identifier"] == "OAM-19391-4/ZM-2026"
+
     def test_rejects_more_than_five_active_of_same_type(
         self, client, fake_supabase, auth_headers, test_user_id
     ):

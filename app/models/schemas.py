@@ -374,6 +374,17 @@ class AccountDeletionPurgeResponse(_Base):
     failed: int
 
 
+class TrackingCronResponse(_Base):
+    """Stats from one run of the background tracking cron (OAMP, etc.)."""
+
+    due: int
+    checked: int
+    changed: int
+    pushes_attempted: int
+    deactivated: int
+    errors: int
+
+
 # ---------------------------------------------------------------------------
 # Limits — current usage vs plan caps (used by mobile to gate UI)
 # ---------------------------------------------------------------------------
@@ -400,7 +411,11 @@ class LimitsResponse(_Base):
 # ---------------------------------------------------------------------------
 
 
-_OAMP_CASE_RE = re.compile(
+# Canonical OAMP case-number shape. Single source of truth: the tracker
+# (app/services/trackers/oamp.py) imports this so manual status lookup and
+# "track this case" accept exactly the same identifiers (incl. the optional
+# `-4` suffix in OAM-19391-4/ZM-2026).
+OAMP_CASE_RE = re.compile(
     r"^OAM-?(?P<reference_number>\d+)(?:-?(?P<additional_suffix>[A-Z0-9]+))?"
     r"/?(?P<category>[A-Z]{2,4})-?(?P<year>\d{4})$"
 )
@@ -464,7 +479,7 @@ class OampStatusCheckRequest(_Base):
     def parse_and_validate_query(self) -> OampStatusCheckRequest:
         if self.case_number and not (self.reference_number and self.category and self.year):
             normalized_case = re.sub(r"^0AM", "OAM", self.case_number.replace(" ", ""))
-            match = _OAMP_CASE_RE.fullmatch(normalized_case)
+            match = OAMP_CASE_RE.fullmatch(normalized_case)
             if match:
                 self.reference_number = match.group("reference_number")
                 self.additional_suffix = match.group("additional_suffix")

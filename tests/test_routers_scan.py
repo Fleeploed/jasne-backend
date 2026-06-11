@@ -480,6 +480,27 @@ class TestListScans:
         assert r.status_code == 200
 
 
+class TestScanCounts:
+    def test_empty(self, client, auth_headers):
+        r = client.get("/scans/counts", headers=auth_headers)
+        assert r.status_code == 200
+        assert r.json() == {"total": 0, "by_category": {}}
+
+    def test_aggregates_by_category(self, client, fake_supabase, auth_headers, test_user_id):
+        _seed_scan(fake_supabase, str(test_user_id), category="ucty")
+        _seed_scan(fake_supabase, str(test_user_id), category="ucty")
+        _seed_scan(fake_supabase, str(test_user_id), category="danove")
+        # Another user's scan must not leak into the counts.
+        _seed_scan(fake_supabase, "99999999-9999-9999-9999-999999999999", category="ucty")
+
+        r = client.get("/scans/counts", headers=auth_headers)
+
+        assert r.status_code == 200
+        body = r.json()
+        assert body["total"] == 3
+        assert body["by_category"] == {"ucty": 2, "danove": 1}
+
+
 class TestGetScan:
     def test_by_id(self, client, fake_supabase, auth_headers, test_user_id):
         row = _seed_scan(fake_supabase, str(test_user_id))

@@ -175,7 +175,7 @@ def test_oamp_status_maps_service_errors(client, auth_headers, monkeypatch, exc,
         ),
         ("Proceedings or notification with reference number OAM-55488/ZM-2025 have been closed.", "rejected"),
         ("The application was not found.", "not_found"),
-        ("Neočekávaný výsledek bez známého stavu.", "rejected"),
+        ("Neočekávaný výsledek bez známého stavu.", "unknown"),
     ],
 )
 def test_oamp_status_classifies_portal_messages(message, expected):

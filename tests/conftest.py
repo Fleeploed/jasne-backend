@@ -134,7 +134,14 @@ class _FakeQuery:
         if self._op == "select":
             out = list(rows)
             if self._order:
-                out.sort(key=lambda r: r.get(self._order, ""), reverse=self._order_desc)
+                # Tuple key avoids comparing mixed types when some rows were
+                # seeded directly without the order column (e.g. `seq`):
+                # such rows sort first, as the oldest history.
+                def _order_key(r: dict[str, Any]) -> tuple[bool, Any]:
+                    value = r.get(self._order)
+                    return (value is not None, value if value is not None else 0)
+
+                out.sort(key=_order_key, reverse=self._order_desc)
             if self._range:
                 s, e = self._range
                 out = out[s : e + 1]
@@ -150,6 +157,9 @@ class _FakeQuery:
                 row.setdefault("id", str(uuid4()))
                 row.setdefault("created_at", datetime.now(UTC).isoformat())
                 row.setdefault("updated_at", datetime.now(UTC).isoformat())
+                if self._table.name == "scan_messages":
+                    self._table.seq_counter += 1
+                    row.setdefault("seq", self._table.seq_counter)
                 row.setdefault("reminder_days", [30, 14, 7, 1])
                 row.setdefault("status", "active")
                 row.setdefault("deadline_type", row.get("deadline_type", "action"))
@@ -215,6 +225,7 @@ class _FakeTable:
         self.name = name
         self.rows: list[dict[str, Any]] = []
         self.parent = parent
+        self.seq_counter = 0
 
     def select(self, *args, **kwargs) -> _FakeQuery:
         return _FakeQuery(self).select(*args, **kwargs)
@@ -341,6 +352,16 @@ class FakeSupabase:
                 return _FakeResponse(
                     [{"deleted_scans": deleted_scans, "deleted_deadlines": deleted_deadlines}]
                 )
+
+            if name == "count_scans_by_category":
+                user_id = str(params["p_user_id"])
+                counts: dict[str, int] = {}
+                for r in self.table("scans").rows:
+                    if str(r.get("user_id")) != user_id:
+                        continue
+                    key = r.get("category") or "ostatni"
+                    counts[key] = counts.get(key, 0) + 1
+                return _FakeResponse([{"category": k, "count": v} for k, v in counts.items()])
 
             if name == "list_scans_with_activity":
                 user_id = str(params["p_user_id"])

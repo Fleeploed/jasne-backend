@@ -23,7 +23,7 @@ from app.services.fee_guards import (
     should_suppress_fee_guidance,
 )
 from app.services.model_router import pick_analyzer_model
-from app.services.validator import filter_valid_deadlines
+from app.services.validator import detect_relative_deadline_days, filter_valid_deadlines
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +37,13 @@ STREAM_ANALYSIS_FIELDS: tuple[str, ...] = (
     "documents_needed",
     "tips",
     "deadlines",
+)
+
+# Deadlines must never reach the client before filter_valid_deadlines runs on
+# the full result — a streamed raw deadline could flash a hallucinated or past
+# date that later disappears. They are emitted only post-validation.
+STREAM_INCREMENTAL_FIELDS: tuple[str, ...] = tuple(
+    field for field in STREAM_ANALYSIS_FIELDS if field != "deadlines"
 )
 
 _CONFIRMATION_ACTION_BLOCKLIST = (
@@ -261,7 +268,49 @@ def _parse_analysis_result(raw: str) -> AnalysisResult:
         raise ValueError(f"LLM output failed schema: {exc.errors()[0]['msg']}") from exc
 
 
-def _filter_deadlines(result: AnalysisResult, classifier: ClassifierResult, ocr_text: str) -> AnalysisResult:
+def _relative_deadline_tip(days: int, language: UserLanguage) -> str:
+    if language == "en":
+        return (
+            f"The document sets a deadline of {days} days from delivery/receipt. "
+            "We can't auto-calculate the date, so add a manual reminder once you "
+            "know the delivery date."
+        )
+    if language == "uk":
+        return (
+            f"У документі є строк {days} днів від доручення. Точну дату ми не можемо "
+            "розрахувати автоматично — додайте нагадування вручну, коли знатимете дату вручення."
+        )
+    if language == "ru":
+        return (
+            f"В документе указан срок {days} дней с момента вручения. Точную дату мы не можем "
+            "рассчитать автоматически — добавьте напоминание вручную, когда узнаете дату вручения."
+        )
+    return (
+        f"Dokument uvádí lhůtu {days} dnů od doručení. Přesné datum neumíme spočítat "
+        "automaticky — až budete znát datum doručení, přidejte si připomínku ručně."
+    )
+
+
+def _append_relative_deadline_tip(
+    result: AnalysisResult, ocr_text: str, language: UserLanguage
+) -> AnalysisResult:
+    days = detect_relative_deadline_days(ocr_text)
+    if days is None:
+        return result
+    tip = _relative_deadline_tip(days, language)
+    existing = (result.tips or "").strip()
+    if tip in existing:
+        return result
+    result.tips = f"{existing}\n{tip}".strip() if existing else tip
+    return result
+
+
+def _filter_deadlines(
+    result: AnalysisResult,
+    classifier: ClassifierResult,
+    ocr_text: str,
+    language: UserLanguage,
+) -> AnalysisResult:
     # Last-line defense against hallucinated deadlines.
     kept, rejected = filter_valid_deadlines(
         result.deadlines,
@@ -276,6 +325,11 @@ def _filter_deadlines(result: AnalysisResult, classifier: ClassifierResult, ocr_
             rejected,
         )
     result.deadlines = kept
+    # Relative deadlines never produce a valid absolute date; surface them as a
+    # manual-reminder tip instead of dropping silently. Skip ostatni (no auto
+    # deadlines by design).
+    if classifier.category != "ostatni":
+        result = _append_relative_deadline_tip(result, ocr_text, language)
     return result
 
 
@@ -295,14 +349,14 @@ async def analyze_document(
     response = await client.chat.completions.create(
         model=model,
         temperature=0.2,
-        max_tokens=settings.openai_max_output_tokens,
+        max_tokens=settings.openai_analyzer_max_output_tokens,
         response_format={"type": "json_object"},
         messages=_build_messages(classifier, ocr_text, page_count, rag_chunks, language, has_datova_schranka),
     )
 
     raw = response.choices[0].message.content or "{}"
     result = _apply_analysis_guardrails(
-        _filter_deadlines(_parse_analysis_result(raw), classifier, ocr_text),
+        _filter_deadlines(_parse_analysis_result(raw), classifier, ocr_text, language),
         classifier,
         ocr_text,
         language,
@@ -335,7 +389,7 @@ async def stream_analyze_document(
     stream = await client.chat.completions.create(
         model=model,
         temperature=0.2,
-        max_tokens=settings.openai_max_output_tokens,
+        max_tokens=settings.openai_analyzer_max_output_tokens,
         response_format={"type": "json_object"},
         stream=True,
         messages=_build_messages(classifier, ocr_text, page_count, rag_chunks, language, has_datova_schranka),
@@ -351,7 +405,9 @@ async def stream_analyze_document(
             continue
         raw_parts.append(delta)
         buffer = "".join(raw_parts)
-        for field, value in _extract_completed_json_fields(buffer, emitted).items():
+        for field, value in _extract_completed_json_fields(
+            buffer, emitted, fields=STREAM_INCREMENTAL_FIELDS
+        ).items():
             emitted.add(field)
             yield {
                 "type": "field",
@@ -361,7 +417,7 @@ async def stream_analyze_document(
 
     raw = "".join(raw_parts) or "{}"
     result = _apply_analysis_guardrails(
-        _filter_deadlines(_parse_analysis_result(raw), classifier, ocr_text),
+        _filter_deadlines(_parse_analysis_result(raw), classifier, ocr_text, language),
         classifier,
         ocr_text,
         language,

@@ -116,7 +116,7 @@ async def list_messages(
         .select("*")
         .eq("scan_id", str(scan_id))
         .eq("user_id", str(user_id))
-        .order("created_at")
+        .order("seq")
         .execute()
     )
     return [ScanMessage.model_validate(row) for row in (result.data or [])]
