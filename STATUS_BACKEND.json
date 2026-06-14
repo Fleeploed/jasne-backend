@@ -6,7 +6,7 @@
     "repo": "https://github.com/Fleeploed/jasne-backend",
     "default_branch": "develop",
     "current_branch": "develop",
-    "current_commit": "e9f963b",
+    "current_commit": "5142666 + section-5.1 guardrail registry (uncommitted at status write, committed next)",
     "current_version": "0.1.0",
     "phase": "MVP backend on Render Free with scan/chat streaming, PDF input, Help CMS, RevenueCat sync, and OAMP status lookup for OAM proceedings and ŽOV visa numbers",
     "uncommitted_work_note": "Sections 1-5 are all committed and pushed to develop (e9f963b: section-1 critical fixes at acb5c17, then sections 2-5 hardening/performance/spec-sync/observability). Working tree is clean.",
@@ -403,7 +403,8 @@
     { "id": "be-18", "title": "Section-2 hardening (working tree, uncommitted): atomic conditional quota RPCs closing the check-then-increment race; per-user scan-attempt rate limit (429); QuotaExceededError + generic ValueError so internal errors don't leak; /health/deep behind X-Cron-Secret; _ensure_profile upsert race fix; manual deadlines survive scan delete (auto-only cascade trigger)", "status": "done" },
     { "id": "be-19", "title": "Section-3 performance (working tree, uncommitted): OCR rewrite (whole-PDF single Azure call, shared client, live timeout, bounded fan-out); push receipts cron + Prague-timezone reminder dates + per-run token cache; HNSW vector index; help snapshot 60s TTL cache; RAG vector query truncated to first ~2 pages", "status": "done" },
     { "id": "be-20", "title": "Section-4 spec sync + dead-code cleanup (working tree, uncommitted): enforce Free archive cap (GET /scans envelope with hidden_count); removed dead min_ocr_confidence config + render.yaml env; classifier max tokens 8000→500 (Vision-era artifact); fixed Vision-legacy comments; documented rag_similarity_threshold 0.50 vs stale 0.65 spec and intentional absence of deadline source_text; renamed misleading tracking-limit test to follow MAX_ACTIVE_TRACKINGS_PER_TYPE", "status": "done" },
-    { "id": "be-21", "title": "Section-5 improvements (working tree, uncommitted): structured OpenAI token-usage logging (jasne.token_usage, incl. streamed calls via stream_options); Idempotency-Key on POST /scans + /scans/stream (in-memory TTL store, replay returns original scan, 409 on in-flight dup); env-gated Sentry with request_id tag + SSE-pipeline capture; FakeSupabase no longer guarantees insert-order on unordered selects so ordering regressions surface", "status": "done" }
+    { "id": "be-21", "title": "Section-5 improvements: structured OpenAI token-usage logging (jasne.token_usage, incl. streamed calls via stream_options); Idempotency-Key on POST /scans + /scans/stream (in-memory TTL store, replay returns original scan, 409 on in-flight dup); env-gated Sentry with request_id tag + SSE-pipeline capture; FakeSupabase no longer guarantees insert-order on unordered selects so ordering regressions surface", "status": "done" },
+    { "id": "be-22", "title": "Section-5.1 guardrail registry: ANALYSIS_GUARDRAILS (condition + per-field transforms) drives both the batch and stream-preview post-processing paths from one source; fixes the latent batch/stream divergence and pins it with a parity test", "status": "done" }
   ],
   "pending": {
     "infrastructure": [
@@ -465,9 +466,9 @@
       },
       {
         "id": "be-todo-8",
-        "title": "Declarative guardrail registry in analyzer.py (section 5.1, deferred)",
-        "priority": "medium",
-        "details": "fee_guards + 'potvrzeni o podani' are two hardcoded special cases duplicated across the batch path (_apply_analysis_guardrails) and the stream preview path (_sanitize_stream_field). Introduce a doc_type/condition -> post-processing rule registry both paths share. NOTE: a latent inconsistency was found while reviewing — when a doc triggers BOTH fee-suppression AND submission-confirmation, the stream PREVIEW applies only the submission transform (fee text not stripped from streamed summary/tips), while the persisted result (batch logic) applies both. The registry refactor should unify and pin this with a batch-vs-stream parity test. Deferred from section 5 to keep it a focused, separately-reviewed change rather than bundling a hot-path refactor into the large sections 1-5 batch."
+        "title": "Declarative guardrail registry in analyzer.py (section 5.1)",
+        "priority": "done",
+        "details": "Done: ANALYSIS_GUARDRAILS registry (Guardrail = condition + per-field transforms) now drives BOTH _apply_analysis_guardrails (batch) and _sanitize_stream_field (stream preview). Fixed the latent inconsistency where a doc matching both fee-suppression and submission-confirmation got different treatment in stream vs persisted; a parity test pins per-field agreement. New doc_type rules are added to the registry, not as branches in two places."
       },
       {
         "id": "be-todo-4",

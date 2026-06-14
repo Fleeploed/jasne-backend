@@ -5,14 +5,74 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from app.models.schemas import ClassifierResult
+from app.models.schemas import AnalysisResult, ClassifierResult
 from app.services.analyzer import (
+    ANALYSIS_GUARDRAILS,
     STREAM_ANALYSIS_FIELDS,
     STREAM_INCREMENTAL_FIELDS,
+    _apply_analysis_guardrails,
     _build_system_prompt,
     _extract_completed_json_fields,
+    _sanitize_stream_field,
     analyze_document,
 )
+
+
+class TestGuardrailRegistry:
+    """The batch applier and the stream-field applier must derive from the same
+    registry so they can never disagree (the old hand-written if-ladders did)."""
+
+    def _submission_confirmation_inputs(self):
+        classifier = ClassifierResult(
+            category="cizinecka",
+            doc_type="potvrzeni_o_podani_zadosti",
+            confidence=0.95,
+        )
+        ocr_text = "POTVRZENÍ O PODÁNÍ ŽÁDOSTI. Žádost byla podána."
+        return classifier, ocr_text
+
+    def _result(self) -> AnalysisResult:
+        return AnalysisResult(
+            document_type="potvrzeni",
+            document_type_cz="Potvrzení",
+            summary="Žádost byla podána.",
+            actions_required=["Doložit doklad o ubytování", "Uschovat potvrzení"],
+            penalty="Hrozí vyhoštění.",
+            documents_needed=["Cestovní doklad"],
+            confidence=0.9,
+        )
+
+    def test_stream_field_matches_batch_per_field(self):
+        classifier, ocr_text = self._submission_confirmation_inputs()
+        batch = _apply_analysis_guardrails(self._result(), classifier, ocr_text, "cs")
+        original = self._result()
+
+        for field in ("documents_needed", "penalty", "deadlines", "actions_required"):
+            streamed = _sanitize_stream_field(field, getattr(original, field), classifier, ocr_text, "cs")
+            assert streamed == getattr(batch, field), f"{field} drift between stream and batch"
+
+    def test_submission_confirmation_blanks_fields(self):
+        classifier, ocr_text = self._submission_confirmation_inputs()
+        result = _apply_analysis_guardrails(self._result(), classifier, ocr_text, "cs")
+        assert result.documents_needed == []
+        assert result.penalty is None
+        assert result.deadlines == []
+        # Blocklisted "doložit" action dropped; benign one kept.
+        assert result.actions_required == ["Uschovat potvrzení"]
+
+    def test_noop_when_no_guardrail_applies(self):
+        classifier = ClassifierResult(category="ucty", doc_type="faktura", confidence=0.9)
+        result = _apply_analysis_guardrails(self._result(), classifier, "Faktura.", "cs")
+        assert result.penalty == "Hrozí vyhoštění."
+        assert result.documents_needed == ["Cestovní doklad"]
+
+    def test_registry_is_the_single_source(self):
+        # Both appliers iterate this one registry — guards against re-introducing
+        # a parallel hand-maintained branch.
+        assert {rail.name for rail in ANALYSIS_GUARDRAILS} == {
+            "card_pickup_unconfirmed_fee",
+            "submission_confirmation",
+        }
 
 
 class TestBuildSystemPrompt:

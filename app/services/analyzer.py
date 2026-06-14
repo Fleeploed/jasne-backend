@@ -8,7 +8,8 @@ through the `validator` to drop hallucinated dates.
 import json
 import logging
 import re
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
+from dataclasses import dataclass
 from typing import Any
 
 from pydantic import ValidationError
@@ -116,17 +117,87 @@ def _clean_confirmation_actions(actions: list[str], language: UserLanguage) -> l
     return kept or [_confirmation_followup_action(language)]
 
 
-def _apply_card_pickup_fee_guardrail(
-    result: AnalysisResult, classifier: ClassifierResult, ocr_text: str
-) -> AnalysisResult:
-    if not _classifier_should_suppress_fee_guidance(classifier, ocr_text):
-        return result
+# ---------------------------------------------------------------------------
+# Declarative post-processing guardrails
+#
+# Each guardrail is (condition, per-field transforms). One registry drives BOTH
+# the batch path (transform the whole result) and the stream path (transform a
+# single just-completed field), so the two can't drift — historically they were
+# two hand-maintained if-ladders that already disagreed when a doc matched both
+# rules. Transforms take (value, language) and are defensive about types because
+# stream values come from partial JSON. Add a new doc_type rule here, not as
+# another branch in two places.
+# ---------------------------------------------------------------------------
 
-    result.summary = _strip_unconfirmed_fee_text(result.summary) or result.summary
-    result.tips = _strip_unconfirmed_fee_text(result.tips)
-    result.actions_required = filter_fee_items(result.actions_required)
-    result.documents_needed = filter_fee_items(result.documents_needed)
-    return result
+FieldTransform = Callable[[Any, UserLanguage], Any]
+
+
+@dataclass(frozen=True)
+class Guardrail:
+    name: str
+    applies: Callable[[ClassifierResult, str], bool]
+    field_transforms: dict[str, FieldTransform]
+
+
+def _strip_fee_keep_original(value: Any, _language: UserLanguage) -> Any:
+    # summary must never go empty just because every sentence mentioned a fee.
+    if not isinstance(value, str):
+        return value
+    return _strip_unconfirmed_fee_text(value) or value
+
+
+def _strip_fee(value: Any, _language: UserLanguage) -> Any:
+    if not isinstance(value, str):
+        return value
+    return _strip_unconfirmed_fee_text(value)
+
+
+def _filter_fee(value: Any, _language: UserLanguage) -> Any:
+    if not isinstance(value, list):
+        return value
+    return filter_fee_items(value)
+
+
+def _to_empty_list(_value: Any, _language: UserLanguage) -> list[Any]:
+    return []
+
+
+def _to_none(_value: Any, _language: UserLanguage) -> None:
+    return None
+
+
+def _clean_confirmation(value: Any, language: UserLanguage) -> Any:
+    if not isinstance(value, list):
+        return value
+    return _clean_confirmation_actions([str(action) for action in value], language)
+
+
+ANALYSIS_GUARDRAILS: tuple[Guardrail, ...] = (
+    Guardrail(
+        name="card_pickup_unconfirmed_fee",
+        applies=_classifier_should_suppress_fee_guidance,
+        field_transforms={
+            "summary": _strip_fee_keep_original,
+            "tips": _strip_fee,
+            "actions_required": _filter_fee,
+            "documents_needed": _filter_fee,
+        },
+    ),
+    Guardrail(
+        name="submission_confirmation",
+        applies=_looks_like_submission_confirmation,
+        field_transforms={
+            "documents_needed": _to_empty_list,
+            "penalty": _to_none,
+            "deadlines": _to_empty_list,
+            "actions_required": _clean_confirmation,
+        },
+    ),
+)
+
+
+def _active_guardrails(classifier: ClassifierResult, ocr_text: str) -> list[Guardrail]:
+    return [rail for rail in ANALYSIS_GUARDRAILS if rail.applies(classifier, ocr_text)]
 
 
 def _apply_analysis_guardrails(
@@ -135,16 +206,15 @@ def _apply_analysis_guardrails(
     ocr_text: str,
     language: UserLanguage,
 ) -> AnalysisResult:
-    """Last-line defense against RAG-driven hallucinations for known doc types."""
-    result = _apply_card_pickup_fee_guardrail(result, classifier, ocr_text)
+    """Last-line defense against RAG-driven hallucinations for known doc types.
 
-    if not _looks_like_submission_confirmation(classifier, ocr_text):
-        return result
-
-    result.documents_needed = []
-    result.penalty = None
-    result.deadlines = []
-    result.actions_required = _clean_confirmation_actions(result.actions_required, language)
+    Applies every matching guardrail's transforms to the whole result, in
+    registry order (so a later rule can override an earlier one on the same
+    field, e.g. submission-confirmation blanking documents_needed).
+    """
+    for rail in _active_guardrails(classifier, ocr_text):
+        for field, transform in rail.field_transforms.items():
+            setattr(result, field, transform(getattr(result, field), language))
     return result
 
 
@@ -155,20 +225,12 @@ def _sanitize_stream_field(
     ocr_text: str,
     language: UserLanguage,
 ) -> Any:
-    if not _looks_like_submission_confirmation(classifier, ocr_text):
-        if not _classifier_should_suppress_fee_guidance(classifier, ocr_text):
-            return value
-        if field in {"summary", "tips"} and isinstance(value, str):
-            return _strip_unconfirmed_fee_text(value)
-        if field in {"actions_required", "documents_needed"} and isinstance(value, list):
-            return filter_fee_items(value)
-        return value
-    if field == "documents_needed":
-        return []
-    if field in {"penalty", "deadlines"}:
-        return None if field == "penalty" else []
-    if field == "actions_required" and isinstance(value, list):
-        return _clean_confirmation_actions([str(action) for action in value], language)
+    """Apply the same guardrail transforms to one just-completed streamed field,
+    so the preview matches the persisted (batch-processed) result."""
+    for rail in _active_guardrails(classifier, ocr_text):
+        transform = rail.field_transforms.get(field)
+        if transform is not None:
+            value = transform(value, language)
     return value
 
 
