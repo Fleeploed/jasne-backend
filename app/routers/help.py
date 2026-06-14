@@ -14,7 +14,9 @@ service key and bypasses RLS, so we filter status='published' explicitly.
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import time
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -108,20 +110,47 @@ async def _load_published_guides() -> dict[str, dict[HelpLanguage, HelpGuide]]:
     return out
 
 
+# Snapshot TTL cache: guides change rarely (admin edits), but every Help-tab
+# request was fetching the whole help_guides table. 60s staleness is invisible
+# to users and removes the per-request full-table read.
+_SNAPSHOT_TTL_SECONDS = 60.0
+_snapshot_cache: tuple[float, HelpContent] | None = None
+_snapshot_lock = asyncio.Lock()
+
+
 async def _snapshot() -> HelpContent:
     """HelpContent assembled from YAML (categories + ui_strings) + DB (guides).
 
     Categories metadata still comes from YAML — the new help_categories
     table only holds basics the admin edits, and the mobile response model
-    needs the rich fields.
+    needs the rich fields. Cached for _SNAPSHOT_TTL_SECONDS.
     """
-    yaml_content = get_help_content()
-    guides_by_slug = await _load_published_guides()
-    return HelpContent(
-        categories=yaml_content.categories,
-        guides_by_slug=guides_by_slug,
-        ui_strings=yaml_content.ui_strings,
-    )
+    global _snapshot_cache
+    now = time.monotonic()
+    if _snapshot_cache is not None and now - _snapshot_cache[0] < _SNAPSHOT_TTL_SECONDS:
+        return _snapshot_cache[1]
+
+    async with _snapshot_lock:
+        # Re-check under the lock — a concurrent request may have refreshed it.
+        now = time.monotonic()
+        if _snapshot_cache is not None and now - _snapshot_cache[0] < _SNAPSHOT_TTL_SECONDS:
+            return _snapshot_cache[1]
+
+        yaml_content = get_help_content()
+        guides_by_slug = await _load_published_guides()
+        content = HelpContent(
+            categories=yaml_content.categories,
+            guides_by_slug=guides_by_slug,
+            ui_strings=yaml_content.ui_strings,
+        )
+        _snapshot_cache = (time.monotonic(), content)
+        return content
+
+
+def invalidate_snapshot_cache() -> None:
+    """Drop the cached snapshot (admin writes + tests)."""
+    global _snapshot_cache
+    _snapshot_cache = None
 
 
 # ---------------------------------------------------------------------------

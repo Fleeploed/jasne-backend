@@ -2,13 +2,15 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "meta": {
     "project": "Jasne backend",
-    "snapshot_date": "2026-06-04",
+    "snapshot_date": "2026-06-13",
     "repo": "https://github.com/Fleeploed/jasne-backend",
     "default_branch": "develop",
     "current_branch": "develop",
-    "current_commit": "54541b3",
+    "current_commit": "acb5c17",
     "current_version": "0.1.0",
-    "phase": "MVP backend on Render Free with scan/chat streaming, PDF input, Help CMS, RevenueCat sync, and OAMP status lookup for OAM proceedings and ŽOV visa numbers"
+    "phase": "MVP backend on Render Free with scan/chat streaming, PDF input, Help CMS, RevenueCat sync, and OAMP status lookup for OAM proceedings and ŽOV visa numbers",
+    "uncommitted_work_note": "Section-1 critical fixes are committed at acb5c17. Hardening + performance batches (sections 2.x and 3.x: atomic quotas, scan rate limit, error-leak hardening, /health/deep auth, profile-race upsert, manual-deadline survival, OCR pipeline rewrite, push receipts, Prague timezone, HNSW, help cache, RAG truncation) are in the working tree, tested green, NOT yet committed.",
+    "migrations_applied_to_prod": "0015-0019 already applied to the live Supabase project (verified via MCP on 2026-06-13)."
   },
   "deployment": {
     "live_url": "https://jasne-backend.onrender.com",
@@ -70,10 +72,9 @@
         "REVENUECAT_API_BASE_URL",
         "RAG_TOP_K",
         "RAG_SIMILARITY_THRESHOLD",
-        "EMBEDDING_MAX_CHARS",
-        "MIN_OCR_CONFIDENCE"
+        "EMBEDDING_MAX_CHARS"
       ],
-      "optional": ["DEEPL_API_KEY", "RENDER_STAGING_URL", "UPTIME_URL"]
+      "optional": ["DEEPL_API_KEY", "RENDER_STAGING_URL", "UPTIME_URL", "SENTRY_DSN"]
     }
   },
   "infrastructure": {
@@ -84,7 +85,7 @@
       "region": "eu-west-1",
       "postgres_version": "17",
       "extensions": ["vector (pgvector)", "pgcrypto"],
-      "schema_version": "0014_account_soft_delete",
+      "schema_version": "0019_knowledge_chunks_hnsw",
       "migration_files": [
         "0001_init.sql",
         "0002_skill_overhaul.sql",
@@ -99,8 +100,14 @@
         "0011_help_admin.sql",
         "0012_push_notifications.sql",
         "0013_oamp_status_tracking.sql",
-        "0014_account_soft_delete.sql"
+        "0014_account_soft_delete.sql",
+        "0015_count_scans_by_category.sql",
+        "0016_scan_messages_seq.sql",
+        "0017_conditional_quota_increments.sql",
+        "0018_manual_deadlines_survive_scan_delete.sql",
+        "0019_knowledge_chunks_hnsw.sql"
       ],
+      "vector_index": "knowledge_chunks.embedding uses HNSW (vector_cosine_ops) as of 0019; the old ivfflat index from 0001 was trained on an empty table and is gone. HNSW needs no REINDEX after loading more knowledge.",
       "rls_enabled": true,
       "tier": "Free"
     },
@@ -163,7 +170,7 @@
     "routers": {
       "system": [
         { "method": "GET", "path": "/health", "auth": false, "purpose": "liveness" },
-        { "method": "GET", "path": "/health/deep", "auth": false, "purpose": "Supabase + OpenAI readiness" },
+        { "method": "GET", "path": "/health/deep", "auth": "X-Cron-Secret (when INTERNAL_CRON_SECRET is set)", "purpose": "Supabase + OpenAI + Azure DI readiness; now secret-gated to stop unauthenticated amplification (uptime.yml + UptimeRobot must send the header)" },
         { "method": "GET", "path": "/version", "auth": false, "purpose": "deployment SHA verification" },
         { "method": "GET", "path": "/docs", "auth": false, "purpose": "Swagger UI outside production" }
       ],
@@ -175,9 +182,9 @@
         { "method": "DELETE", "path": "/profile", "auth": true, "purpose": "schedule account deletion with 7-day restore window; data is purged later by /internal/accounts/purge-deleted" }
       ],
       "scans": [
-        { "method": "POST", "path": "/scans", "auth": true, "supports": ["png", "jpg", "jpeg", "gif", "webp", "pdf"] },
-        { "method": "POST", "path": "/scans/stream", "auth": true, "purpose": "SSE scan progress with keep-alive heartbeats" },
-        { "method": "GET", "path": "/scans", "auth": true, "purpose": "paginated scan list via list_scans_with_activity RPC" },
+        { "method": "POST", "path": "/scans", "auth": true, "supports": ["png", "jpg", "jpeg", "gif", "webp", "pdf"], "rate_limit": "per-user scan-attempt limit (~20/hour, counts failed attempts too) → 429 'Too many scan attempts'; quota is charged atomically at save time so 402 can also arrive late", "idempotency": "accepts optional Idempotency-Key header: a retry with the same key returns the original scan instead of redoing the paid pipeline; 409 if a scan with that key is still in flight" },
+        { "method": "POST", "path": "/scans/stream", "auth": true, "purpose": "SSE scan progress with keep-alive heartbeats", "rate_limit": "same 429 attempt limit; a late 402 or generic failure arrives as an SSE error frame (raw exception text is no longer leaked)" },
+        { "method": "GET", "path": "/scans", "auth": true, "purpose": "paginated scan list via list_scans_with_activity RPC", "response_contract_change_2026_06_13": "now returns an envelope { scans: ScanListItem[], plan, archive_limit, hidden_count } instead of a bare array. Free is capped to the most-recent archive_limit (5); hidden_count is how many older scans are gated behind Pro. FRONTEND MUST read response.scans (not the top-level array) and can render the '+N hidden, upgrade' paywall from hidden_count." },
         { "method": "GET", "path": "/scans/counts", "auth": true, "purpose": "total and per-category counts for filter chips" },
         { "method": "GET", "path": "/scans/{scan_id}", "auth": true },
         { "method": "GET", "path": "/scans/{scan_id}/image-urls", "auth": true, "purpose": "signed file URLs; can render PDF previews" },
@@ -218,24 +225,29 @@
       ],
       "internal": [
         { "method": "POST", "path": "/internal/notifications/due", "auth": "X-Cron-Secret", "purpose": "send due deadline notifications" },
-        { "method": "POST", "path": "/internal/accounts/purge-deleted", "auth": "X-Cron-Secret", "purpose": "permanently purge accounts whose 7-day deletion grace period elapsed" }
+        { "method": "POST", "path": "/internal/notifications/receipts", "auth": "X-Cron-Secret", "purpose": "fetch Expo push receipts ~20min after send and disable DeviceNotRegistered tokens (new 2026-06-13)" },
+        { "method": "POST", "path": "/internal/accounts/purge-deleted", "auth": "X-Cron-Secret", "purpose": "permanently purge accounts whose 7-day deletion grace period elapsed" },
+        { "method": "POST", "path": "/internal/trackings/run-cron", "auth": "X-Cron-Secret", "purpose": "re-check due background OAMP trackings" }
       ]
     },
     "core_flows": {
       "scan_pipeline": [
+        "enforce per-user scan-attempt rate limit (429 if exceeded)",
         "validate user-owned Supabase storage paths",
-        "sign image URLs or render PDFs to PNG data URLs with PyMuPDF",
-        "check plan quota after final page count is known",
-        "GPT-4o Vision OCR/classification",
-        "pgvector RAG retrieval",
-        "category-routed analyzer",
+        "sign image URLs; PDFs are sent to Azure DI WHOLE as one data:application/pdf URL (prebuilt-read OCRs all pages in one call) — PyMuPDF now only counts pages on the scan path, rasterising is reserved for /image-urls previews",
+        "advisory plan-quota pre-check after final page count is known",
+        "Azure Document Intelligence prebuilt-read OCR (one shared client, bounded concurrency, per-call timeout from azure_document_intelligence_timeout_seconds)",
+        "GPT-4o text-only classification",
+        "pgvector RAG retrieval (vector query embeds only the first ~2 pages; keyword search uses full text)",
+        "category-routed analyzer (deadlines validated before streaming; relative deadlines surfaced as a manual-reminder tip)",
+        "atomic quota charge via try_increment_scan_count (authoritative gate; 402 here on a race loser) BEFORE persisting",
         "persist scan",
-        "increment usage counter",
         "best-effort auto-deadlines and chat thread seed"
       ],
       "streaming_scan": {
         "events": ["status", "field", "done", "error"],
-        "heartbeats": "SSE comments every 10 seconds during blocking calls"
+        "heartbeats": "SSE comments every 10 seconds during blocking calls",
+        "deadlines_stream_note": "deadlines are EXCLUDED from incremental field events and only emitted (validated) at the end before done, so a hallucinated/past date never flashes in the UI mid-stream"
       },
       "chat": {
         "model": "gpt-4o-mini",
@@ -247,12 +259,21 @@
         "source": "https://ipc.gov.cz/informace-o-stavu-rizeni/",
         "english_source": "https://ipc.gov.cz/en/status-of-your-application/",
         "implementation": "Playwright Chromium in a worker thread",
-        "supported": "proceedings fields / formatted OAM case number / visa application number (ŽOV)"
+        "supported": "proceedings fields / formatted OAM case number / visa application number (ŽOV)",
+        "case_number_regex": "OAMP_CASE_RE in schemas is the single source of truth; the tracker imports it so /status/oamp and 'track this case' accept identical identifiers including suffixed forms like OAM-19391-4/ZM-2026 (was a 422 mismatch before 2026-06-13)",
+        "unknown_outcome": "unrecognized portal result text now classifies as 'unknown', not 'rejected' — a wording change on the IPC site no longer scares users with a false zamítnutí",
+        "playwright_note": "Playwright Chromium cold-start is expensive per check. A documented research spike (DevTools network capture of the public lookup) could replace it with an httpx call, but the endpoint is behind a WordPress+React nonce-middleware and was NOT trivially extractable from static JS — deferred, not done."
       },
       "help": {
         "content_model": "categories and UI strings from YAML; published guides from Postgres help_guides",
         "admin_ui": "help-admin/index.html",
-        "admin_role": "profiles.role = admin"
+        "admin_role": "profiles.role = admin",
+        "snapshot_cache": "the per-request full help_guides fetch is now behind a 60s in-memory TTL cache (invalidate_snapshot_cache() drops it for admin writes/tests)"
+      },
+      "push_notifications": {
+        "send_job": "POST /internal/notifications/due — daily cron (7:00 UTC ≈ 8/9:00 Prague); reminder_day computed against Europe/Prague, NOT UTC, so a late-night UTC run no longer shifts/duplicates the Free 1-day reminder",
+        "receipts_job": "POST /internal/notifications/receipts — cron at 7:45 UTC; fetches Expo receipts ~20min after send and disables DeviceNotRegistered tokens (an 'ok' ticket does not prove delivery)",
+        "token_lookup": "push_tokens cached per cron run (no N+1); accounts in deletion grace period are skipped via deletion_status filter"
       },
       "account_deletion": {
         "delete_profile": "DELETE /profile now marks profiles.deletion_status=pending, sets deletion_requested_at/deletion_scheduled_at/deletion_reason, clears expo_push_token, and leaves user data intact for 7 days.",
@@ -274,20 +295,25 @@
       "free": {
         "monthly_scans": 5,
         "max_pages_per_scan": 3,
-        "max_questions_per_scan": 0
+        "max_questions_per_scan": 0,
+        "archive_limit": 5,
+        "scan_attempts_per_hour": 20
       },
       "pro": {
         "monthly_scans": 100,
         "max_pages_per_scan": 10,
         "max_questions_per_scan": 10,
+        "archive_limit": null,
+        "scan_attempts_per_hour": 20,
         "usage_period": "subscription period derived from RevenueCat expiration when available"
-      }
+      },
+      "archive_limit_note": "Free archive cap is now enforced (2026-06-13): GET /scans returns only the most-recent 5 for Free and reports hidden_count for the upgrade paywall. Pro is unlimited. scan_attempts_per_hour is the cost-abuse rate limit on scan attempts regardless of plan."
     },
     "database_schema": {
       "tables": {
         "profiles": ["id", "display_name", "language", "has_datova_schranka", "plan", "subscription_product_id", "subscription_expires_at", "subscription_will_renew", "role", "expo_push_token", "deletion_status", "deletion_requested_at", "deletion_scheduled_at", "deletion_reason", "deletion_restored_at", "created_at", "updated_at"],
         "scans": ["id", "user_id", "image_paths", "page_count", "ocr_text", "category", "doc_type", "category_confidence", "result", "language", "model_used", "created_at"],
-        "scan_messages": ["id", "scan_id", "user_id", "role", "content", "message_type", "created_at"],
+        "scan_messages": ["id", "scan_id", "user_id", "role", "content", "message_type", "seq", "created_at"],
         "deadlines": ["id", "user_id", "scan_id", "title", "description", "due_date", "reminder_days", "deadline_type", "status", "auto_created", "created_at"],
         "usage_limits": ["user_id", "month", "scans_count", "questions_per_scan"],
         "knowledge_chunks": ["id", "content", "metadata", "embedding"],
@@ -299,30 +325,36 @@
         "match_knowledge_chunks(query_embedding, filter_category, threshold, count)",
         "increment_scan_count(p_user_id, p_month)",
         "increment_chat_count(p_user_id, p_scan_id, p_month)",
+        "try_increment_scan_count(p_user_id, p_month, p_cap) — conditional increment, returns new count or -1 at cap; authoritative scan-quota gate (0017)",
+        "try_increment_chat_count(p_user_id, p_month, p_scan_id, p_cap) — conditional per-scan chat increment (0017)",
+        "count_scans_by_category(p_user_id) — group-by aggregate for GET /scans/counts (0015)",
         "list_scans_with_activity(p_user_id, p_limit, p_offset)",
         "delete_user_scans(p_user_id)"
       ],
       "important_constraints": [
         "usage_limits.month accepts YYYY-MM and pro:start:end subscription-period keys",
-        "deadlines.scan_id cascades on scan delete",
+        "scan_messages.seq is a monotonic identity column (0016); chat reads order by seq so a Q/A pair sharing created_at can no longer flip",
+        "deadlines.scan_id is ON DELETE SET NULL again (0018); a BEFORE DELETE trigger on scans removes only auto_created deadlines, so manually created reminders survive scan deletion with scan_id nulled",
         "bulk scan delete does not reset usage_limits after migration 0009",
+        "quota check-then-increment race is closed (0017): check_* are advisory pre-checks, try_increment_* are the atomic authoritative gate",
         "profiles.deletion_status accepts active/pending; profiles_pending_deletion_idx accelerates purge lookup by deletion_scheduled_at"
       ]
     },
     "tests": {
       "framework": "pytest + pytest-asyncio",
-      "test_files": 21,
-      "collected_tests": 362,
+      "test_files": 31,
+      "collected_tests": 408,
       "local_latest": {
-        "date": "2026-06-04",
+        "date": "2026-06-13",
         "command": "venv/bin/python -m pytest",
-        "result": "362 passed in 5.46s",
-        "local_python": "3.14.4"
+        "result": "408 passed in ~7s",
+        "local_python": "3.14.4",
+        "note": "local venv needed aiohttp installed (it is in requirements.txt but was missing locally) for azure-core async transport in OCR tests"
       },
       "lint_latest": {
-        "date": "2026-06-04",
-        "command": "env RUFF_CACHE_DIR=/private/tmp/jasne-ruff-cache venv/bin/python -m ruff check changed backend files",
-        "result": "All checks passed"
+        "date": "2026-06-13",
+        "command": "venv/bin/python -m ruff check app tests && ruff format --check",
+        "result": "All checks passed; 101 files formatted"
       },
       "coverage_areas": [
         "auth",
@@ -364,9 +396,14 @@
     { "id": "be-11", "title": "Help mobile API backed by YAML metadata plus Postgres published guides", "status": "done" },
     { "id": "be-12", "title": "Single-file Help admin with DeepL proxy endpoints", "status": "done" },
     { "id": "be-13", "title": "OAMP status lookup endpoint with Playwright Chromium for OAM proceedings and ŽOV visa numbers", "status": "done" },
-    { "id": "be-14", "title": "Supabase migrations through 0014_account_soft_delete", "status": "done" },
-    { "id": "be-15", "title": "362-test backend suite passing locally", "status": "done" },
-    { "id": "be-16", "title": "Soft-delete account flow with 7-day restore window, normal API guard, restore endpoint, and internal purge endpoint", "status": "done" }
+    { "id": "be-14", "title": "Supabase migrations through 0019_knowledge_chunks_hnsw (applied to prod)", "status": "done" },
+    { "id": "be-15", "title": "408-test backend suite passing locally", "status": "done" },
+    { "id": "be-16", "title": "Soft-delete account flow with 7-day restore window, normal API guard, restore endpoint, and internal purge endpoint", "status": "done" },
+    { "id": "be-17", "title": "Section-1 critical fixes (committed acb5c17): deterministic chat order via scan_messages.seq; deadlines never streamed before validation; no pushes to pending-deletion accounts; OAMP 'unknown' outcome; OAMP suffixed case numbers; bounded translation length; rescued written-out/relative deadlines + expanded smlouvy keywords", "status": "done" },
+    { "id": "be-18", "title": "Section-2 hardening (working tree, uncommitted): atomic conditional quota RPCs closing the check-then-increment race; per-user scan-attempt rate limit (429); QuotaExceededError + generic ValueError so internal errors don't leak; /health/deep behind X-Cron-Secret; _ensure_profile upsert race fix; manual deadlines survive scan delete (auto-only cascade trigger)", "status": "done" },
+    { "id": "be-19", "title": "Section-3 performance (working tree, uncommitted): OCR rewrite (whole-PDF single Azure call, shared client, live timeout, bounded fan-out); push receipts cron + Prague-timezone reminder dates + per-run token cache; HNSW vector index; help snapshot 60s TTL cache; RAG vector query truncated to first ~2 pages", "status": "done" },
+    { "id": "be-20", "title": "Section-4 spec sync + dead-code cleanup (working tree, uncommitted): enforce Free archive cap (GET /scans envelope with hidden_count); removed dead min_ocr_confidence config + render.yaml env; classifier max tokens 8000→500 (Vision-era artifact); fixed Vision-legacy comments; documented rag_similarity_threshold 0.50 vs stale 0.65 spec and intentional absence of deadline source_text; renamed misleading tracking-limit test to follow MAX_ACTIVE_TRACKINGS_PER_TYPE", "status": "done" },
+    { "id": "be-21", "title": "Section-5 improvements (working tree, uncommitted): structured OpenAI token-usage logging (jasne.token_usage, incl. streamed calls via stream_options); Idempotency-Key on POST /scans + /scans/stream (in-memory TTL store, replay returns original scan, 409 on in-flight dup); env-gated Sentry with request_id tag + SSE-pipeline capture; FakeSupabase no longer guarantees insert-order on unordered selects so ordering regressions surface", "status": "done" }
   ],
   "pending": {
     "infrastructure": [
@@ -417,14 +454,20 @@
       {
         "id": "be-todo-2",
         "title": "Push notification scheduler for deadlines",
-        "priority": "high",
-        "details": "Cron/background job to send Expo push notifications based on active deadlines and reminder_days."
+        "priority": "done",
+        "details": "Implemented: /internal/notifications/due send job + /internal/notifications/receipts cleanup job, both driven by .github/workflows/notifications.yml (7:00 and 7:45 UTC). reminder_day computed against Europe/Prague. Remaining frontend work: register/store Expo push tokens (mobile-todo-2)."
       },
       {
         "id": "be-todo-3",
         "title": "Generated response drafts",
         "priority": "medium",
         "details": "Endpoint such as POST /scans/{id}/draft-response for odvolani/zadost templates."
+      },
+      {
+        "id": "be-todo-8",
+        "title": "Declarative guardrail registry in analyzer.py (section 5.1, deferred)",
+        "priority": "medium",
+        "details": "fee_guards + 'potvrzeni o podani' are two hardcoded special cases duplicated across the batch path (_apply_analysis_guardrails) and the stream preview path (_sanitize_stream_field). Introduce a doc_type/condition -> post-processing rule registry both paths share. NOTE: a latent inconsistency was found while reviewing — when a doc triggers BOTH fee-suppression AND submission-confirmation, the stream PREVIEW applies only the submission transform (fee text not stripped from streamed summary/tips), while the persisted result (batch logic) applies both. The registry refactor should unify and pin this with a batch-vs-stream parity test. Deferred from section 5 to keep it a focused, separately-reviewed change rather than bundling a hot-path refactor into the large sections 1-5 batch."
       },
       {
         "id": "be-todo-4",
@@ -437,6 +480,18 @@
         "title": "Schedule internal account purge cron",
         "priority": "high",
         "details": "Call POST /internal/accounts/purge-deleted with X-Cron-Secret on a daily/hourly schedule after deployment so due pending-deletion accounts are physically removed after the 7-day grace period."
+      },
+      {
+        "id": "be-todo-6",
+        "title": "Commit and push sections 2.x + 3.x hardening/perf work",
+        "priority": "high",
+        "details": "Working tree at acb5c17 + uncommitted section-2/3 changes (tested green). Commit and push to develop so the deployed backend matches the prod DB schema (0019 already applied)."
+      },
+      {
+        "id": "be-todo-7",
+        "title": "Add X-Cron-Secret header to UptimeRobot /health/deep monitor",
+        "priority": "high",
+        "details": "After deploy /health/deep returns 403 without the secret. uptime.yml already sends it; UptimeRobot dashboard monitor must add the X-Cron-Secret header too or it will alert."
       }
     ],
     "mobile_and_monetization": [
@@ -492,30 +547,51 @@
       "title": "Account purge endpoint still needs external schedule",
       "impact": "Pending-deletion accounts are blocked and restorable, but final physical deletion after 7 days depends on a cron/scheduler calling /internal/accounts/purge-deleted.",
       "fix": "be-todo-5"
+    },
+    {
+      "id": "issue-6",
+      "severity": "medium",
+      "title": "Section-2/3 hardening + perf work is uncommitted",
+      "impact": "Prod DB schema is at 0019 but the deployed backend code is at acb5c17 (section 1 only). Until sections 2.x/3.x are committed and deployed, the live service lacks rate limiting, atomic quotas, the OCR rewrite, push receipts, etc.",
+      "fix": "be-todo-6"
+    },
+    {
+      "id": "issue-7",
+      "severity": "low",
+      "title": "OCR async transport needs aiohttp",
+      "impact": "azure-core's async pipeline imports aiohttp; it is in requirements.txt but a fresh venv without it fails OCR tests/calls.",
+      "fix": "Ensure aiohttp installs in the Docker image (already pinned in requirements.txt)."
+    },
+    {
+      "id": "issue-8",
+      "severity": "info",
+      "title": "OAMP lookup still uses Playwright Chromium",
+      "impact": "Cold-start cost per check; couples to IPC site markup. httpx replacement is a researched-but-deferred spike (endpoint behind WordPress+React nonce middleware).",
+      "fix": "Capture the public lookup request via DevTools network tab, then replace Playwright with an httpx call + fixture test."
     }
   ],
   "git_state": {
     "active_branch": "develop",
-    "clean_worktree_before_status_update": true,
-    "latest_backend_commit_before_status_update": "54541b3",
+    "clean_worktree_before_status_update": false,
+    "latest_backend_commit": "acb5c17 (section-1 critical fixes)",
+    "uncommitted": "section-2 hardening + section-3 performance batches, tested green, not yet committed",
     "latest_successful_ci": "https://github.com/Fleeploed/jasne-backend/actions/runs/26537054851"
   },
   "next_session_recommendations": {
     "priority_order": [
-      "1. Confirm Render env secrets are filled and /health/deep is green",
-      "2. Set RENDER_STAGING_URL and UPTIME_URL in GitHub if Render hostname differs",
-      "3. Remove old Railway GitHub secrets",
-      "4. Add branch protection on main",
-      "5. Configure Supabase SMTP",
-      "6. Deploy migration 0014_account_soft_delete and schedule /internal/accounts/purge-deleted",
-      "7. Add Sentry/error tracking",
-      "8. Continue RAG content for non-cizinecka categories",
-      "9. Build deadline push notification scheduler"
+      "1. Commit + push section-2/3 work to develop (be-todo-6) so deployed code matches the 0019 prod schema",
+      "2. Add X-Cron-Secret header to the UptimeRobot /health/deep monitor (be-todo-7) before/at deploy",
+      "3. Confirm INTERNAL_CRON_SECRET is set in Render so /health/deep and the new receipts cron authenticate",
+      "4. Schedule /internal/accounts/purge-deleted with X-Cron-Secret (be-todo-5)",
+      "5. Configure Supabase SMTP before public signups",
+      "6. Add branch protection on main; add Sentry/error tracking",
+      "7. Continue RAG content for non-cizinecka categories",
+      "8. (Deferred spike) Replace OAMP Playwright with an httpx call once the public lookup endpoint is captured via DevTools"
     ],
     "before_mobile_launch_must_have": [
       "Supabase SMTP",
       "Scheduled account purge cron for the 7-day restore window",
-      "Push notification scheduler",
+      "Frontend Expo push token registration to feed the now-built notification scheduler",
       "RevenueCat client offerings",
       "Production-grade RAG for top non-cizinecka categories"
     ]

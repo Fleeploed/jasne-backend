@@ -27,10 +27,20 @@ from app.services.rag import get_supabase
 logger = logging.getLogger(__name__)
 
 
+class QuotaExceededError(Exception):
+    """Plan quota exhausted. Routers map this to 402.
+
+    Deliberately NOT a ValueError: the global ValueError handler returns a
+    generic message, while quota messages are intentionally user-facing.
+    """
+
+
 class PlanCaps(TypedDict):
     monthly_scans: int
     max_pages_per_scan: int
     max_questions_per_scan: int
+    # How many most-recent scans the archive shows. None = unlimited (Pro).
+    archive_limit: int | None
 
 
 PLAN_LIMITS: dict[UserPlan, PlanCaps] = {
@@ -38,11 +48,13 @@ PLAN_LIMITS: dict[UserPlan, PlanCaps] = {
         "monthly_scans": 5,
         "max_pages_per_scan": 3,
         "max_questions_per_scan": 0,
+        "archive_limit": 5,
     },
     "pro": {
         "monthly_scans": 100,
         "max_pages_per_scan": 10,
         "max_questions_per_scan": 10,
+        "archive_limit": None,
     },
 }
 
@@ -240,19 +252,26 @@ async def check_scan_quota(
     page_count: int,
     month: str | None = None,
 ) -> None:
-    """Raise ValueError if scan would exceed period cap or per-scan page cap."""
+    """Raise QuotaExceededError if scan would exceed period cap or per-scan page cap.
+
+    Advisory pre-check only — it races with concurrent requests. The
+    authoritative gate is `try_increment_scan_count` at persist time.
+    """
     caps = caps_for_plan(plan)
     if page_count > caps["max_pages_per_scan"]:
-        raise ValueError(
+        raise QuotaExceededError(
             f"plan='{plan}' allows max {caps['max_pages_per_scan']} pages per scan (got {page_count})"
         )
     usage = await get_or_init_usage(user_id, month)
     scans_used = int(usage.get("scans_count") or 0)
     if scans_used >= caps["monthly_scans"]:
-        period_label = "month" if plan == "free" else "subscription period"
-        raise ValueError(
-            f"plan='{plan}' allows {caps['monthly_scans']} scans/{period_label}, already used {scans_used}"
-        )
+        raise QuotaExceededError(_scan_quota_message(plan, caps["monthly_scans"], scans_used))
+
+
+def _scan_quota_message(plan: UserPlan, cap: int, scans_used: int | None = None) -> str:
+    period_label = "month" if plan != "pro" else "subscription period"
+    suffix = f", already used {scans_used}" if scans_used is not None else ""
+    return f"plan='{plan}' allows {cap} scans/{period_label}{suffix}"
 
 
 async def increment_scan_count(user_id: UUID, month: str | None = None) -> int:
@@ -285,25 +304,74 @@ async def increment_scan_count(user_id: UUID, month: str | None = None) -> int:
     return new_count
 
 
+async def try_increment_scan_count(user_id: UUID, plan: UserPlan, month: str | None = None) -> int:
+    """Atomically increment scans_count only while below the plan cap.
+
+    This is the authoritative quota gate: the conditional UPDATE inside the
+    RPC re-evaluates the cap under the row lock, so N parallel requests at
+    cap-1 can never all pass (unlike the advisory check_scan_quota).
+    Returns the new count; raises QuotaExceededError when the cap is reached.
+    """
+    month = month or current_month()
+    cap = caps_for_plan(plan)["monthly_scans"]
+    supabase = await get_supabase()
+    try:
+        result = await supabase.rpc(
+            "try_increment_scan_count",
+            {
+                "p_user_id": str(user_id),
+                "p_month": month,
+                "p_cap": cap,
+            },
+        ).execute()
+    except Exception as exc:
+        if not _looks_like_missing_rpc(exc, "try_increment_scan_count"):
+            raise
+        logger.warning(
+            "Supabase RPC try_increment_scan_count is missing; using non-atomic fallback. "
+            "Apply supabase/migrations/0017_conditional_quota_increments.sql."
+        )
+        usage = await get_or_init_usage(user_id, month)
+        scans_used = int(usage.get("scans_count") or 0)
+        if scans_used >= cap:
+            raise QuotaExceededError(_scan_quota_message(plan, cap, scans_used)) from None
+        return await increment_scan_count(user_id, month)
+
+    new_count = _rpc_int_result(result.data, "try_increment_scan_count")
+    if new_count < 0:
+        raise QuotaExceededError(_scan_quota_message(plan, cap))
+    if new_count == 0:
+        raise RuntimeError("Failed to increment scan count")
+    logger.info("Scan count user=%s month=%s -> %d", user_id, month, new_count)
+    return new_count
+
+
 async def check_chat_quota(
     user_id: UUID,
     plan: UserPlan,
     scan_id: UUID,
     month: str | None = None,
 ) -> int:
-    """Raise ValueError if asking another question would exceed per-scan chat cap.
-    Returns the count of questions already asked for this scan."""
+    """Raise QuotaExceededError if asking another question would exceed per-scan
+    chat cap. Returns the count of questions already asked for this scan.
+
+    Advisory pre-check only — the authoritative gate is
+    `try_increment_chat_count` at charge time.
+    """
     caps = caps_for_plan(plan)
     if caps["max_questions_per_scan"] <= 0:
-        raise ValueError(f"plan='{plan}' does not include chat questions")
+        raise QuotaExceededError(f"plan='{plan}' does not include chat questions")
 
     usage = await get_or_init_usage(user_id, month)
     asked = int((usage.get("questions_per_scan") or {}).get(str(scan_id), 0))
     if asked >= caps["max_questions_per_scan"]:
-        raise ValueError(
-            f"plan='{plan}' allows {caps['max_questions_per_scan']} questions per scan, already used {asked}"
-        )
+        raise QuotaExceededError(_chat_quota_message(plan, caps["max_questions_per_scan"], asked))
     return asked
+
+
+def _chat_quota_message(plan: UserPlan, cap: int, asked: int | None = None) -> str:
+    suffix = f", already used {asked}" if asked is not None else ""
+    return f"plan='{plan}' allows {cap} questions per scan{suffix}"
 
 
 async def increment_chat_count(user_id: UUID, scan_id: UUID, month: str | None = None) -> int:
@@ -332,6 +400,55 @@ async def increment_chat_count(user_id: UUID, scan_id: UUID, month: str | None =
 
     new_count = _rpc_int_result(result.data, "increment_chat_count")
     if new_count <= 0:
+        raise RuntimeError("Failed to increment chat count")
+    logger.info("Chat count user=%s scan=%s month=%s -> %d", user_id, scan_id, month, new_count)
+    return new_count
+
+
+async def try_increment_chat_count(
+    user_id: UUID,
+    plan: UserPlan,
+    scan_id: UUID,
+    month: str | None = None,
+) -> int:
+    """Atomically increment questions_per_scan[scan_id] only while below cap.
+
+    Authoritative per-scan chat quota gate (see try_increment_scan_count).
+    Returns the new count; raises QuotaExceededError at the cap.
+    """
+    month = month or current_month()
+    cap = caps_for_plan(plan)["max_questions_per_scan"]
+    if cap <= 0:
+        raise QuotaExceededError(f"plan='{plan}' does not include chat questions")
+
+    supabase = await get_supabase()
+    try:
+        result = await supabase.rpc(
+            "try_increment_chat_count",
+            {
+                "p_user_id": str(user_id),
+                "p_month": month,
+                "p_scan_id": str(scan_id),
+                "p_cap": cap,
+            },
+        ).execute()
+    except Exception as exc:
+        if not _looks_like_missing_rpc(exc, "try_increment_chat_count"):
+            raise
+        logger.warning(
+            "Supabase RPC try_increment_chat_count is missing; using non-atomic fallback. "
+            "Apply supabase/migrations/0017_conditional_quota_increments.sql."
+        )
+        usage = await get_or_init_usage(user_id, month)
+        asked = int((usage.get("questions_per_scan") or {}).get(str(scan_id), 0))
+        if asked >= cap:
+            raise QuotaExceededError(_chat_quota_message(plan, cap, asked)) from None
+        return await increment_chat_count(user_id, scan_id, month)
+
+    new_count = _rpc_int_result(result.data, "try_increment_chat_count")
+    if new_count < 0:
+        raise QuotaExceededError(_chat_quota_message(plan, cap))
+    if new_count == 0:
         raise RuntimeError("Failed to increment chat count")
     logger.info("Chat count user=%s scan=%s month=%s -> %d", user_id, scan_id, month, new_count)
     return new_count

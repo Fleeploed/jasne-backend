@@ -35,25 +35,35 @@ async def _ensure_profile(user_id: UUID) -> dict:
         return result.data[0]
 
     logger.warning("Profile missing for user_id=%s, creating default row", user_id)
+    # Upsert with ignore_duplicates: two first-ever parallel requests both miss
+    # the select above; a plain insert would 500 on PK violation for the loser.
     created = (
         await supabase.table("profiles")
-        .insert(
+        .upsert(
             {
                 "id": str(user_id),
                 "language": "cs",
                 "has_datova_schranka": False,
                 "plan": "free",
                 "deletion_status": "active",
-            }
+            },
+            on_conflict="id",
+            ignore_duplicates=True,
         )
         .execute()
     )
-    if not created.data:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to bootstrap profile",
-        )
-    return created.data[0]
+    if created.data:
+        return created.data[0]
+
+    # A concurrent request created the row first — read it back.
+    result = await supabase.table("profiles").select("*").eq("id", str(user_id)).limit(1).execute()
+    if result.data:
+        return result.data[0]
+
+    raise HTTPException(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        detail="Failed to bootstrap profile",
+    )
 
 
 @router.get("/deletion-status", response_model=ProfileDeletionStatusResponse)

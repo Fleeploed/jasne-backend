@@ -80,6 +80,53 @@ class TestGetProfile:
         assert r.json()["id"] == str(test_user_id)
         assert r.json()["language"] == "cs"
 
+    def test_bootstrap_race_does_not_500(
+        self, client, fake_supabase, auth_headers, test_user_id, monkeypatch
+    ):
+        """Two first-ever parallel requests both miss the select; the loser's
+        write must not blow up on PK violation — upsert + read-back instead."""
+        original_table = fake_supabase.table
+
+        class RacingProfiles:
+            def __init__(self, table):
+                self._table = table
+
+            def select(self, *args, **kwargs):
+                return self._table.select(*args, **kwargs)
+
+            def upsert(self, payload, **kwargs):
+                # Simulate the concurrent winner inserting the row just before
+                # our upsert lands — ignore_duplicates makes it a no-op.
+                if not any(str(r.get("id")) == str(test_user_id) for r in self._table.rows):
+                    self._table.rows.append(
+                        {
+                            "id": str(test_user_id),
+                            "display_name": None,
+                            "language": "uk",
+                            "has_datova_schranka": False,
+                            "plan": "free",
+                            "deletion_status": "active",
+                            "created_at": datetime.now(UTC).isoformat(),
+                            "updated_at": datetime.now(UTC).isoformat(),
+                        }
+                    )
+                return self._table.upsert(payload, **kwargs)
+
+        class RacingSupabase:
+            def table(self, name):
+                tbl = original_table(name)
+                return RacingProfiles(tbl) if name == "profiles" else tbl
+
+        async def fake_get_supabase():
+            return RacingSupabase()
+
+        monkeypatch.setattr("app.routers.profile.get_supabase", fake_get_supabase)
+
+        r = client.get("/profile", headers=auth_headers)
+        assert r.status_code == 200
+        # Got the concurrent winner's row back, not a 500.
+        assert r.json()["language"] == "uk"
+
     def test_requires_auth(self, client):
         r = client.get("/profile")
         # HTTPBearer(auto_error=True) returns 403 in old FastAPI, 401 in newer versions

@@ -4,6 +4,7 @@ import logging
 from dataclasses import asdict, dataclass
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import httpx
 
@@ -22,6 +23,11 @@ EXPO_PUSH_CHUNK_SIZE = 100
 # bounds itself to [today, today + this] instead of scanning every active row.
 MAX_REMINDER_HORIZON_DAYS = max(PRO_REMINDER_DAYS)
 
+# The audience is entirely in Czechia, so "today" must be the Prague calendar
+# date. A cron firing at 23:30 UTC is already tomorrow in Prague — computing
+# reminder_day from the UTC date would shift or duplicate 1-day reminders.
+USER_TIMEZONE = ZoneInfo("Europe/Prague")
+
 
 @dataclass
 class NotificationRunStats:
@@ -33,16 +39,32 @@ class NotificationRunStats:
     skipped: int = 0
 
 
+# Expo recommends waiting ~15 minutes before fetching receipts; check at 20 so
+# a single daily receipts run is reliably past that.
+RECEIPT_MIN_AGE_MINUTES = 20
+RECEIPT_BATCH_SIZE = 300
+
+
+@dataclass
+class ReceiptRunStats:
+    checked: int = 0
+    delivered: int = 0
+    failed: int = 0
+    tokens_disabled: int = 0
+    pending: int = 0
+
+
 async def send_due_deadline_notifications(today: date | None = None) -> dict[str, int]:
     """Send deadline reminders whose reminder day falls on `today`.
 
     The function is intentionally idempotent: `notification_deliveries` has a
     unique key per deadline/reminder/token, so cron retries do not double-send.
     """
-    run_date = today or datetime.now(UTC).date()
+    run_date = today or datetime.now(USER_TIMEZONE).date()
     stats = NotificationRunStats()
     supabase = await get_supabase()
     profile_cache: dict[str, dict[str, Any]] = {}
+    token_cache: dict[str, list[dict[str, Any]]] = {}
 
     # Only pull rows that could fire a reminder today: due on/after today and
     # no further out than the longest reminder window. due_date is stored as an
@@ -80,7 +102,7 @@ async def send_due_deadline_notifications(today: date | None = None) -> dict[str
             continue
 
         stats.candidate_notifications += 1
-        tokens = await _active_tokens_for_user(user_id)
+        tokens = await _active_tokens_for_user(user_id, token_cache)
         if not tokens:
             stats.skipped += 1
             continue
@@ -161,12 +183,23 @@ async def _profile_for_user(user_id: str, cache: dict[str, dict[str, Any]]) -> d
     return profile
 
 
-async def _active_tokens_for_user(user_id: str) -> list[dict[str, Any]]:
+async def _active_tokens_for_user(
+    user_id: str,
+    cache: dict[str, list[dict[str, Any]]] | None = None,
+) -> list[dict[str, Any]]:
+    # Cached per cron run — a user with many deadlines due otherwise costs one
+    # push_tokens query per deadline (N+1).
+    if cache is not None and user_id in cache:
+        return cache[user_id]
+
     supabase = await get_supabase()
     result = (
         await supabase.table("push_tokens").select("*").eq("user_id", user_id).eq("enabled", True).execute()
     )
-    return result.data or []
+    tokens = result.data or []
+    if cache is not None:
+        cache[user_id] = tokens
+    return tokens
 
 
 async def _create_delivery(
@@ -313,6 +346,98 @@ async def _mark_delivery_error(
 async def _disable_token(token: dict[str, Any]) -> None:
     supabase = await get_supabase()
     await supabase.table("push_tokens").update({"enabled": False}).eq("id", str(token["id"])).execute()
+
+
+async def check_expo_push_receipts(now: datetime | None = None) -> dict[str, int]:
+    """Fetch Expo receipts for sent notifications and disable dead tokens.
+
+    An "ok" *ticket* does not mean delivery — DeviceNotRegistered often shows
+    up only in the *receipt*. Without this job dead tokens accumulate and every
+    cron run wastes sends on them. Receipts Expo hasn't produced yet stay in
+    status='sent' and are retried on the next run.
+    """
+    run_now = now or datetime.now(UTC)
+    cutoff = (run_now - timedelta(minutes=RECEIPT_MIN_AGE_MINUTES)).isoformat()
+    stats = ReceiptRunStats()
+    supabase = await get_supabase()
+
+    result = (
+        await supabase.table("notification_deliveries")
+        .select("*")
+        .eq("status", "sent")
+        .lte("sent_at", cutoff)
+        .limit(1000)
+        .execute()
+    )
+    deliveries = [row for row in (result.data or []) if row.get("expo_ticket_id")]
+    if not deliveries:
+        return asdict(stats)
+
+    by_ticket = {str(row["expo_ticket_id"]): row for row in deliveries}
+    ticket_ids = list(by_ticket.keys())
+    settings = get_settings()
+
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        for start in range(0, len(ticket_ids), RECEIPT_BATCH_SIZE):
+            chunk = ticket_ids[start : start + RECEIPT_BATCH_SIZE]
+            try:
+                response = await client.post(
+                    settings.expo_push_receipts_url,
+                    json={"ids": chunk},
+                    headers={"Content-Type": "application/json"},
+                )
+                response.raise_for_status()
+                receipts = response.json().get("data") or {}
+            except (httpx.HTTPError, ValueError):
+                logger.exception("Expo receipts fetch failed size=%d", len(chunk))
+                continue
+
+            for ticket_id in chunk:
+                delivery = by_ticket[ticket_id]
+                receipt = receipts.get(ticket_id)
+                if not isinstance(receipt, dict):
+                    # Expo hasn't produced the receipt yet — retry next run.
+                    stats.pending += 1
+                    continue
+
+                stats.checked += 1
+                if receipt.get("status") == "ok":
+                    await _mark_receipt_ok(delivery, ticket_id)
+                    stats.delivered += 1
+                    continue
+
+                error = _ticket_error(receipt)
+                await _mark_delivery_error(delivery, error, ticket_id=ticket_id)
+                stats.failed += 1
+                if error == "DeviceNotRegistered" and delivery.get("push_token_id"):
+                    await _disable_token({"id": delivery["push_token_id"]})
+                    stats.tokens_disabled += 1
+
+    logger.info(
+        "Expo receipts run checked=%d delivered=%d failed=%d tokens_disabled=%d pending=%d",
+        stats.checked,
+        stats.delivered,
+        stats.failed,
+        stats.tokens_disabled,
+        stats.pending,
+    )
+    return asdict(stats)
+
+
+async def _mark_receipt_ok(delivery: dict[str, Any], ticket_id: str) -> None:
+    supabase = await get_supabase()
+    await (
+        supabase.table("notification_deliveries")
+        .update(
+            {
+                "status": "receipt_ok",
+                "expo_receipt_id": ticket_id,
+                "error": None,
+            }
+        )
+        .eq("id", str(delivery["id"]))
+        .execute()
+    )
 
 
 def _build_expo_message(

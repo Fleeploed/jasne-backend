@@ -4,6 +4,15 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from app.config import get_settings
+
+
+@pytest.fixture(autouse=True)
+def _open_deep_health(monkeypatch):
+    """/health/deep requires X-Cron-Secret when configured; tests that don't
+    exercise the auth itself run with the secret unset (open in test env)."""
+    monkeypatch.setattr(get_settings(), "internal_cron_secret", None)
+
 
 class TestLivenessHealth:
     def test_returns_200_with_status_ok(self, client):
@@ -82,6 +91,14 @@ class TestDeepHealth:
         assert body["status"] == "degraded"
         assert body["deps"]["supabase"]["status"] == "error"
         assert body["deps"]["openai"]["status"] == "error"
+
+    def test_requires_cron_secret_when_configured(self, client, monkeypatch):
+        monkeypatch.setattr(get_settings(), "internal_cron_secret", "expected-secret")
+
+        assert client.get("/health/deep").status_code == 403
+        assert client.get("/health/deep", headers={"X-Cron-Secret": "wrong"}).status_code == 403
+        r = client.get("/health/deep", headers={"X-Cron-Secret": "expected-secret"})
+        assert r.status_code == 200
 
     def test_error_messages_are_truncated(self, client, monkeypatch):
         """Avoid leaking long stack traces / credentials in the response body."""

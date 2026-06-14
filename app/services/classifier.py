@@ -14,6 +14,7 @@ from app.config import get_settings
 from app.models.schemas import ClassifierResult
 from app.prompts import CLASSIFIER_SYSTEM_PROMPT
 from app.services.embeddings import get_openai_client
+from app.services.token_usage import extract_usage, log_usage
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +70,7 @@ async def classify_text(
     )
 
     raw = response.choices[0].message.content or "{}"
+    log_usage("classify", settings.openai_classifier_model, extract_usage(response))
 
     try:
         data = json.loads(raw)

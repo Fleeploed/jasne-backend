@@ -33,12 +33,14 @@ jobs:
           # /health/deep checks Supabase + OpenAI in addition to liveness.
           # /health (used by Render's healthcheck) is a cheap liveness-only probe.
           URL: ${{ vars.UPTIME_URL || 'https://jasne-backend.onrender.com/health/deep' }}
+          # /health/deep requires the cron secret (each call fans out to paid deps).
+          CRON_SECRET: ${{ secrets.INTERNAL_CRON_SECRET }}
         run: |
           set -uo pipefail
 
           # Single attempt with reasonable timeout; if Render is slow that's
           # itself a signal worth alerting on.
-          response=$(curl -s -m 10 -w "\n%{http_code}\n%{time_total}" "$URL" || echo "")
+          response=$(curl -s -m 10 -H "X-Cron-Secret: $CRON_SECRET" -w "\n%{http_code}\n%{time_total}" "$URL" || echo "")
           if [ -z "$response" ]; then
             echo "::error::No response from $URL (network error or timeout)"
             exit 1

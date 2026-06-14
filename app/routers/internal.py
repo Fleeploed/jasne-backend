@@ -5,11 +5,12 @@ from fastapi import APIRouter, Header, HTTPException, status
 from app.config import get_settings
 from app.models.schemas import (
     AccountDeletionPurgeResponse,
+    NotificationReceiptRunResponse,
     NotificationRunResponse,
     TrackingCronResponse,
 )
 from app.services.account_deletion import purge_due_deleted_accounts
-from app.services.push_notifications import send_due_deadline_notifications
+from app.services.push_notifications import check_expo_push_receipts, send_due_deadline_notifications
 from app.workers.tracking_cron import run_tracking_cron
 
 router = APIRouter(prefix="/internal", tags=["internal"])
@@ -38,6 +39,20 @@ async def run_due_notification_job(
     _verify_cron_secret(x_cron_secret)
     stats = await send_due_deadline_notifications()
     return NotificationRunResponse(**stats)
+
+
+@router.post("/notifications/receipts", response_model=NotificationReceiptRunResponse)
+async def run_receipt_check_job(
+    x_cron_secret: str | None = Header(default=None, alias="X-Cron-Secret"),
+) -> NotificationReceiptRunResponse:
+    """Fetch Expo push receipts for sent notifications and disable dead tokens.
+
+    Runs 20+ minutes after the send job — DeviceNotRegistered often appears
+    only in the receipt, not the ticket.
+    """
+    _verify_cron_secret(x_cron_secret)
+    stats = await check_expo_push_receipts()
+    return NotificationReceiptRunResponse(**stats)
 
 
 @router.post("/accounts/purge-deleted", response_model=AccountDeletionPurgeResponse)

@@ -162,3 +162,149 @@ async def test_free_plan_only_sends_one_day_reminders(fake_supabase, monkeypatch
     assert stats["candidate_notifications"] == 0
     assert stats["attempted"] == 0
     assert fake_supabase.table("notification_deliveries").rows == []
+
+
+class TestCheckExpoPushReceipts:
+    def _seed_delivery(self, fake_supabase, token_id, *, ticket="ticket-1", sent_minutes_ago=30):
+        row = {
+            "id": str(uuid4()),
+            "user_id": str(uuid4()),
+            "deadline_id": str(uuid4()),
+            "push_token_id": token_id,
+            "reminder_day": 1,
+            "scheduled_for": "2026-06-12",
+            "sent_at": (datetime.now(UTC) - timedelta(minutes=sent_minutes_ago)).isoformat(),
+            "status": "sent",
+            "expo_ticket_id": ticket,
+            "expo_receipt_id": None,
+            "error": None,
+        }
+        fake_supabase.table("notification_deliveries").rows.append(row)
+        return row
+
+    @pytest.mark.asyncio
+    async def test_ok_receipt_marks_delivered(self, fake_supabase, monkeypatch, test_user_id):
+        from app.services.push_notifications import check_expo_push_receipts
+
+        token = _seed_token(fake_supabase, str(test_user_id))
+        delivery = self._seed_delivery(fake_supabase, token["id"])
+        _patch_supabase(monkeypatch, fake_supabase)
+
+        class FakeResponse:
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return {"data": {"ticket-1": {"status": "ok"}}}
+
+        class FakeClient:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return False
+
+            async def post(self, url, **kwargs):
+                assert kwargs["json"] == {"ids": ["ticket-1"]}
+                return FakeResponse()
+
+        monkeypatch.setattr("app.services.push_notifications.httpx.AsyncClient", lambda **kw: FakeClient())
+
+        stats = await check_expo_push_receipts()
+
+        assert stats == {"checked": 1, "delivered": 1, "failed": 0, "tokens_disabled": 0, "pending": 0}
+        row = fake_supabase.table("notification_deliveries").rows[0]
+        assert row["status"] == "receipt_ok"
+        assert row["expo_receipt_id"] == "ticket-1"
+        assert delivery["id"] == row["id"]
+
+    @pytest.mark.asyncio
+    async def test_device_not_registered_disables_token(self, fake_supabase, monkeypatch, test_user_id):
+        from app.services.push_notifications import check_expo_push_receipts
+
+        token = _seed_token(fake_supabase, str(test_user_id))
+        self._seed_delivery(fake_supabase, token["id"])
+        _patch_supabase(monkeypatch, fake_supabase)
+
+        class FakeResponse:
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return {
+                    "data": {
+                        "ticket-1": {
+                            "status": "error",
+                            "message": "device gone",
+                            "details": {"error": "DeviceNotRegistered"},
+                        }
+                    }
+                }
+
+        class FakeClient:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return False
+
+            async def post(self, url, **kwargs):
+                return FakeResponse()
+
+        monkeypatch.setattr("app.services.push_notifications.httpx.AsyncClient", lambda **kw: FakeClient())
+
+        stats = await check_expo_push_receipts()
+
+        assert stats["failed"] == 1
+        assert stats["tokens_disabled"] == 1
+        assert fake_supabase.table("push_tokens").rows[0]["enabled"] is False
+        assert fake_supabase.table("notification_deliveries").rows[0]["status"] == "error"
+
+    @pytest.mark.asyncio
+    async def test_missing_receipt_stays_sent_for_retry(self, fake_supabase, monkeypatch, test_user_id):
+        from app.services.push_notifications import check_expo_push_receipts
+
+        token = _seed_token(fake_supabase, str(test_user_id))
+        self._seed_delivery(fake_supabase, token["id"])
+        _patch_supabase(monkeypatch, fake_supabase)
+
+        class FakeResponse:
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return {"data": {}}
+
+        class FakeClient:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return False
+
+            async def post(self, url, **kwargs):
+                return FakeResponse()
+
+        monkeypatch.setattr("app.services.push_notifications.httpx.AsyncClient", lambda **kw: FakeClient())
+
+        stats = await check_expo_push_receipts()
+
+        assert stats["pending"] == 1
+        assert fake_supabase.table("notification_deliveries").rows[0]["status"] == "sent"
+
+    @pytest.mark.asyncio
+    async def test_fresh_deliveries_not_checked_yet(self, fake_supabase, monkeypatch, test_user_id):
+        from app.services.push_notifications import check_expo_push_receipts
+
+        token = _seed_token(fake_supabase, str(test_user_id))
+        self._seed_delivery(fake_supabase, token["id"], sent_minutes_ago=5)
+        _patch_supabase(monkeypatch, fake_supabase)
+
+        def no_client(**kw):
+            raise AssertionError("No receipts request expected for fresh deliveries")
+
+        monkeypatch.setattr("app.services.push_notifications.httpx.AsyncClient", no_client)
+
+        stats = await check_expo_push_receipts()
+
+        assert stats == {"checked": 0, "delivered": 0, "failed": 0, "tokens_disabled": 0, "pending": 0}

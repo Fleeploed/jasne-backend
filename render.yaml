@@ -78,5 +78,3 @@ services:
         value: "0.50"
       - key: EMBEDDING_MAX_CHARS
         value: "20000"
-      - key: MIN_OCR_CONFIDENCE
-        value: "0.3"

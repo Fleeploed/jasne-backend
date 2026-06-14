@@ -23,6 +23,7 @@ from app.services.fee_guards import (
     should_suppress_fee_guidance,
 )
 from app.services.model_router import pick_analyzer_model
+from app.services.token_usage import extract_usage, log_usage
 from app.services.validator import detect_relative_deadline_days, filter_valid_deadlines
 
 logger = logging.getLogger(__name__)
@@ -355,6 +356,7 @@ async def analyze_document(
     )
 
     raw = response.choices[0].message.content or "{}"
+    log_usage("analyze", model, extract_usage(response), category=classifier.category)
     result = _apply_analysis_guardrails(
         _filter_deadlines(_parse_analysis_result(raw), classifier, ocr_text, language),
         classifier,
@@ -392,12 +394,18 @@ async def stream_analyze_document(
         max_tokens=settings.openai_analyzer_max_output_tokens,
         response_format={"type": "json_object"},
         stream=True,
+        # Emits a final usage-only chunk (empty choices) after the content.
+        stream_options={"include_usage": True},
         messages=_build_messages(classifier, ocr_text, page_count, rag_chunks, language, has_datova_schranka),
     )
 
     emitted: set[str] = set()
     raw_parts: list[str] = []
+    stream_usage: dict[str, int] | None = None
     async for event in stream:
+        usage = extract_usage(event)
+        if usage is not None:
+            stream_usage = usage
         if not event.choices:
             continue
         delta = event.choices[0].delta.content or ""
@@ -428,6 +436,7 @@ async def stream_analyze_document(
             emitted.add(field)
             yield {"type": "field", "field": field, "value": data.get(field)}
 
+    log_usage("analyze_stream", model, stream_usage, category=classifier.category)
     logger.info(
         "Analysis streamed model=%s category=%s confidence=%.2f deadlines=%d actions=%d fields=%d",
         model,

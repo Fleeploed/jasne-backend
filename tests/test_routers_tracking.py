@@ -145,11 +145,16 @@ class TestCreateTracking:
         assert r.status_code == 201, r.text
         assert r.json()["identifier"] == "OAM-19391-4/ZM-2026"
 
-    def test_rejects_more_than_five_active_of_same_type(
+    def test_rejects_active_tracking_over_per_type_limit(
         self, client, fake_supabase, auth_headers, test_user_id
     ):
+        # One active OAMP tracking per type is the cap (Pro). Seed exactly the
+        # limit, then assert the next one is rejected — driven by the constant
+        # so the test follows MAX_ACTIVE_TRACKINGS_PER_TYPE if it ever changes.
+        from app.routers.tracking import MAX_ACTIVE_TRACKINGS_PER_TYPE
+
         _seed_profile(fake_supabase, str(test_user_id), plan="pro")
-        for index in range(5):
+        for index in range(MAX_ACTIVE_TRACKINGS_PER_TYPE):
             _seed_tracking(fake_supabase, str(test_user_id), identifier=f"OAM-{index + 1}/ZM-2026")
 
         r = client.post(

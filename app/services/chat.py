@@ -16,6 +16,7 @@ from app.prompts import CHAT_SYSTEM_PROMPT
 from app.services.embeddings import get_openai_client
 from app.services.fee_guards import filter_fee_items, should_suppress_fee_guidance
 from app.services.rag import get_supabase
+from app.services.token_usage import extract_usage, log_usage
 
 logger = logging.getLogger(__name__)
 
@@ -161,6 +162,7 @@ async def answer_question(
         messages=_build_chat_messages(scan_row, history, question, language, rag_chunks),  # type: ignore[arg-type]
     )
 
+    log_usage("chat", settings.openai_chat_model, extract_usage(response), scan_id=scan_row.get("id"))
     answer = (response.choices[0].message.content or "").strip()
     if not answer:
         # Defensive — never persist empty assistant message
@@ -192,11 +194,16 @@ async def stream_answer_chunks(
         temperature=0.3,
         max_tokens=settings.openai_max_output_tokens,
         stream=True,
+        stream_options={"include_usage": True},
         messages=_build_chat_messages(scan_row, history, question, language, rag_chunks),  # type: ignore[arg-type]
     )
 
     chunk_count = 0
+    stream_usage: dict[str, int] | None = None
     async for event in stream:
+        usage = extract_usage(event)
+        if usage is not None:
+            stream_usage = usage
         if not event.choices:
             continue
         delta = event.choices[0].delta.content or ""
@@ -205,6 +212,7 @@ async def stream_answer_chunks(
         chunk_count += 1
         yield delta
 
+    log_usage("chat_stream", settings.openai_chat_model, stream_usage, scan_id=scan_row.get("id"))
     logger.info(
         "Chat streamed scan_id=%s history=%d question_len=%d chunks=%d",
         scan_row.get("id"),

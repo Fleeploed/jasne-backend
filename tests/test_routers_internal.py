@@ -95,7 +95,14 @@ class TestTrackingCron:
         assert r.json()["checked"] == 1
 
 
-@pytest.mark.parametrize("path", ["/internal/notifications/due", "/internal/accounts/purge-deleted"])
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/internal/notifications/due",
+        "/internal/notifications/receipts",
+        "/internal/accounts/purge-deleted",
+    ],
+)
 def test_internal_endpoints_reject_wrong_secret(client, monkeypatch, path):
     from app.config import get_settings
 
@@ -104,3 +111,22 @@ def test_internal_endpoints_reject_wrong_secret(client, monkeypatch, path):
 
     r = client.post(path, headers={"X-Cron-Secret": "nope"})
     assert r.status_code == 403
+
+
+def test_receipts_job_runs_and_returns_stats(client, monkeypatch):
+    from app.config import get_settings
+
+    settings = get_settings()
+    monkeypatch.setattr(settings, "internal_cron_secret", "expected-secret")
+
+    async def fake_check():
+        return {"checked": 3, "delivered": 2, "failed": 1, "tokens_disabled": 1, "pending": 0}
+
+    monkeypatch.setattr("app.routers.internal.check_expo_push_receipts", fake_check)
+
+    r = client.post(
+        "/internal/notifications/receipts",
+        headers={"X-Cron-Secret": "expected-secret"},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json() == {"checked": 3, "delivered": 2, "failed": 1, "tokens_disabled": 1, "pending": 0}

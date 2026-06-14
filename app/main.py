@@ -6,7 +6,7 @@ import uuid
 from contextlib import asynccontextmanager
 
 import openai
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Header, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
@@ -14,6 +14,7 @@ from fastapi.responses import JSONResponse
 
 from app.config import get_settings
 from app.models.schemas import DeepHealthResponse, DepStatus, HealthResponse, VersionResponse
+from app.observability import capture_exception, init_sentry, tag_request
 from app.routers import (
     admin,
     chat,
@@ -28,8 +29,10 @@ from app.routers import (
     webhooks,
 )
 from app.routers import help as help_router
+from app.routers.internal import _verify_cron_secret
 from app.services.embeddings import close_openai_client, get_openai_client
 from app.services.help_loader import load_help_content
+from app.services.limits import QuotaExceededError
 from app.services.rag import close_supabase, get_supabase, init_supabase
 
 settings = get_settings()
@@ -58,6 +61,10 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+# Initialise Sentry before the app is built so its FastAPI/Starlette
+# integrations can patch the framework. No-op unless SENTRY_DSN is set.
+init_sentry(release=GIT_SHA)
 
 
 @asynccontextmanager
@@ -98,6 +105,7 @@ app.add_middleware(
 async def request_id_and_timing(request: Request, call_next):
     request_id = request.headers.get("X-Request-ID") or uuid.uuid4().hex[:12]
     request.state.request_id = request_id
+    tag_request(request_id)
     start = time.perf_counter()
     response = await call_next(request)
     elapsed_ms = (time.perf_counter() - start) * 1000
@@ -187,18 +195,36 @@ async def openai_timeout_handler(request: Request, exc: openai.APITimeoutError):
     )
 
 
+@app.exception_handler(QuotaExceededError)
+async def quota_exceeded_handler(request: Request, exc: QuotaExceededError):
+    # Safety net — routers normally map quota errors to 402 themselves.
+    # Quota messages are written to be user-facing, so str(exc) is safe here.
+    logger.info("Quota exceeded on %s %s: %s", request.method, request.url.path, exc)
+    return JSONResponse(
+        status_code=402,
+        content={"detail": str(exc), "request_id": _request_id_for(request)},
+    )
+
+
 @app.exception_handler(ValueError)
 async def value_error_handler(request: Request, exc: ValueError):
-    logger.warning("ValueError: %s", exc)
+    # Generic detail only: internal ValueErrors can carry paths, table names,
+    # or SQL fragments. The real message goes to the server log; the client
+    # gets the request_id to correlate.
+    logger.warning("ValueError on %s %s: %s", request.method, request.url.path, exc)
     return JSONResponse(
         status_code=422,
-        content={"detail": str(exc), "request_id": _request_id_for(request)},
+        content={
+            "detail": "Request could not be processed.",
+            "request_id": _request_id_for(request),
+        },
     )
 
 
 @app.exception_handler(Exception)
 async def unhandled_exception_handler(request: Request, exc: Exception):
     logger.exception("Unhandled error on %s %s", request.method, request.url.path)
+    capture_exception(exc)
     return JSONResponse(
         status_code=500,
         content={
@@ -314,13 +340,20 @@ async def _check_azure_di() -> DepStatus:
     tags=["system"],
     responses={503: {"model": DeepHealthResponse, "description": "One or more deps are degraded"}},
 )
-async def health_deep() -> JSONResponse:
+async def health_deep(
+    x_cron_secret: str | None = Header(default=None, alias="X-Cron-Secret"),
+) -> JSONResponse:
     """Readiness probe — pings every external dependency in parallel.
 
     Returns 200 when every dep is healthy, 503 if any dep is down. Intended
     for external uptime monitors (GitHub cron, UptimeRobot, etc.) — NOT for
     platform healthchecks (would cause crash-loops on Supabase/OpenAI outages).
+
+    Requires the same X-Cron-Secret as /internal routes: each call fans out to
+    Supabase + OpenAI + Azure, so an unauthenticated endpoint is a free
+    amplification target. Monitors must send the header.
     """
+    _verify_cron_secret(x_cron_secret)
     supabase_status, openai_status, azure_status = await asyncio.gather(
         _check_supabase(), _check_openai(), _check_azure_di()
     )

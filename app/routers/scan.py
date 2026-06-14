@@ -11,7 +11,7 @@ from typing import Any
 from uuid import UUID
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, status
 from fastapi.responses import StreamingResponse
 
 from app.config import get_settings
@@ -25,16 +25,26 @@ from app.models.schemas import (
     ScanCountsResponse,
     ScanImageUrlsResponse,
     ScanListItem,
+    ScanListResponse,
     ScanRequest,
     ScanResponse,
     UserLanguage,
 )
+from app.observability import capture_exception
 from app.routers.profile import _ensure_profile
+from app.services import idempotency
 from app.services.analyzer import analyze_document, stream_analyze_document
 from app.services.classifier import classify_text
-from app.services.limits import check_scan_quota, increment_scan_count, usage_period_for_profile
+from app.services.limits import (
+    QuotaExceededError,
+    caps_for_plan,
+    check_scan_quota,
+    try_increment_scan_count,
+    usage_period_for_profile,
+)
 from app.services.ocr import extract_text
 from app.services.rag import get_supabase, retrieve_chunks
+from app.services.rate_limit import check_rate_limit
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/scans", tags=["scans"])
@@ -120,12 +130,23 @@ async def _stream_analyzer_phase(
     yield (analysis, model_used)
 
 
+def _finalize_idempotency(user_id: UUID, idempotency_key: str | None, scan_id: str | None) -> None:
+    """Complete the idempotency claim on success, release it on failure. No-op without a key."""
+    if not idempotency_key:
+        return
+    if scan_id:
+        idempotency.complete(str(user_id), idempotency_key, scan_id)
+    else:
+        idempotency.release(str(user_id), idempotency_key)
+
+
 async def _scan_stream_events(
     user_id: UUID,
     body: ScanRequest,
     profile: dict,
     language: UserLanguage,
     has_datova_schranka: bool,
+    idempotency_key: str | None = None,
 ) -> AsyncIterator[str]:
     """Compose the full SSE event sequence for a single scan request."""
     plan = profile.get("plan", "free")
@@ -206,14 +227,23 @@ async def _scan_stream_events(
             analysis,
             language,
             model_used,
+            plan=plan,
             usage_period=usage_period,
         )
+        _finalize_idempotency(user_id, idempotency_key, str(scan.id))
         yield _sse("done", scan.model_dump(mode="json"))
     except HTTPException as exc:
+        # Pipeline failed before persisting — release the claim so the client
+        # can retry with the same key.
+        _finalize_idempotency(user_id, idempotency_key, None)
         yield _sse("error", {"status_code": exc.status_code, "detail": exc.detail})
     except Exception as exc:
+        # Never leak raw exception text (paths, table names, SQL) to clients —
+        # the full traceback is in the server log + Sentry.
+        _finalize_idempotency(user_id, idempotency_key, None)
         logger.exception("Streaming scan failed user_id=%s", user_id)
-        yield _sse("error", {"detail": str(exc) or "Streaming scan failed"})
+        capture_exception(exc)
+        yield _sse("error", {"detail": "Scan failed — please try again."})
 
 
 def _storage_suffix(path: str) -> str:
@@ -295,8 +325,8 @@ async def _download_signed_object(url: str, path: str) -> bytes:
     return content
 
 
-def _render_pdf_to_png_data_urls(pdf_bytes: bytes, path: str) -> list[str]:
-    """Render a PDF into PNG data URLs that Azure DI can OCR page by page."""
+def _open_pdf(pdf_bytes: bytes, path: str):
+    """Open PDF bytes with PyMuPDF, mapping failures to clean HTTP errors."""
     try:
         import fitz
     except ImportError as exc:
@@ -306,23 +336,48 @@ def _render_pdf_to_png_data_urls(pdf_bytes: bytes, path: str) -> list[str]:
         ) from exc
 
     try:
-        document = fitz.open(stream=pdf_bytes, filetype="pdf")
+        return fitz.open(stream=pdf_bytes, filetype="pdf")
     except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f"Invalid PDF: '{path}'"
         ) from exc
 
+
+def _validated_pdf_page_count(document, path: str) -> int:
+    page_count = int(document.page_count)
+    if page_count < 1:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f"PDF has no pages: '{path}'"
+        )
+    if page_count > 10:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="PDF has more than 10 pages. Split it into a smaller document.",
+        )
+    return page_count
+
+
+def _pdf_page_count(pdf_bytes: bytes, path: str) -> int:
+    """Count and validate PDF pages without rendering (cheap metadata read)."""
+    document = _open_pdf(pdf_bytes, path)
     try:
-        page_count = int(document.page_count)
-        if page_count < 1:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f"PDF has no pages: '{path}'"
-            )
-        if page_count > 10:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="PDF has more than 10 pages. Split it into a smaller document.",
-            )
+        return _validated_pdf_page_count(document, path)
+    finally:
+        document.close()
+
+
+def _render_pdf_to_png_data_urls(pdf_bytes: bytes, path: str) -> list[str]:
+    """Render a PDF into PNG data URLs — previews only (`/image-urls`).
+
+    OCR no longer goes through this: the whole PDF is sent to Azure DI as one
+    document, so the CPU + RAM cost of rasterising stays off the scan path.
+    """
+    import fitz
+
+    document = _open_pdf(pdf_bytes, path)
+
+    try:
+        page_count = _validated_pdf_page_count(document, path)
 
         try:
             matrix = fitz.Matrix(PDF_RENDER_SCALE, PDF_RENDER_SCALE)
@@ -343,20 +398,26 @@ def _render_pdf_to_png_data_urls(pdf_bytes: bytes, path: str) -> list[str]:
         document.close()
 
 
-async def _prepare_single_input(user_id: UUID, raw_path: str) -> list[str]:
-    """Resolve one user-supplied path to one-or-more Vision-ready URLs."""
+async def _prepare_single_input(user_id: UUID, raw_path: str) -> tuple[list[str], int]:
+    """Resolve one user-supplied path to OCR-ready URL(s) + its page count.
+
+    PDFs are passed to Azure DI whole (one `data:application/pdf` URL —
+    prebuilt-read OCRs all pages in a single call), so they contribute one
+    URL but N pages. PyMuPDF only counts pages here; rendering is reserved
+    for previews.
+    """
     path = _validate_storage_path(user_id, raw_path)
     suffix = _storage_suffix(path)
 
     if suffix in SUPPORTED_IMAGE_EXTENSIONS:
-        return [await _sign_storage_url(path)]
+        return [await _sign_storage_url(path)], 1
 
     if suffix == PDF_EXTENSION:
         signed_url = await _sign_storage_url(path)
         pdf_bytes = await _download_signed_object(signed_url, path)
-        # PDF rendering is CPU-bound (fitz/PyMuPDF) — run off the event loop
-        # so concurrent scans keep responding to heartbeats.
-        return await asyncio.to_thread(_render_pdf_to_png_data_urls, pdf_bytes, path)
+        page_count = await asyncio.to_thread(_pdf_page_count, pdf_bytes, path)
+        encoded = base64.b64encode(pdf_bytes).decode("ascii")
+        return [f"data:application/pdf;base64,{encoded}"], page_count
 
     raise HTTPException(
         status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
@@ -371,8 +432,9 @@ async def _prepare_ocr_inputs(user_id: UUID, image_paths: list[str]) -> Prepared
     parallel so a 5-page upload doesn't pay 5× the network latency.
     """
     grouped = await asyncio.gather(*(_prepare_single_input(user_id, raw_path) for raw_path in image_paths))
-    urls = [url for group in grouped for url in group]
-    return PreparedOcrInputs(urls=urls, page_count=len(urls))
+    urls = [url for group, _ in grouped for url in group]
+    page_count = sum(count for _, count in grouped)
+    return PreparedOcrInputs(urls=urls, page_count=page_count)
 
 
 async def _check_scan_quota_or_402(
@@ -383,8 +445,47 @@ async def _check_scan_quota_or_402(
 ) -> None:
     try:
         await check_scan_quota(user_id, plan, page_count=page_count, month=usage_period)
-    except ValueError as exc:
+    except QuotaExceededError as exc:
         raise HTTPException(status_code=status.HTTP_402_PAYMENT_REQUIRED, detail=str(exc)) from exc
+
+
+def _enforce_scan_rate_limit(user_id: UUID) -> None:
+    """Cap scan *attempts* per user per hour, regardless of outcome.
+
+    Quota only charges successful scans, so failed pipelines (e.g. garbage
+    PDFs dying at the OCR gate) would otherwise mean unlimited paid Azure
+    calls.
+    """
+    settings = get_settings()
+    if not check_rate_limit(f"scans:{user_id}", settings.scan_attempts_per_hour, 3600.0):
+        logger.warning("Scan rate limit hit user_id=%s", user_id)
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=f"Too many scan attempts — limited to {settings.scan_attempts_per_hour}/hour. Try again later.",
+        )
+
+
+async def _load_scan_response(scan_id: str, user_id: UUID) -> ScanResponse:
+    """Refetch a persisted scan as a ScanResponse (idempotent-replay path)."""
+    supabase = await get_supabase()
+    result = (
+        await supabase.table("scans")
+        .select("*")
+        .eq("id", scan_id)
+        .eq("user_id", str(user_id))
+        .limit(1)
+        .execute()
+    )
+    if not result.data:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Scan not found")
+    return ScanResponse.model_validate(result.data[0])
+
+
+def _idempotency_conflict() -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail="A scan with this Idempotency-Key is already being processed.",
+    )
 
 
 async def _create_deadlines(user_id: UUID, scan_id: UUID, deadlines: list[DeadlineItem]) -> int:
@@ -439,8 +540,17 @@ async def _persist_completed_scan(
     analysis: AnalysisResult,
     language: UserLanguage,
     model_used: str,
+    plan: str = "free",
     usage_period: str | None = None,
 ) -> ScanResponse:
+    # Charge quota BEFORE saving: the conditional increment is the
+    # authoritative cap gate (the pre-check at request start races with
+    # concurrent scans). A race loser gets 402 here and nothing persisted.
+    try:
+        await try_increment_scan_count(user_id, plan, month=usage_period)
+    except QuotaExceededError as exc:
+        raise HTTPException(status_code=status.HTTP_402_PAYMENT_REQUIRED, detail=str(exc)) from exc
+
     supabase = await get_supabase()
     scan_row = {
         "user_id": str(user_id),
@@ -476,8 +586,6 @@ async def _persist_completed_scan(
     scan_data["page_count"] = ocr.page_count
     scan_id = UUID(scan_data["id"])
 
-    await increment_scan_count(user_id, month=usage_period)
-
     # Side-effects below must not fail the scan — the row is already committed.
     # We log and continue so the user gets their analysis back even if reminders
     # or the chat seed transiently fail.
@@ -508,13 +616,34 @@ async def _persist_completed_scan(
 async def create_scan(
     body: ScanRequest,
     user_id: UUID = Depends(get_active_user_id),
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> ScanResponse:
+    # Idempotency: a retried request with the same key returns the original scan
+    # instead of running a second paid pipeline. Claim before any expensive work.
+    if idempotency_key:
+        existing = idempotency.claim(str(user_id), idempotency_key)
+        if existing is not None:
+            if existing["state"] == "done" and existing["scan_id"]:
+                return await _load_scan_response(existing["scan_id"], user_id)
+            raise _idempotency_conflict()
+
+    try:
+        return await _run_create_scan(user_id, body, idempotency_key)
+    except Exception:
+        # A genuine failure should not lock the key — let the client retry.
+        if idempotency_key:
+            idempotency.release(str(user_id), idempotency_key)
+        raise
+
+
+async def _run_create_scan(user_id: UUID, body: ScanRequest, idempotency_key: str | None) -> ScanResponse:
     profile = await _ensure_profile(user_id)
     plan = profile.get("plan", "free")
     usage_period = usage_period_for_profile(profile)
     language: UserLanguage = body.language or profile.get("language", "cs")
     has_datova_schranka: bool = bool(profile.get("has_datova_schranka", False))
 
+    _enforce_scan_rate_limit(user_id)
     # Plan-based quota check (monthly scans + per-scan page cap)
     await _check_scan_quota_or_402(user_id, plan, page_count=len(body.image_paths), usage_period=usage_period)
 
@@ -560,7 +689,7 @@ async def create_scan(
         has_datova_schranka=has_datova_schranka,
     )
 
-    return await _persist_completed_scan(
+    scan = await _persist_completed_scan(
         user_id,
         body,
         classifier,
@@ -568,14 +697,19 @@ async def create_scan(
         analysis,
         language,
         model_used,
+        plan=plan,
         usage_period=usage_period,
     )
+    if idempotency_key:
+        idempotency.complete(str(user_id), idempotency_key, str(scan.id))
+    return scan
 
 
 @router.post("/stream")
 async def create_scan_stream(
     body: ScanRequest,
     user_id: UUID = Depends(get_active_user_id),
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> StreamingResponse:
     profile = await _ensure_profile(user_id)
     plan = profile.get("plan", "free")
@@ -583,10 +717,29 @@ async def create_scan_stream(
     language: UserLanguage = body.language or profile.get("language", "cs")
     has_datova_schranka: bool = bool(profile.get("has_datova_schranka", False))
 
+    # Idempotency claim happens here (synchronously) so a duplicate is caught
+    # before the streaming pipeline starts.
+    replay: ScanResponse | None = None
+    if idempotency_key:
+        existing = idempotency.claim(str(user_id), idempotency_key)
+        if existing is not None:
+            if existing["state"] == "done" and existing["scan_id"]:
+                replay = await _load_scan_response(existing["scan_id"], user_id)
+            else:
+                raise _idempotency_conflict()
+
+    if replay is not None:
+        # Re-emit the original scan's terminal event without redoing the work.
+        async def _replay_events() -> AsyncIterator[str]:
+            yield _sse("done", replay.model_dump(mode="json"))
+
+        return StreamingResponse(_replay_events(), media_type="text/event-stream")
+
+    _enforce_scan_rate_limit(user_id)
     await _check_scan_quota_or_402(user_id, plan, page_count=len(body.image_paths), usage_period=usage_period)
 
     return StreamingResponse(
-        _scan_stream_events(user_id, body, profile, language, has_datova_schranka),
+        _scan_stream_events(user_id, body, profile, language, has_datova_schranka, idempotency_key),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -595,21 +748,43 @@ async def create_scan_stream(
     )
 
 
-@router.get("", response_model=list[ScanListItem])
+@router.get("", response_model=ScanListResponse)
 async def list_scans(
     limit: int = 20,
     offset: int = 0,
     user_id: UUID = Depends(get_active_user_id),
-) -> list[ScanListItem]:
+) -> ScanListResponse:
     limit = max(1, min(limit, 100))
     offset = max(0, offset)
+
+    profile = await _ensure_profile(user_id)
+    plan = profile.get("plan", "free")
+    archive_limit = caps_for_plan(plan)["archive_limit"]
+
+    # Free plans only see the most-recent `archive_limit` scans. Clamp the
+    # paging window to that range so older scans are never returned, and report
+    # how many are hidden so the client can show the upgrade paywall.
+    hidden_count = 0
+    if archive_limit is not None:
+        total = sum((await _scan_counts_by_category(user_id)).values())
+        hidden_count = max(0, total - archive_limit)
+        if offset >= archive_limit:
+            return ScanListResponse(
+                scans=[], plan=plan, archive_limit=archive_limit, hidden_count=hidden_count
+            )
+        limit = min(limit, archive_limit - offset)
 
     supabase = await get_supabase()
     result = await supabase.rpc(
         "list_scans_with_activity",
         {"p_user_id": str(user_id), "p_limit": limit, "p_offset": offset},
     ).execute()
-    return [ScanListItem.from_row(row) for row in (result.data or [])]
+    return ScanListResponse(
+        scans=[ScanListItem.from_row(row) for row in (result.data or [])],
+        plan=plan,
+        archive_limit=archive_limit,
+        hidden_count=hidden_count,
+    )
 
 
 def _looks_like_missing_rpc(exc: Exception, function_name: str) -> bool:
@@ -639,21 +814,12 @@ async def _count_scans_by_category_fallback(user_id: UUID) -> dict[str, int]:
     return by_category
 
 
-@router.get("/counts", response_model=ScanCountsResponse)
-async def get_scan_counts(
-    user_id: UUID = Depends(get_active_user_id),
-) -> ScanCountsResponse:
-    """Return total scan count and per-category counts for the current user.
-
-    Used by the frontend to render filter chips with true DB counts instead of
-    counting only what's been paginated into the list view. Aggregation runs in
-    Postgres (GROUP BY) with a Python fallback for environments where migration
-    0015 hasn't landed yet.
-    """
+async def _scan_counts_by_category(user_id: UUID) -> dict[str, int]:
+    """Per-category scan counts via the GROUP BY RPC, Python fallback if missing."""
     supabase = await get_supabase()
     try:
         result = await supabase.rpc("count_scans_by_category", {"p_user_id": str(user_id)}).execute()
-        by_category = {
+        return {
             str(row["category"]): int(row["count"])
             for row in (result.data or [])
             if row.get("category") is not None
@@ -665,7 +831,21 @@ async def get_scan_counts(
             "Supabase RPC count_scans_by_category is missing; using Python fallback. "
             "Apply supabase/migrations/0015_count_scans_by_category.sql."
         )
-        by_category = await _count_scans_by_category_fallback(user_id)
+        return await _count_scans_by_category_fallback(user_id)
+
+
+@router.get("/counts", response_model=ScanCountsResponse)
+async def get_scan_counts(
+    user_id: UUID = Depends(get_active_user_id),
+) -> ScanCountsResponse:
+    """Return total scan count and per-category counts for the current user.
+
+    Used by the frontend to render filter chips with true DB counts instead of
+    counting only what's been paginated into the list view. Aggregation runs in
+    Postgres (GROUP BY) with a Python fallback for environments where migration
+    0015 hasn't landed yet.
+    """
+    by_category = await _scan_counts_by_category(user_id)
 
     return ScanCountsResponse(total=sum(by_category.values()), by_category=by_category)
 
@@ -731,10 +911,11 @@ async def delete_all_scans(
     """Delete every scan owned by the authenticated user.
 
     Executes the `delete_user_scans` RPC, which runs in a single transaction:
-    counts rows, deletes `scans` (cascades to `scan_messages` and linked
-    `deadlines` via FK ON DELETE CASCADE), and zeros the current month's
-    `usage_limits` row so the wipe also resets quota. Idempotent: returns
-    `{0, 0}` with 200 when the user has nothing to delete.
+    counts rows and deletes `scans`. `scan_messages` cascade via FK;
+    auto-created `deadlines` are removed by the scans delete trigger, while
+    manually created ones survive with `scan_id` nulled (migration 0018).
+    `usage_limits` stays untouched — it tracks initiations (migration 0009).
+    Idempotent: returns `{0, 0}` with 200 when the user has nothing to delete.
     """
     supabase = await get_supabase()
     result = await supabase.rpc("delete_user_scans", {"p_user_id": str(user_id)}).execute()
@@ -766,8 +947,9 @@ async def delete_scan(
 ) -> None:
     """Delete a single scan owned by the authenticated user.
 
-    Relies on FK ON DELETE CASCADE to remove the scan's `scan_messages` and
-    linked `deadlines` rows atomically (see migration 0008).
+    `scan_messages` cascade via FK. Auto-created `deadlines` are removed by
+    the scans delete trigger; manually created ones survive with `scan_id`
+    nulled (migration 0018).
     """
     supabase = await get_supabase()
     existing = (

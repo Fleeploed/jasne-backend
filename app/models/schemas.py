@@ -131,6 +131,12 @@ class ClassifierResult(_Base):
 
 
 class DeadlineItem(_Base):
+    # NB: the skill spec for the analysis prompt mentions a per-deadline
+    # `source_text` (the OCR snippet a date came from). We intentionally do NOT
+    # carry it: an LLM-provided snippet is itself a hallucination vector, and
+    # the validator already verifies each date by searching the real OCR text
+    # (validator._date_appears_in_source), which is strictly more trustworthy.
+    # Spec is stale on this point; schema is the source of truth.
     date: date
     description: str
     type: DeadlineType
@@ -205,6 +211,21 @@ class ScanBulkDeleteResponse(_Base):
 class ScanCountsResponse(_Base):
     total: int
     by_category: dict[str, int]
+
+
+class ScanListResponse(_Base):
+    """Envelope for GET /scans so Free can be told how much archive is locked.
+
+    Free plans only see the most-recent `archive_limit` scans; `hidden_count`
+    is how many older scans are gated behind Pro — the client renders the
+    "+N hidden, upgrade to Pro" paywall row from it. Pro returns
+    archive_limit=null and hidden_count=0.
+    """
+
+    scans: list[ScanListItem]
+    plan: UserPlan
+    archive_limit: int | None = None
+    hidden_count: int = 0
 
 
 class ScanListItem(_Base):
@@ -366,6 +387,14 @@ class NotificationRunResponse(_Base):
     sent: int
     failed: int
     skipped: int
+
+
+class NotificationReceiptRunResponse(_Base):
+    checked: int
+    delivered: int
+    failed: int
+    tokens_disabled: int
+    pending: int
 
 
 class AccountDeletionPurgeResponse(_Base):

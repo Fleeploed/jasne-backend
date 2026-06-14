@@ -1,8 +1,10 @@
 """OCR service — Azure Document Intelligence (prebuilt-read).
 
-Replaces GPT-4o Vision for text extraction. All pages are sent to Azure DI
-sequentially, and the results are concatenated with a page separator that the
-downstream classifier and analyzer prompts can recognise.
+Replaces GPT-4o Vision for text extraction. Inputs fan out concurrently
+(bounded) over ONE shared client connection; multi-page PDFs arrive as a
+single `data:application/pdf` URL and are OCRed in one Azure call (prebuilt-
+read handles multi-page documents natively). Results are concatenated with a
+page separator that the downstream classifier and analyzer prompts recognise.
 
 Errors never raise out — empty/failed runs return an OcrResult with an empty
 `ocr_text` so the classifier can apply the existing OCR quality gate.
@@ -23,7 +25,9 @@ logger = logging.getLogger(__name__)
 # Page separator between concatenated OCR pages. The downstream classifier
 # and analyzer prompts are tolerant of any whitespace, but a stable marker
 # helps when debugging or when humans inspect saved scans.ocr_text.
-_PAGE_SEPARATOR = "\n\n---\n\n"
+# Public: rag query truncation slices ocr_text on this marker.
+PAGE_SEPARATOR = "\n\n---\n\n"
+_PAGE_SEPARATOR = PAGE_SEPARATOR
 
 # Cap on simultaneous Azure DI calls. prebuilt-read takes one URL per request,
 # so a 10-page doc fans out into 10 calls — running them all at once would risk
@@ -80,35 +84,41 @@ def _result_text(result: object) -> str:
     return (content or "").strip()
 
 
-async def _analyze_single_url(client_kwargs: dict, url: str) -> object | None:
-    """Run prebuilt-read on a single http(s) URL."""
-    # Imported lazily so test environments without the SDK installed can still
-    # import this module (e.g. when only OcrResult tests are exercised).
+def _open_client(endpoint: str, key: str):
+    """Build one async DocumentIntelligenceClient shared by all page calls.
+
+    The previous implementation created a fresh client (new TLS handshake)
+    per page. Imported lazily so test environments without the SDK installed
+    can still import this module.
+    """
     from azure.ai.documentintelligence.aio import DocumentIntelligenceClient  # type: ignore
-    from azure.ai.documentintelligence.models import AnalyzeDocumentRequest  # type: ignore
     from azure.core.credentials import AzureKeyCredential  # type: ignore
 
-    credential = AzureKeyCredential(client_kwargs["key"])
-    async with DocumentIntelligenceClient(
-        endpoint=client_kwargs["endpoint"],
-        credential=credential,
-    ) as client:
-        poller = await client.begin_analyze_document(
-            "prebuilt-read",
-            AnalyzeDocumentRequest(url_source=url),
-        )
-        return await poller.result()
+    return DocumentIntelligenceClient(endpoint=endpoint, credential=AzureKeyCredential(key))
 
 
-async def _analyze_data_url(client_kwargs: dict, data_url: str) -> object | None:
-    """Run prebuilt-read on a base64 `data:` URI by sending raw bytes."""
+async def _analyze_single_url(client: object, url: str) -> object | None:
+    """Run prebuilt-read on a single http(s) URL."""
+    from azure.ai.documentintelligence.models import AnalyzeDocumentRequest  # type: ignore
+
+    poller = await client.begin_analyze_document(  # type: ignore[attr-defined]
+        "prebuilt-read",
+        AnalyzeDocumentRequest(url_source=url),
+    )
+    return await poller.result()
+
+
+async def _analyze_data_url(client: object, data_url: str) -> object | None:
+    """Run prebuilt-read on a base64 `data:` URI by sending raw bytes.
+
+    Handles both single images and whole PDFs (`data:application/pdf`) —
+    prebuilt-read OCRs every page of a PDF in this one call.
+    """
     import base64
 
-    from azure.ai.documentintelligence.aio import DocumentIntelligenceClient  # type: ignore
     from azure.ai.documentintelligence.models import AnalyzeDocumentRequest  # type: ignore
-    from azure.core.credentials import AzureKeyCredential  # type: ignore
 
-    # data:image/png;base64,XXXX
+    # data:image/png;base64,XXXX / data:application/pdf;base64,XXXX
     try:
         header, payload = data_url.split(",", 1)
     except ValueError as exc:
@@ -117,34 +127,34 @@ async def _analyze_data_url(client_kwargs: dict, data_url: str) -> object | None
         raise ValueError("Only base64-encoded data URLs are supported")
     raw_bytes = base64.b64decode(payload)
 
-    credential = AzureKeyCredential(client_kwargs["key"])
-    async with DocumentIntelligenceClient(
-        endpoint=client_kwargs["endpoint"],
-        credential=credential,
-    ) as client:
-        poller = await client.begin_analyze_document(
-            "prebuilt-read",
-            AnalyzeDocumentRequest(bytes_source=raw_bytes),
-        )
-        return await poller.result()
+    poller = await client.begin_analyze_document(  # type: ignore[attr-defined]
+        "prebuilt-read",
+        AnalyzeDocumentRequest(bytes_source=raw_bytes),
+    )
+    return await poller.result()
 
 
 async def _safe_analyze(
-    client_kwargs: dict,
+    client: object,
     url: str,
     index: int,
     semaphore: asyncio.Semaphore | None = None,
+    timeout_seconds: float | None = None,
 ) -> tuple[object | None, Exception | None]:
     """Run Azure DI on one URL (http or data URI), capturing any exception."""
     if semaphore is not None:
         async with semaphore:
-            return await _safe_analyze(client_kwargs, url, index)
+            return await _safe_analyze(client, url, index, timeout_seconds=timeout_seconds)
 
     is_data_url = url.startswith("data:")
     try:
-        if is_data_url:
-            return await _analyze_data_url(client_kwargs, url), None
-        return await _analyze_single_url(client_kwargs, url), None
+        coro = _analyze_data_url(client, url) if is_data_url else _analyze_single_url(client, url)
+        if timeout_seconds:
+            return await asyncio.wait_for(coro, timeout=timeout_seconds), None
+        return await coro, None
+    except TimeoutError as exc:
+        logger.warning("Azure DI timed out on page %d after %ss", index + 1, timeout_seconds)
+        return None, exc
     except httpx.HTTPError as exc:
         logger.warning(
             "Azure DI HTTP error on page %d (%s): %s",
@@ -185,10 +195,6 @@ async def extract_text(image_urls: list[str]) -> OcrResult:
         return OcrResult(ocr_text="", page_count=1, document_language="cs")
 
     settings = get_settings()
-    client_kwargs = {
-        "endpoint": settings.azure_document_intelligence_endpoint,
-        "key": settings.azure_document_intelligence_key,
-    }
 
     page_texts: list[str] = []
     detected_languages: list[str] = []
@@ -200,13 +206,23 @@ async def extract_text(image_urls: list[str]) -> OcrResult:
         if first_error is None:
             first_error = f"{type(exc).__name__}: {exc}"[:300]
 
-    # Fan out across pages concurrently (bounded). asyncio.gather preserves the
-    # input order regardless of completion order, so page concatenation and the
-    # "first error" diagnostic stay deterministic.
+    # Fan out across pages concurrently (bounded) over ONE shared client so we
+    # pay a single TLS handshake. asyncio.gather preserves the input order
+    # regardless of completion order, so page concatenation and the "first
+    # error" diagnostic stay deterministic.
     semaphore = asyncio.Semaphore(_MAX_CONCURRENT_OCR_CALLS)
-    outcomes = await asyncio.gather(
-        *(_safe_analyze(client_kwargs, url, index, semaphore) for index, url in enumerate(image_urls))
+    timeout_seconds = settings.azure_document_intelligence_timeout_seconds
+    client = _open_client(
+        settings.azure_document_intelligence_endpoint,
+        settings.azure_document_intelligence_key,
     )
+    async with client:
+        outcomes = await asyncio.gather(
+            *(
+                _safe_analyze(client, url, index, semaphore, timeout_seconds=timeout_seconds)
+                for index, url in enumerate(image_urls)
+            )
+        )
 
     for index, (result, error) in enumerate(outcomes):
         if error is not None:

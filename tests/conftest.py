@@ -142,6 +142,13 @@ class _FakeQuery:
                     return (value is not None, value if value is not None else 0)
 
                 out.sort(key=_order_key, reverse=self._order_desc)
+            else:
+                # Postgres does NOT guarantee row order without ORDER BY. Real
+                # selects can come back in any order; returning insert-order here
+                # would mask code that relies on it (e.g. chat message ordering
+                # must use ORDER BY seq, see migration 0016). Reverse insert
+                # order so such reliance fails deterministically in tests.
+                out.reverse()
             if self._range:
                 s, e = self._range
                 out = out[s : e + 1]
@@ -209,12 +216,23 @@ class _FakeQuery:
         if self._op == "delete":
             ids_to_remove = {id(r) for r in rows}
             self._table.rows = [r for r in self._table.rows if id(r) not in ids_to_remove]
-            # Emulate FK ON DELETE CASCADE on scans.id for scan_messages and deadlines.
+            # Emulate migration 0018: scan_messages cascade; deadlines are
+            # deleted only when auto_created, manual ones get scan_id nulled.
             if self._table.name == "scans" and self._table.parent is not None:
                 deleted_scan_ids = {str(r.get("id")) for r in rows}
-                for child in ("scan_messages", "deadlines"):
-                    tbl = self._table.parent.table(child)
-                    tbl.rows = [r for r in tbl.rows if str(r.get("scan_id")) not in deleted_scan_ids]
+                messages_tbl = self._table.parent.table("scan_messages")
+                messages_tbl.rows = [
+                    r for r in messages_tbl.rows if str(r.get("scan_id")) not in deleted_scan_ids
+                ]
+                deadlines_tbl = self._table.parent.table("deadlines")
+                surviving = []
+                for r in deadlines_tbl.rows:
+                    if str(r.get("scan_id")) in deleted_scan_ids:
+                        if r.get("auto_created"):
+                            continue
+                        r["scan_id"] = None
+                    surviving.append(r)
+                deadlines_tbl.rows = surviving
             return _FakeResponse(list(rows))
 
         return _FakeResponse([])
@@ -307,6 +325,57 @@ class FakeSupabase:
                 )
                 return _FakeResponse([1])
 
+            if name == "try_increment_scan_count":
+                user_id = str(params["p_user_id"])
+                month = params["p_month"]
+                cap = int(params["p_cap"])
+                table = self.table("usage_limits")
+                for row in table.rows:
+                    if str(row.get("user_id")) == user_id and row.get("month") == month:
+                        current = int(row.get("scans_count") or 0)
+                        if current >= cap:
+                            return _FakeResponse([-1])
+                        row["scans_count"] = current + 1
+                        return _FakeResponse([row["scans_count"]])
+                if cap < 1:
+                    return _FakeResponse([-1])
+                table.rows.append(
+                    {
+                        "user_id": user_id,
+                        "month": month,
+                        "scans_count": 1,
+                        "questions_per_scan": {},
+                    }
+                )
+                return _FakeResponse([1])
+
+            if name == "try_increment_chat_count":
+                user_id = str(params["p_user_id"])
+                month = params["p_month"]
+                scan_id = str(params["p_scan_id"])
+                cap = int(params["p_cap"])
+                table = self.table("usage_limits")
+                for row in table.rows:
+                    if str(row.get("user_id")) == user_id and row.get("month") == month:
+                        qmap = dict(row.get("questions_per_scan") or {})
+                        current = int(qmap.get(scan_id, 0))
+                        if current >= cap:
+                            return _FakeResponse([-1])
+                        qmap[scan_id] = current + 1
+                        row["questions_per_scan"] = qmap
+                        return _FakeResponse([qmap[scan_id]])
+                if cap < 1:
+                    return _FakeResponse([-1])
+                table.rows.append(
+                    {
+                        "user_id": user_id,
+                        "month": month,
+                        "scans_count": 0,
+                        "questions_per_scan": {scan_id: 1},
+                    }
+                )
+                return _FakeResponse([1])
+
             if name == "increment_chat_count":
                 user_id = str(params["p_user_id"])
                 month = params["p_month"]
@@ -336,15 +405,26 @@ class FakeSupabase:
 
                 scan_ids = {str(r["id"]) for r in scans_tbl.rows if str(r.get("user_id")) == user_id}
                 deleted_scans = len(scan_ids)
+                # Migration 0018: only auto-created deadlines die with scans;
+                # manual ones are unlinked.
                 deleted_deadlines = sum(
                     1
                     for r in deadlines_tbl.rows
-                    if str(r.get("user_id")) == user_id and str(r.get("scan_id")) in scan_ids
+                    if str(r.get("user_id")) == user_id
+                    and str(r.get("scan_id")) in scan_ids
+                    and r.get("auto_created")
                 )
 
                 scans_tbl.rows = [r for r in scans_tbl.rows if str(r.get("user_id")) != user_id]
                 messages_tbl.rows = [r for r in messages_tbl.rows if str(r.get("scan_id")) not in scan_ids]
-                deadlines_tbl.rows = [r for r in deadlines_tbl.rows if str(r.get("scan_id")) not in scan_ids]
+                surviving_deadlines = []
+                for r in deadlines_tbl.rows:
+                    if str(r.get("scan_id")) in scan_ids:
+                        if r.get("auto_created"):
+                            continue
+                        r["scan_id"] = None
+                    surviving_deadlines.append(r)
+                deadlines_tbl.rows = surviving_deadlines
 
                 # usage_limits is intentionally untouched — the monthly counter
                 # tracks initiations, not surviving rows. See migration 0009.
@@ -430,6 +510,36 @@ def fake_supabase_admin() -> FakeSupabaseAdmin:
 @pytest.fixture
 def test_user_id() -> UUID:
     return UUID("11111111-1111-1111-1111-111111111111")
+
+
+@pytest.fixture(autouse=True)
+def _reset_rate_limits():
+    """Rate-limit buckets are process-global; tests share one user id."""
+    from app.services.rate_limit import reset
+
+    reset()
+    yield
+    reset()
+
+
+@pytest.fixture(autouse=True)
+def _reset_idempotency():
+    """Idempotency store is process-global; clear between tests."""
+    from app.services.idempotency import reset
+
+    reset()
+    yield
+    reset()
+
+
+@pytest.fixture(autouse=True)
+def _reset_help_snapshot_cache():
+    """The help snapshot TTL cache is process-global; tests seed different rows."""
+    from app.routers.help import invalidate_snapshot_cache
+
+    invalidate_snapshot_cache()
+    yield
+    invalidate_snapshot_cache()
 
 
 @pytest.fixture

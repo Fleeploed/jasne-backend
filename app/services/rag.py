@@ -114,12 +114,29 @@ async def _retrieve_vector_chunks(query_text: str, category: DocumentCategory) -
     return chunks
 
 
+# Vector queries embed only the first pages of a scan: a single embedding
+# averages the whole input, so a 10-page document's tail dilutes the
+# identifying head — sender, document type, and subject are almost always on
+# pages 1-2. (Previously the head was kept only by the generic 20k-char cap,
+# which let long documents drown the signal.)
+_VECTOR_QUERY_MAX_PAGES = 2
+
+
+def _vector_query_text(ocr_text: str) -> str:
+    from app.services.ocr import PAGE_SEPARATOR
+
+    pages = ocr_text.split(PAGE_SEPARATOR)
+    return PAGE_SEPARATOR.join(pages[:_VECTOR_QUERY_MAX_PAGES])
+
+
 async def retrieve_chunks(ocr_text: str, category: DocumentCategory) -> list[str]:
     """Hybrid scan retrieval.
 
     Vector search finds broad process context. Keyword search is needed for
     exact office addresses like "Žukovského 888/2", where hours/contact chunks
-    should win over generic immigration chunks.
+    should win over generic immigration chunks. Keyword search keeps the full
+    text (addresses can appear on any page); the vector query is truncated to
+    the identifying head.
     """
     if not ocr_text.strip():
         return []
@@ -127,7 +144,7 @@ async def retrieve_chunks(ocr_text: str, category: DocumentCategory) -> list[str
     settings = get_settings()
     keyword_chunks, vector_chunks = await asyncio.gather(
         retrieve_keyword_chunks(ocr_text, category, match_count=settings.rag_top_k),
-        _retrieve_vector_chunks(ocr_text, category),
+        _retrieve_vector_chunks(_vector_query_text(ocr_text), category),
     )
 
     chunks: list[str] = []
