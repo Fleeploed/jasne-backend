@@ -6,7 +6,7 @@
     "repo": "https://github.com/Fleeploed/jasne-backend",
     "default_branch": "develop",
     "current_branch": "develop",
-    "current_commit": "5142666 + section-5.1 guardrail registry (uncommitted at status write, committed next)",
+    "current_commit": "fcf7ba2",
     "current_version": "0.1.0",
     "phase": "MVP backend on Render Free with scan/chat streaming, PDF input, Help CMS, RevenueCat sync, and OAMP status lookup for OAM proceedings and ŽOV visa numbers",
     "uncommitted_work_note": "Sections 1-5 are all committed and pushed to develop (e9f963b: section-1 critical fixes at acb5c17, then sections 2-5 hardening/performance/spec-sync/observability). Working tree is clean.",
@@ -574,8 +574,8 @@
   "git_state": {
     "active_branch": "develop",
     "clean_worktree_before_status_update": true,
-    "latest_backend_commit": "e9f963b (sections 2-5: hardening, performance, spec-sync, observability)",
-    "previous_commit": "acb5c17 (section-1 critical fixes)",
+    "latest_backend_commit": "fcf7ba2 (section-5.1 guardrail registry)",
+    "previous_commit": "e9f963b (sections 2-5: hardening, performance, spec-sync, observability)",
     "pushed_to_develop": true,
     "latest_successful_ci": "https://github.com/Fleeploed/jasne-backend/actions/runs/26537054851"
   },
