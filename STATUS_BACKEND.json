@@ -6,10 +6,10 @@
     "repo": "https://github.com/Fleeploed/jasne-backend",
     "default_branch": "develop",
     "current_branch": "develop",
-    "current_commit": "acb5c17",
+    "current_commit": "e9f963b",
     "current_version": "0.1.0",
     "phase": "MVP backend on Render Free with scan/chat streaming, PDF input, Help CMS, RevenueCat sync, and OAMP status lookup for OAM proceedings and ŽOV visa numbers",
-    "uncommitted_work_note": "Section-1 critical fixes are committed at acb5c17. Hardening + performance batches (sections 2.x and 3.x: atomic quotas, scan rate limit, error-leak hardening, /health/deep auth, profile-race upsert, manual-deadline survival, OCR pipeline rewrite, push receipts, Prague timezone, HNSW, help cache, RAG truncation) are in the working tree, tested green, NOT yet committed.",
+    "uncommitted_work_note": "Sections 1-5 are all committed and pushed to develop (e9f963b: section-1 critical fixes at acb5c17, then sections 2-5 hardening/performance/spec-sync/observability). Working tree is clean.",
     "migrations_applied_to_prod": "0015-0019 already applied to the live Supabase project (verified via MCP on 2026-06-13)."
   },
   "deployment": {
@@ -483,9 +483,9 @@
       },
       {
         "id": "be-todo-6",
-        "title": "Commit and push sections 2.x + 3.x hardening/perf work",
-        "priority": "high",
-        "details": "Working tree at acb5c17 + uncommitted section-2/3 changes (tested green). Commit and push to develop so the deployed backend matches the prod DB schema (0019 already applied)."
+        "title": "Commit and push sections 2-5",
+        "priority": "done",
+        "details": "Committed and pushed to develop as e9f963b on 2026-06-13. Render will deploy on its next trigger; verify /version flips to e9f963b."
       },
       {
         "id": "be-todo-7",
@@ -550,10 +550,10 @@
     },
     {
       "id": "issue-6",
-      "severity": "medium",
-      "title": "Section-2/3 hardening + perf work is uncommitted",
-      "impact": "Prod DB schema is at 0019 but the deployed backend code is at acb5c17 (section 1 only). Until sections 2.x/3.x are committed and deployed, the live service lacks rate limiting, atomic quotas, the OCR rewrite, push receipts, etc.",
-      "fix": "be-todo-6"
+      "severity": "low",
+      "title": "Sections 2-5 committed but Render deploy + UptimeRobot header still pending",
+      "impact": "Code is pushed (e9f963b) and prod schema is at 0019, but the running Render container only redeploys on its own trigger. Once it serves e9f963b, /health/deep requires X-Cron-Secret — the UptimeRobot monitor must add that header or it will alert.",
+      "fix": "be-todo-7"
     },
     {
       "id": "issue-7",
@@ -572,9 +572,10 @@
   ],
   "git_state": {
     "active_branch": "develop",
-    "clean_worktree_before_status_update": false,
-    "latest_backend_commit": "acb5c17 (section-1 critical fixes)",
-    "uncommitted": "section-2 hardening + section-3 performance batches, tested green, not yet committed",
+    "clean_worktree_before_status_update": true,
+    "latest_backend_commit": "e9f963b (sections 2-5: hardening, performance, spec-sync, observability)",
+    "previous_commit": "acb5c17 (section-1 critical fixes)",
+    "pushed_to_develop": true,
     "latest_successful_ci": "https://github.com/Fleeploed/jasne-backend/actions/runs/26537054851"
   },
   "next_session_recommendations": {
