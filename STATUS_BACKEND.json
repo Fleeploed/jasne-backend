@@ -2,14 +2,14 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "meta": {
     "project": "Jasne backend",
-    "snapshot_date": "2026-06-13",
+    "snapshot_date": "2026-06-15T16:20Z",
     "repo": "https://github.com/Fleeploed/jasne-backend",
     "default_branch": "develop",
     "current_branch": "develop",
-    "current_commit": "fcf7ba2",
+    "current_commit": "0e2f1d3",
     "current_version": "0.1.0",
-    "phase": "MVP backend on Render Free with scan/chat streaming, PDF input, Help CMS, RevenueCat sync, and OAMP status lookup for OAM proceedings and ŽOV visa numbers",
-    "uncommitted_work_note": "Sections 1-5 are all committed and pushed to develop (e9f963b: section-1 critical fixes at acb5c17, then sections 2-5 hardening/performance/spec-sync/observability). Working tree is clean.",
+    "phase": "MVP backend on Render Free with scan/chat streaming, PDF input, Help CMS, RevenueCat sync, OAMP status lookup, and Pro-Help security gating",
+    "uncommitted_work_note": "Sections 1-5 committed (fcf7ba2), then fe-fix-91 (0e2f1d3: Pro Help leakage gate on backend). Working tree is clean.",
     "migrations_applied_to_prod": "0015-0019 already applied to the live Supabase project (verified via MCP on 2026-06-13)."
   },
   "deployment": {
@@ -404,7 +404,8 @@
     { "id": "be-19", "title": "Section-3 performance (working tree, uncommitted): OCR rewrite (whole-PDF single Azure call, shared client, live timeout, bounded fan-out); push receipts cron + Prague-timezone reminder dates + per-run token cache; HNSW vector index; help snapshot 60s TTL cache; RAG vector query truncated to first ~2 pages", "status": "done" },
     { "id": "be-20", "title": "Section-4 spec sync + dead-code cleanup (working tree, uncommitted): enforce Free archive cap (GET /scans envelope with hidden_count); removed dead min_ocr_confidence config + render.yaml env; classifier max tokens 8000→500 (Vision-era artifact); fixed Vision-legacy comments; documented rag_similarity_threshold 0.50 vs stale 0.65 spec and intentional absence of deadline source_text; renamed misleading tracking-limit test to follow MAX_ACTIVE_TRACKINGS_PER_TYPE", "status": "done" },
     { "id": "be-21", "title": "Section-5 improvements: structured OpenAI token-usage logging (jasne.token_usage, incl. streamed calls via stream_options); Idempotency-Key on POST /scans + /scans/stream (in-memory TTL store, replay returns original scan, 409 on in-flight dup); env-gated Sentry with request_id tag + SSE-pipeline capture; FakeSupabase no longer guarantees insert-order on unordered selects so ordering regressions surface", "status": "done" },
-    { "id": "be-22", "title": "Section-5.1 guardrail registry: ANALYSIS_GUARDRAILS (condition + per-field transforms) drives both the batch and stream-preview post-processing paths from one source; fixes the latent batch/stream divergence and pins it with a parity test", "status": "done" }
+    { "id": "be-22", "title": "Section-5.1 guardrail registry: ANALYSIS_GUARDRAILS (condition + per-field transforms) drives both the batch and stream-preview post-processing paths from one source; fixes the latent batch/stream divergence and pins it with a parity test", "status": "done" },
+    { "id": "be-23", "title": "Close Pro Help leakage with server-side pro_only gating", "status": "done", "details": "Backend enforces the gate: /help/guides/{slug} reads user plan and strips body/items for pro_only text/steps/checklist sections before sending (non-gated warning/cta are always readable). Add locked flag to schemas to mark redacted sections. Free user never receives Pro content in the API response — the client blur in ProBlurSection is defense-in-depth only. Added tests: free-user response substring-scanned has zero Pro markers, items==[], locked=true, public+warning survive intact. Pro user receives full untouched payload. Commit 0e2f1d3 (428 tests pass)." }
   ],
   "pending": {
     "infrastructure": [
@@ -574,9 +575,10 @@
   "git_state": {
     "active_branch": "develop",
     "clean_worktree_before_status_update": true,
-    "latest_backend_commit": "fcf7ba2 (section-5.1 guardrail registry)",
-    "previous_commit": "e9f963b (sections 2-5: hardening, performance, spec-sync, observability)",
+    "latest_backend_commit": "0e2f1d3 (feat(help): close Pro Help leakage on backend)",
+    "previous_commit": "fcf7ba2 (section-5.1 guardrail registry)",
     "pushed_to_develop": true,
+    "commit_history_this_session": ["0e2f1d3: Pro Help leakage gate (fe-fix-91 backend part)"],
     "latest_successful_ci": "https://github.com/Fleeploed/jasne-backend/actions/runs/26537054851"
   },
   "next_session_recommendations": {
