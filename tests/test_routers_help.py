@@ -18,7 +18,10 @@ from app.models.help_schemas import (
     HelpCategoryFallback,
     HelpCategoryTranslation,
     HelpGuide,
+    HelpSectionChecklist,
+    HelpSectionSteps,
     HelpSectionText,
+    HelpSectionWarning,
     HelpUiLocale,
     HelpUiStrings,
     QuickActionStrings,
@@ -297,6 +300,127 @@ def test_guide_not_found(client, auth_headers):
 def test_guide_invalid_language_returns_422(client, auth_headers):
     r = client.get("/help/guides/check-status?language=fr", headers=auth_headers)
     assert r.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# /help/guides/{slug} — Pro gating (pro_only content must never leak to free)
+# ---------------------------------------------------------------------------
+
+# Distinctive markers so a substring scan of the raw response proves the real
+# Pro payload is absent. None of these may appear in a free user's response.
+_PRO_STEP_MARKER = "SECRET_PRO_STEP_DO_NOT_LEAK"
+_PRO_CHECK_MARKER = "SECRET_PREP_PASSPORT_DO_NOT_LEAK"
+# Public + warning markers MUST stay visible to free users.
+_PUBLIC_MARKER = "PUBLIC_INTRO_TEXT"
+_WARNING_MARKER = "WARNING_ALWAYS_VISIBLE"
+
+
+def _content_with_pro_section() -> HelpContent:
+    cat_visa = HelpCategory(
+        slug="visa-pobyt",
+        icon="passport",
+        translations={
+            "cs": HelpCategoryTranslation(title="Víza a pobyt"),
+            "ru": HelpCategoryTranslation(title="Визы и проживание"),
+        },
+        fallback={
+            "cs": HelpCategoryFallback(title="Prázdné", text="cs"),
+            "ru": HelpCategoryFallback(title="Пусто", text="ru"),
+        },
+        guides_order=["check-status"],
+    )
+    guide_ru = HelpGuide(
+        slug="check-status",
+        category="visa-pobyt",
+        language="ru",
+        title="Как проверить статус",
+        sections=[
+            HelpSectionText(type="text", title="Коротко", body=_PUBLIC_MARKER),
+            HelpSectionSteps(
+                type="steps",
+                title="Что сделать",
+                pro_only=True,
+                items=[_PRO_STEP_MARKER, "второй шаг"],
+            ),
+            HelpSectionChecklist(
+                type="checklist",
+                title="Что подготовить",
+                pro_only=True,
+                items=[_PRO_CHECK_MARKER],
+            ),
+            HelpSectionWarning(type="warning", title="Важно", pro_only=True, body=_WARNING_MARKER),
+        ],
+    )
+    return HelpContent(
+        categories=(cat_visa,),
+        guides_by_slug={"check-status": {"ru": guide_ru}},
+        ui_strings=_minimal_ui(),
+    )
+
+
+@pytest.fixture
+def pro_section_content(monkeypatch):
+    content = _content_with_pro_section()
+
+    async def _fake_snapshot():
+        return content
+
+    monkeypatch.setattr("app.routers.help.get_help_content", lambda: content)
+    monkeypatch.setattr("app.routers.help._snapshot", _fake_snapshot)
+    return content
+
+
+def _seed_plan(fake_supabase, test_user_id, plan: str) -> None:
+    fake_supabase.table("profiles").rows.append({"id": str(test_user_id), "plan": plan})
+
+
+def test_guide_strips_pro_only_content_for_free_user(
+    client, auth_headers, fake_supabase, test_user_id, pro_section_content
+):
+    _seed_plan(fake_supabase, test_user_id, "free")
+
+    r = client.get("/help/guides/check-status?language=ru", headers=auth_headers)
+    assert r.status_code == 200, r.text
+
+    # The real Pro payload must be absent from the entire serialized response —
+    # this is the security gate, not the client blur.
+    assert _PRO_STEP_MARKER not in r.text
+    assert _PRO_CHECK_MARKER not in r.text
+
+    # Public text and the always-open warning stay fully readable.
+    assert _PUBLIC_MARKER in r.text
+    assert _WARNING_MARKER in r.text
+
+    by_type = {s["type"]: s for s in r.json()["sections"]}
+    # Gated sections keep their shell (type + title + flags) but no content.
+    assert by_type["steps"]["pro_only"] is True
+    assert by_type["steps"]["locked"] is True
+    assert by_type["steps"]["items"] == []
+    assert by_type["steps"]["title"] == "Что сделать"
+    assert by_type["checklist"]["locked"] is True
+    assert by_type["checklist"]["items"] == []
+    # Warning is never gated — full body survives, not locked.
+    assert by_type["warning"]["locked"] is False
+    assert by_type["warning"]["body"] == _WARNING_MARKER
+
+
+def test_guide_returns_pro_only_content_for_pro_user(
+    client, auth_headers, fake_supabase, test_user_id, pro_section_content
+):
+    _seed_plan(fake_supabase, test_user_id, "pro")
+
+    r = client.get("/help/guides/check-status?language=ru", headers=auth_headers)
+    assert r.status_code == 200, r.text
+
+    # Pro users receive the untouched payload.
+    assert _PRO_STEP_MARKER in r.text
+    assert _PRO_CHECK_MARKER in r.text
+
+    by_type = {s["type"]: s for s in r.json()["sections"]}
+    assert by_type["steps"]["items"] == [_PRO_STEP_MARKER, "второй шаг"]
+    assert by_type["steps"]["locked"] is False
+    assert by_type["checklist"]["items"] == [_PRO_CHECK_MARKER]
+    assert by_type["checklist"]["locked"] is False
 
 
 # ---------------------------------------------------------------------------

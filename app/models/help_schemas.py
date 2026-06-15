@@ -12,7 +12,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 HelpLanguage = Literal["cs", "en", "ru", "uk"]
 
@@ -23,6 +23,11 @@ class _Base(BaseModel):
 
 class _HelpSectionBase(_Base):
     pro_only: bool = False
+    # Set by the API when a pro_only section is served to a free user: the
+    # real body/items are stripped server-side so they never reach the client
+    # React tree. The client renders a blurred placeholder + upgrade gate.
+    # Authors never set this — it is an output-only redaction marker.
+    locked: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -33,19 +38,40 @@ class _HelpSectionBase(_Base):
 class HelpSectionText(_HelpSectionBase):
     type: Literal["text"]
     title: str | None = None
-    body: str
+    # Required for authored content; emptied when redacted (locked=True).
+    body: str = ""
+
+    @model_validator(mode="after")
+    def _body_required_unless_locked(self) -> HelpSectionText:
+        if not self.locked and not self.body:
+            raise ValueError("text section requires a non-empty body")
+        return self
 
 
 class HelpSectionSteps(_HelpSectionBase):
     type: Literal["steps"]
     title: str | None = None
-    items: list[str] = Field(min_length=1)
+    # Non-empty for authored content; emptied when redacted (locked=True).
+    items: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _items_required_unless_locked(self) -> HelpSectionSteps:
+        if not self.locked and not self.items:
+            raise ValueError("steps section requires at least one item")
+        return self
 
 
 class HelpSectionChecklist(_HelpSectionBase):
     type: Literal["checklist"]
     title: str | None = None
-    items: list[str] = Field(min_length=1)
+    # Non-empty for authored content; emptied when redacted (locked=True).
+    items: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _items_required_unless_locked(self) -> HelpSectionChecklist:
+        if not self.locked and not self.items:
+            raise ValueError("checklist section requires at least one item")
+        return self
 
 
 class HelpSectionWarning(_HelpSectionBase):

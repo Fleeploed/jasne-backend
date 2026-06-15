@@ -37,10 +37,15 @@ from app.models.help_schemas import (
     HelpQuickAction,
     HelpScanCta,
     HelpSearchResponse,
+    HelpSection,
+    HelpSectionChecklist,
+    HelpSectionSteps,
+    HelpSectionText,
     HelpUiLocale,
     HelpUsefulAction,
     HelpUsefulActionDef,
 )
+from app.routers.profile import _ensure_profile
 from app.services.help_loader import HelpContent, get_help_content
 from app.services.help_search import search as run_search
 from app.services.rag import get_supabase
@@ -244,7 +249,7 @@ async def help_category(
 async def help_guide(
     slug: str,
     language: HelpLanguage = Query("cs"),
-    _user_id: UUID = Depends(get_active_user_id),
+    user_id: UUID = Depends(get_active_user_id),
 ) -> HelpGuideResponse:
     content = await _snapshot()
     langs = content.guides_by_slug.get(slug)
@@ -264,6 +269,13 @@ async def help_guide(
 
     cat_translation = category.translations.get(language) or category.translations["cs"]
 
+    # Pro gate is enforced here, server-side: a free user never receives the
+    # real body/items of a pro_only section. The client blur is only a visual
+    # shell. plan is updated solely through the RevenueCat webhook.
+    profile = await _ensure_profile(user_id)
+    plan = profile.get("plan", "free")
+    sections = _gate_sections_for_plan(guide.sections, plan)
+
     return HelpGuideResponse(
         slug=guide.slug,
         category=HelpGuideCategoryRef(slug=category.slug, title=cat_translation.title),
@@ -272,10 +284,50 @@ async def help_guide(
         short_summary=guide.short_summary,
         language=guide.language,
         fallback_language=None,
-        sections=guide.sections,
+        sections=sections,
         official_source_url=guide.official_source_url,
         updated_at=guide.updated_at,
     )
+
+
+# Section types whose pro_only content is gated. warning/cta are always shown
+# in full — they carry disclaimers and navigation, not the Pro payload. This
+# mirrors the client's gating condition in features/help/components.tsx.
+_GATED_SECTION_TYPES = ("text", "steps", "checklist")
+
+
+def _gate_sections_for_plan(sections: list[HelpSection], plan: str) -> list[HelpSection]:
+    """Return sections with pro_only body/items stripped for free users.
+
+    Pro users get the untouched list. For free users, every pro_only
+    text/steps/checklist section is replaced by a redacted copy that keeps
+    only its type + title and is flagged `locked=True`, so the real Pro
+    content never crosses the API boundary. The cached snapshot's section
+    objects are never mutated — redaction builds fresh instances.
+    """
+    if plan == "pro":
+        return sections
+
+    gated: list[HelpSection] = []
+    for section in sections:
+        if section.pro_only and section.type in _GATED_SECTION_TYPES:
+            gated.append(_redact_section(section))
+        else:
+            gated.append(section)
+    return gated
+
+
+def _redact_section(section: HelpSection) -> HelpSection:
+    if section.type == "text":
+        return HelpSectionText(type="text", title=section.title, pro_only=True, locked=True)
+    if section.type == "steps":
+        return HelpSectionSteps(type="steps", title=section.title, pro_only=True, locked=True)
+    if section.type == "checklist":
+        return HelpSectionChecklist(
+            type="checklist", title=section.title, pro_only=True, locked=True
+        )
+    # Defensive: only the gated types reach here.
+    return section
 
 
 # ---------------------------------------------------------------------------
