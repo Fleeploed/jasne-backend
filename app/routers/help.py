@@ -323,9 +323,7 @@ def _redact_section(section: HelpSection) -> HelpSection:
     if section.type == "steps":
         return HelpSectionSteps(type="steps", title=section.title, pro_only=True, locked=True)
     if section.type == "checklist":
-        return HelpSectionChecklist(
-            type="checklist", title=section.title, pro_only=True, locked=True
-        )
+        return HelpSectionChecklist(type="checklist", title=section.title, pro_only=True, locked=True)
     # Defensive: only the gated types reach here.
     return section
 
