@@ -343,9 +343,7 @@ def _preview_section(section: HelpSection) -> HelpSection:
         )
     if section.type == "steps":
         preview = [_preview_text(section.items[0])] if section.items else []
-        return HelpSectionSteps(
-            type="steps", title=section.title, items=preview, pro_only=True, locked=True
-        )
+        return HelpSectionSteps(type="steps", title=section.title, items=preview, pro_only=True, locked=True)
     if section.type == "checklist":
         preview = [_preview_text(section.items[0])] if section.items else []
         return HelpSectionChecklist(
