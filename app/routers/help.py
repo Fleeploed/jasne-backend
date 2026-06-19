@@ -269,9 +269,11 @@ async def help_guide(
 
     cat_translation = category.translations.get(language) or category.translations["cs"]
 
-    # Pro gate is enforced here, server-side: a free user never receives the
-    # real body/items of a pro_only section. The client blur is only a visual
-    # shell. plan is updated solely through the RevenueCat webhook.
+    # Pro gate is enforced here, server-side: a free user receives only a short
+    # real teaser (first line/chars) of each pro_only section — the bulk of the
+    # Pro content stays server-side. The client renders that teaser blurred
+    # behind the upgrade gate. plan is updated solely through the RevenueCat
+    # webhook.
     profile = await _ensure_profile(user_id)
     plan = profile.get("plan", "free")
     sections = _gate_sections_for_plan(guide.sections, plan)
@@ -296,14 +298,22 @@ async def help_guide(
 _GATED_SECTION_TYPES = ("text", "steps", "checklist")
 
 
+# How much of a pro_only section to expose as a free-user teaser. Generous
+# enough to look like real content under the blur, small enough that the bulk
+# of the Pro payload stays server-side.
+_PREVIEW_CHARS = 140
+
+
 def _gate_sections_for_plan(sections: list[HelpSection], plan: str) -> list[HelpSection]:
-    """Return sections with pro_only body/items stripped for free users.
+    """Return sections with pro_only content reduced to a teaser for free users.
 
     Pro users get the untouched list. For free users, every pro_only
-    text/steps/checklist section is replaced by a redacted copy that keeps
-    only its type + title and is flagged `locked=True`, so the real Pro
-    content never crosses the API boundary. The cached snapshot's section
-    objects are never mutated — redaction builds fresh instances.
+    text/steps/checklist section is replaced by a copy that keeps its type +
+    title + a short real teaser (the first chars / first item) and is flagged
+    `locked=True`. The client renders that teaser blurred behind the upgrade
+    gate. The bulk of the Pro content never crosses the API boundary. The
+    cached snapshot's section objects are never mutated — previews build fresh
+    instances.
     """
     if plan == "pro":
         return sections
@@ -311,19 +321,36 @@ def _gate_sections_for_plan(sections: list[HelpSection], plan: str) -> list[Help
     gated: list[HelpSection] = []
     for section in sections:
         if section.pro_only and section.type in _GATED_SECTION_TYPES:
-            gated.append(_redact_section(section))
+            gated.append(_preview_section(section))
         else:
             gated.append(section)
     return gated
 
 
-def _redact_section(section: HelpSection) -> HelpSection:
+def _preview_text(body: str) -> str:
+    """First ~_PREVIEW_CHARS of body, cut on a word boundary with an ellipsis."""
+    body = body.strip()
+    if len(body) <= _PREVIEW_CHARS:
+        return body
+    head = body[:_PREVIEW_CHARS].rsplit(" ", 1)[0].rstrip()
+    return f"{head}…"
+
+
+def _preview_section(section: HelpSection) -> HelpSection:
     if section.type == "text":
-        return HelpSectionText(type="text", title=section.title, pro_only=True, locked=True)
+        return HelpSectionText(
+            type="text", title=section.title, body=_preview_text(section.body), pro_only=True, locked=True
+        )
     if section.type == "steps":
-        return HelpSectionSteps(type="steps", title=section.title, pro_only=True, locked=True)
+        preview = [_preview_text(section.items[0])] if section.items else []
+        return HelpSectionSteps(
+            type="steps", title=section.title, items=preview, pro_only=True, locked=True
+        )
     if section.type == "checklist":
-        return HelpSectionChecklist(type="checklist", title=section.title, pro_only=True, locked=True)
+        preview = [_preview_text(section.items[0])] if section.items else []
+        return HelpSectionChecklist(
+            type="checklist", title=section.title, items=preview, pro_only=True, locked=True
+        )
     # Defensive: only the gated types reach here.
     return section
 

@@ -303,13 +303,16 @@ def test_guide_invalid_language_returns_422(client, auth_headers):
 
 
 # ---------------------------------------------------------------------------
-# /help/guides/{slug} — Pro gating (pro_only content must never leak to free)
+# /help/guides/{slug} — Pro gating (free users get a teaser, the bulk stays in)
 # ---------------------------------------------------------------------------
 
-# Distinctive markers so a substring scan of the raw response proves the real
-# Pro payload is absent. None of these may appear in a free user's response.
-_PRO_STEP_MARKER = "SECRET_PRO_STEP_DO_NOT_LEAK"
-_PRO_CHECK_MARKER = "SECRET_PREP_PASSPORT_DO_NOT_LEAK"
+# Free users receive a short teaser (first item) of each pro_only section. The
+# teaser markers MAY appear; the deep markers (later items) MUST NOT — they
+# prove the bulk of the Pro payload never crosses the API boundary.
+_PRO_STEP_TEASER = "FIRST_STEP_TEASER_OK"
+_PRO_STEP_SECRET = "SECRET_SECOND_STEP_DO_NOT_LEAK"
+_PRO_CHECK_TEASER = "FIRST_CHECK_TEASER_OK"
+_PRO_CHECK_SECRET = "SECRET_SECOND_CHECK_DO_NOT_LEAK"
 # Public + warning markers MUST stay visible to free users.
 _PUBLIC_MARKER = "PUBLIC_INTRO_TEXT"
 _WARNING_MARKER = "WARNING_ALWAYS_VISIBLE"
@@ -340,13 +343,13 @@ def _content_with_pro_section() -> HelpContent:
                 type="steps",
                 title="Что сделать",
                 pro_only=True,
-                items=[_PRO_STEP_MARKER, "второй шаг"],
+                items=[_PRO_STEP_TEASER, _PRO_STEP_SECRET],
             ),
             HelpSectionChecklist(
                 type="checklist",
                 title="Что подготовить",
                 pro_only=True,
-                items=[_PRO_CHECK_MARKER],
+                items=[_PRO_CHECK_TEASER, _PRO_CHECK_SECRET],
             ),
             HelpSectionWarning(type="warning", title="Важно", pro_only=True, body=_WARNING_MARKER),
         ],
@@ -374,7 +377,7 @@ def _seed_plan(fake_supabase, test_user_id, plan: str) -> None:
     fake_supabase.table("profiles").rows.append({"id": str(test_user_id), "plan": plan})
 
 
-def test_guide_strips_pro_only_content_for_free_user(
+def test_guide_previews_pro_only_content_for_free_user(
     client, auth_headers, fake_supabase, test_user_id, pro_section_content
 ):
     _seed_plan(fake_supabase, test_user_id, "free")
@@ -382,23 +385,24 @@ def test_guide_strips_pro_only_content_for_free_user(
     r = client.get("/help/guides/check-status?language=ru", headers=auth_headers)
     assert r.status_code == 200, r.text
 
-    # The real Pro payload must be absent from the entire serialized response —
-    # this is the security gate, not the client blur.
-    assert _PRO_STEP_MARKER not in r.text
-    assert _PRO_CHECK_MARKER not in r.text
+    # Only the first-item teaser is exposed; the bulk of the Pro payload (later
+    # items) must be absent from the entire serialized response. The teaser is a
+    # marketing preview, not the security boundary — the rest stays server-side.
+    assert _PRO_STEP_SECRET not in r.text
+    assert _PRO_CHECK_SECRET not in r.text
 
     # Public text and the always-open warning stay fully readable.
     assert _PUBLIC_MARKER in r.text
     assert _WARNING_MARKER in r.text
 
     by_type = {s["type"]: s for s in r.json()["sections"]}
-    # Gated sections keep their shell (type + title + flags) but no content.
+    # Gated sections keep their shell + a single-item teaser, flagged locked.
     assert by_type["steps"]["pro_only"] is True
     assert by_type["steps"]["locked"] is True
-    assert by_type["steps"]["items"] == []
+    assert by_type["steps"]["items"] == [_PRO_STEP_TEASER]
     assert by_type["steps"]["title"] == "Что сделать"
     assert by_type["checklist"]["locked"] is True
-    assert by_type["checklist"]["items"] == []
+    assert by_type["checklist"]["items"] == [_PRO_CHECK_TEASER]
     # Warning is never gated — full body survives, not locked.
     assert by_type["warning"]["locked"] is False
     assert by_type["warning"]["body"] == _WARNING_MARKER
@@ -412,14 +416,14 @@ def test_guide_returns_pro_only_content_for_pro_user(
     r = client.get("/help/guides/check-status?language=ru", headers=auth_headers)
     assert r.status_code == 200, r.text
 
-    # Pro users receive the untouched payload.
-    assert _PRO_STEP_MARKER in r.text
-    assert _PRO_CHECK_MARKER in r.text
+    # Pro users receive the untouched payload, including the deep items.
+    assert _PRO_STEP_SECRET in r.text
+    assert _PRO_CHECK_SECRET in r.text
 
     by_type = {s["type"]: s for s in r.json()["sections"]}
-    assert by_type["steps"]["items"] == [_PRO_STEP_MARKER, "второй шаг"]
+    assert by_type["steps"]["items"] == [_PRO_STEP_TEASER, _PRO_STEP_SECRET]
     assert by_type["steps"]["locked"] is False
-    assert by_type["checklist"]["items"] == [_PRO_CHECK_MARKER]
+    assert by_type["checklist"]["items"] == [_PRO_CHECK_TEASER, _PRO_CHECK_SECRET]
     assert by_type["checklist"]["locked"] is False
 
 
