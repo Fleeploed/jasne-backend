@@ -38,9 +38,6 @@ from app.models.help_schemas import (
     HelpScanCta,
     HelpSearchResponse,
     HelpSection,
-    HelpSectionChecklist,
-    HelpSectionSteps,
-    HelpSectionText,
     HelpUiLocale,
     HelpUsefulAction,
     HelpUsefulActionDef,
@@ -269,11 +266,11 @@ async def help_guide(
 
     cat_translation = category.translations.get(language) or category.translations["cs"]
 
-    # Pro gate is enforced here, server-side: a free user receives only a short
-    # real teaser (first line/chars) of each pro_only section — the bulk of the
-    # Pro content stays server-side. The client renders that teaser blurred
-    # behind the upgrade gate. plan is updated solely through the RevenueCat
-    # webhook.
+    # Pro gating is applied here: a free user's pro_only sections are flagged
+    # locked=True (full content retained) and the client renders them blurred
+    # behind the upgrade gate. The blur is cosmetic, not a security boundary —
+    # see _gate_sections_for_plan for the accepted product tradeoff. plan is
+    # updated solely through the RevenueCat webhook.
     profile = await _ensure_profile(user_id)
     plan = profile.get("plan", "free")
     sections = _gate_sections_for_plan(guide.sections, plan)
@@ -298,22 +295,18 @@ async def help_guide(
 _GATED_SECTION_TYPES = ("text", "steps", "checklist")
 
 
-# How much of a pro_only section to expose as a free-user teaser. Generous
-# enough to look like real content under the blur, small enough that the bulk
-# of the Pro payload stays server-side.
-_PREVIEW_CHARS = 140
-
-
 def _gate_sections_for_plan(sections: list[HelpSection], plan: str) -> list[HelpSection]:
-    """Return sections with pro_only content reduced to a teaser for free users.
+    """Return sections with pro_only text/steps/checklist flagged locked for free users.
 
     Pro users get the untouched list. For free users, every pro_only
-    text/steps/checklist section is replaced by a copy that keeps its type +
-    title + a short real teaser (the first chars / first item) and is flagged
-    `locked=True`. The client renders that teaser blurred behind the upgrade
-    gate. The bulk of the Pro content never crosses the API boundary. The
-    cached snapshot's section objects are never mutated — previews build fresh
-    instances.
+    text/steps/checklist section keeps its full content but is flagged
+    `locked=True`, so the client renders it blurred behind the upgrade gate.
+
+    PRODUCT TRADEOFF: the full Pro content crosses the API boundary for free
+    users — the blur is a cosmetic shell, not a security boundary, so the text
+    is technically readable (e.g. via a network inspector). This is an accepted
+    decision to show real content under the blur. The cached snapshot's section
+    objects are never mutated — locking builds fresh instances.
     """
     if plan == "pro":
         return sections
@@ -321,36 +314,10 @@ def _gate_sections_for_plan(sections: list[HelpSection], plan: str) -> list[Help
     gated: list[HelpSection] = []
     for section in sections:
         if section.pro_only and section.type in _GATED_SECTION_TYPES:
-            gated.append(_preview_section(section))
+            gated.append(section.model_copy(update={"locked": True}))
         else:
             gated.append(section)
     return gated
-
-
-def _preview_text(body: str) -> str:
-    """First ~_PREVIEW_CHARS of body, cut on a word boundary with an ellipsis."""
-    body = body.strip()
-    if len(body) <= _PREVIEW_CHARS:
-        return body
-    head = body[:_PREVIEW_CHARS].rsplit(" ", 1)[0].rstrip()
-    return f"{head}…"
-
-
-def _preview_section(section: HelpSection) -> HelpSection:
-    if section.type == "text":
-        return HelpSectionText(
-            type="text", title=section.title, body=_preview_text(section.body), pro_only=True, locked=True
-        )
-    if section.type == "steps":
-        preview = [_preview_text(section.items[0])] if section.items else []
-        return HelpSectionSteps(type="steps", title=section.title, items=preview, pro_only=True, locked=True)
-    if section.type == "checklist":
-        preview = [_preview_text(section.items[0])] if section.items else []
-        return HelpSectionChecklist(
-            type="checklist", title=section.title, items=preview, pro_only=True, locked=True
-        )
-    # Defensive: only the gated types reach here.
-    return section
 
 
 # ---------------------------------------------------------------------------
