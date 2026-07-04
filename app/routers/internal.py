@@ -70,9 +70,12 @@ async def run_tracking_cron_job(
 ) -> TrackingCronResponse:
     """Re-check every background tracking whose `next_check_at` is due.
 
-    Without this entrypoint, OAMP trackings only ever ran their one-shot
-    first check — periodic re-checks and status-change pushes never fired in
-    production. Driven by the tracking-cron GitHub Action.
+    The periodic path is the Railway `jasne-backend` service (see
+    `/railway.toml`), which runs `python -m app.workers.tracking_cron`
+    directly on an hourly native cron — no HTTP hop, no secret needed. This
+    HTTP entrypoint is kept only as a manual/ops trigger (e.g. `curl` with
+    `X-Cron-Secret` to force an immediate re-check while debugging); it is no
+    longer driven by a scheduled GitHub Action.
     """
     _verify_cron_secret(x_cron_secret)
     stats = await run_tracking_cron()

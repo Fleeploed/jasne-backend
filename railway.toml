@@ -1,6 +1,15 @@
 # Railway cron service config for OAMP tracking.
 # Keep the API service on railway.json; use this file as the custom config path
 # for a separate Railway service whose only job is the hourly tracking worker.
+#
+# This is the single source of truth for periodic tracking re-checks. There
+# used to be a second, overlapping trigger — a daily GitHub Actions workflow
+# (.github/workflows/tracking.yml) posting to POST /internal/trackings/run-cron
+# — which was removed because it duplicated this cron's work (same
+# run_tracking_cron() call, same Playwright/OAMP scrape) on a coarser (daily
+# vs hourly) schedule, and depended on INTERNAL_CRON_SECRET + a reachable HTTP
+# host instead of running in-process. The HTTP endpoint still exists for
+# manual/ops use, it's just no longer scheduled.
 
 [build]
 builder = "DOCKERFILE"

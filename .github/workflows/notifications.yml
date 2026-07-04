@@ -23,10 +23,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Wake Render service
+      - name: Warm up service
         env:
-          BASE_URL: ${{ vars.NOTIFICATION_CRON_BASE_URL || vars.RENDER_STAGING_URL || 'https://jasne-backend.onrender.com' }}
-        # Render Free spins down when idle and can take 30-60s to cold-start.
+          BASE_URL: ${{ vars.NOTIFICATION_CRON_BASE_URL || vars.STAGING_API_URL }}
+        # Warm-up probe before the real request; harmless no-op on providers that don't sleep.
         # Hit /health first with a generous timeout so the POST below lands warm.
         run: |
           set -uo pipefail
@@ -43,7 +43,7 @@ jobs:
 
       - name: Trigger backend notification job
         env:
-          BASE_URL: ${{ vars.NOTIFICATION_CRON_BASE_URL || vars.RENDER_STAGING_URL || 'https://jasne-backend.onrender.com' }}
+          BASE_URL: ${{ vars.NOTIFICATION_CRON_BASE_URL || vars.STAGING_API_URL }}
           CRON_SECRET: ${{ secrets.INTERNAL_CRON_SECRET }}
         run: |
           set -euo pipefail
@@ -85,9 +85,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Wake Render service
+      - name: Warm up service
         env:
-          BASE_URL: ${{ vars.NOTIFICATION_CRON_BASE_URL || vars.RENDER_STAGING_URL || 'https://jasne-backend.onrender.com' }}
+          BASE_URL: ${{ vars.NOTIFICATION_CRON_BASE_URL || vars.STAGING_API_URL }}
         run: |
           set -uo pipefail
           URL="${BASE_URL%/}/health"
@@ -103,7 +103,7 @@ jobs:
 
       - name: Trigger backend receipts job
         env:
-          BASE_URL: ${{ vars.NOTIFICATION_CRON_BASE_URL || vars.RENDER_STAGING_URL || 'https://jasne-backend.onrender.com' }}
+          BASE_URL: ${{ vars.NOTIFICATION_CRON_BASE_URL || vars.STAGING_API_URL }}
           CRON_SECRET: ${{ secrets.INTERNAL_CRON_SECRET }}
         run: |
           set -euo pipefail

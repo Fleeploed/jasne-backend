@@ -114,24 +114,24 @@ jobs:
           cache-to: type=gha,mode=max
 
   # ----------------------------------------------------------------
-  # 4. Verify STAGING on Render (Render auto-deploys from the connected repo)
+  # 4. Verify STAGING on Railway (Railway auto-deploys from the connected repo)
   # ----------------------------------------------------------------
   verify-staging:
-    name: Verify Render Staging
+    name: Verify Staging
     needs: build
     if: github.event_name == 'push' && (github.ref == 'refs/heads/develop' || github.ref == 'refs/heads/main')
     runs-on: ubuntu-latest
     environment:
       name: staging
-      url: ${{ vars.RENDER_STAGING_URL || 'https://jasne-backend.onrender.com' }}
+      url: ${{ vars.STAGING_API_URL }}
     steps:
       - uses: actions/checkout@v6
 
       - name: Wait for /version to report the new SHA (max 10 min)
-        # Render deploys independently after a GitHub push. Polling /version
+        # Railway deploys independently after a GitHub push. Polling /version
         # until the SHA flips proves the new build is live before smoke tests.
         env:
-          BASE_URL: ${{ vars.RENDER_STAGING_URL || 'https://jasne-backend.onrender.com' }}
+          BASE_URL: ${{ vars.STAGING_API_URL }}
         run: |
           URL="${BASE_URL}/version"
           EXPECTED="${GITHUB_SHA:0:7}"
@@ -151,31 +151,31 @@ jobs:
 
       - name: Smoke test
         env:
-          BASE_URL: ${{ vars.RENDER_STAGING_URL || 'https://jasne-backend.onrender.com' }}
+          BASE_URL: ${{ vars.STAGING_API_URL }}
         run: ./scripts/smoke_test.sh "$BASE_URL"
 
   # ----------------------------------------------------------------
-  # 5. Verify PRODUCTION on Render (main only, manual approval via GitHub env)
+  # 5. Verify PRODUCTION on Railway (main only, manual approval via GitHub env)
   #
-  # Disabled until a separate Render production service is set up.
-  # To re-enable: create RENDER_PRODUCTION_URL variable in the `production`
+  # Disabled until a separate Railway production service is set up.
+  # To re-enable: create PRODUCTION_API_URL variable in the `production`
   # GitHub environment, then change
   # `if:` below back to:  github.event_name == 'push' && github.ref == 'refs/heads/main'
   # ----------------------------------------------------------------
   verify-production:
-    name: Verify Render Production
+    name: Verify Production
     needs: verify-staging
-    if: false  # TODO: enable when production Render service is ready
+    if: false  # TODO: enable when production Railway service is ready
     runs-on: ubuntu-latest
     environment:
       name: production
-      url: ${{ vars.RENDER_PRODUCTION_URL }}
+      url: ${{ vars.PRODUCTION_API_URL }}
     steps:
       - uses: actions/checkout@v6
 
       - name: Wait for /version to report the new SHA (max 10 min)
         env:
-          BASE_URL: ${{ vars.RENDER_PRODUCTION_URL }}
+          BASE_URL: ${{ vars.PRODUCTION_API_URL }}
         run: |
           URL="${BASE_URL}/version"
           EXPECTED="${GITHUB_SHA:0:7}"
@@ -195,7 +195,7 @@ jobs:
 
       - name: Smoke test
         env:
-          BASE_URL: ${{ vars.RENDER_PRODUCTION_URL }}
+          BASE_URL: ${{ vars.PRODUCTION_API_URL }}
         run: ./scripts/smoke_test.sh "$BASE_URL"
 
       - name: Create GitHub Release
