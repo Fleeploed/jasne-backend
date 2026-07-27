@@ -58,6 +58,17 @@ async def create_tracking(
     if existing is not None:
         response.status_code = status.HTTP_200_OK
         return TrackingResponse.model_validate(existing)
+
+    terminal_existing = await _latest_terminal_tracking_for_identifier(
+        supabase,
+        user_id_str,
+        body.tracking_type,
+        identifier,
+    )
+    if terminal_existing is not None:
+        response.status_code = status.HTTP_200_OK
+        return TrackingResponse.model_validate(terminal_existing)
+
     if len(active_rows) >= MAX_ACTIVE_TRACKINGS_PER_TYPE:
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
@@ -142,20 +153,20 @@ async def create_tracking(
 @router.get("", response_model=list[TrackingResponse])
 async def list_trackings(
     tracking_type: str | None = Query(default=None, alias="type"),
+    include_terminal: bool = Query(default=False),
     user_id: UUID = Depends(get_active_user_id),
 ) -> list[TrackingResponse]:
     supabase = await get_supabase()
-    query = (
-        supabase.table("trackings")
-        .select("*")
-        .eq("user_id", str(user_id))
-        .eq("is_active", True)
-        .order("created_at", desc=True)
-    )
+    query = supabase.table("trackings").select("*").eq("user_id", str(user_id))
+    if not include_terminal:
+        query = query.eq("is_active", True)
     if tracking_type:
         query = query.eq("tracking_type", tracking_type.strip().lower())
-    result = await query.execute()
-    return [TrackingResponse.model_validate(row) for row in result.data or []]
+    result = await query.order("created_at", desc=True).execute()
+    rows = result.data or []
+    if include_terminal:
+        rows = _visible_tracking_results(rows)
+    return [TrackingResponse.model_validate(row) for row in rows]
 
 
 @router.get("/{tracking_id}", response_model=TrackingResponse)
@@ -272,6 +283,48 @@ async def _active_trackings_for_user(supabase, user_id: str, tracking_type: str)
         .execute()
     )
     return result.data or []
+
+
+async def _latest_terminal_tracking_for_identifier(
+    supabase,
+    user_id: str,
+    tracking_type: str,
+    identifier: str,
+) -> dict | None:
+    result = (
+        await supabase.table("trackings")
+        .select("*")
+        .eq("user_id", user_id)
+        .eq("tracking_type", tracking_type)
+        .eq("identifier", identifier)
+        .eq("is_active", False)
+        .order("created_at", desc=True)
+        .execute()
+    )
+    return next((row for row in result.data or [] if _is_terminal_tracking(row)), None)
+
+
+def _visible_tracking_results(rows: list[dict]) -> list[dict]:
+    """Return active rows plus one latest terminal result per identifier."""
+    visible: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+    for row in rows:
+        if not row.get("is_active") and not _is_terminal_tracking(row):
+            continue
+        key = (str(row.get("tracking_type") or ""), str(row.get("identifier") or ""))
+        if key in seen:
+            continue
+        seen.add(key)
+        visible.append(row)
+    return visible
+
+
+def _is_terminal_tracking(row: dict) -> bool:
+    try:
+        tracker = get_tracker(str(row.get("tracking_type") or ""))
+    except ValueError:
+        return False
+    return tracker.is_terminal_status(str(row.get("current_status") or ""))
 
 
 async def _active_tracking_for_user(supabase, user_id: str, tracking_id: UUID) -> dict:

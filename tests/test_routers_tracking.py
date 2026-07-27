@@ -179,6 +179,26 @@ class TestCreateTracking:
         assert r.json()["id"] == existing["id"]
         assert len(fake_supabase.table("trackings").rows) == 1
 
+    def test_duplicate_terminal_tracking_is_idempotent(self, client, fake_supabase, auth_headers, test_user_id):
+        _seed_profile(fake_supabase, str(test_user_id), plan="pro")
+        existing = _seed_tracking(
+            fake_supabase,
+            str(test_user_id),
+            identifier="OAM-19391/ZM-2026",
+            current_status="schvaleno",
+            is_active=False,
+        )
+
+        r = client.post(
+            "/trackings",
+            headers=auth_headers,
+            json={"tracking_type": "oamp_status", "identifier": "OAM-19391/ZM-2026"},
+        )
+
+        assert r.status_code == 200
+        assert r.json()["id"] == existing["id"]
+        assert len(fake_supabase.table("trackings").rows) == 1
+
 
 class TestListTracking:
     def test_returns_only_active_user_trackings(self, client, fake_supabase, auth_headers, test_user_id):
@@ -205,6 +225,45 @@ class TestListTracking:
 
         assert r.status_code == 200
         assert [row["id"] for row in r.json()] == [own["id"]]
+
+    def test_include_terminal_returns_latest_result_but_not_manually_stopped(
+        self, client, fake_supabase, auth_headers, test_user_id
+    ):
+        active = _seed_tracking(
+            fake_supabase,
+            str(test_user_id),
+            identifier="OAM-1/ZM-2026",
+            created_at="2026-07-27T10:00:00+00:00",
+        )
+        _seed_tracking(
+            fake_supabase,
+            str(test_user_id),
+            identifier="OAM-2/ZM-2026",
+            current_status="schvaleno",
+            is_active=False,
+            created_at="2026-07-27T09:00:00+00:00",
+        )
+        latest_terminal = _seed_tracking(
+            fake_supabase,
+            str(test_user_id),
+            identifier="OAM-2/ZM-2026",
+            current_status="schvaleno",
+            is_active=False,
+            created_at="2026-07-27T11:00:00+00:00",
+        )
+        _seed_tracking(
+            fake_supabase,
+            str(test_user_id),
+            identifier="OAM-3/ZM-2026",
+            current_status="probiha",
+            is_active=False,
+            created_at="2026-07-27T12:00:00+00:00",
+        )
+
+        r = client.get("/trackings?include_terminal=true", headers=auth_headers)
+
+        assert r.status_code == 200
+        assert [row["id"] for row in r.json()] == [latest_terminal["id"], active["id"]]
 
 
 class TestGetTracking:
