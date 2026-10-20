@@ -10,14 +10,17 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
 
-from app.middleware.auth import get_current_user_id
+from app.middleware.auth import get_active_user_id
 from app.models.schemas import ChatAskRequest, ChatAskResponse, ScanMessage, UserLanguage
+from app.observability import capture_exception
 from app.routers.profile import _ensure_profile
 from app.services.chat import answer_question, fetch_scan_history, stream_answer_chunks
 from app.services.limits import (
+    QuotaExceededError,
     caps_for_plan,
     check_chat_quota,
-    increment_chat_count,
+    try_increment_chat_count,
+    usage_period_for_profile,
 )
 from app.services.rag import get_supabase, retrieve_chat_chunks
 
@@ -104,7 +107,7 @@ def _build_chat_rag_query(question: str, scan_row: dict) -> str:
 @router.get("", response_model=list[ScanMessage])
 async def list_messages(
     scan_id: UUID,
-    user_id: UUID = Depends(get_current_user_id),
+    user_id: UUID = Depends(get_active_user_id),
 ) -> list[ScanMessage]:
     # Ownership check via the scan first — also gives a clean 404.
     await _load_scan(scan_id, user_id)
@@ -115,7 +118,7 @@ async def list_messages(
         .select("*")
         .eq("scan_id", str(scan_id))
         .eq("user_id", str(user_id))
-        .order("created_at")
+        .order("seq")
         .execute()
     )
     return [ScanMessage.model_validate(row) for row in (result.data or [])]
@@ -125,20 +128,23 @@ async def list_messages(
 async def ask_question(
     scan_id: UUID,
     body: ChatAskRequest,
-    user_id: UUID = Depends(get_current_user_id),
+    user_id: UUID = Depends(get_active_user_id),
 ) -> ChatAskResponse:
     profile = await _ensure_profile(user_id)
     plan = profile.get("plan", "free")
-    language: UserLanguage = profile.get("language", "cs")
+    usage_period = usage_period_for_profile(profile)
+    profile_language: UserLanguage = profile.get("language", "cs")
 
-    # Quota first — cheaper to fail before loading scan + history.
+    # Advisory quota check first — cheaper to fail before loading scan + history.
     try:
-        await check_chat_quota(user_id, plan, scan_id)
-    except ValueError as exc:
+        await check_chat_quota(user_id, plan, scan_id, month=usage_period)
+    except QuotaExceededError as exc:
         raise HTTPException(status_code=status.HTTP_402_PAYMENT_REQUIRED, detail=str(exc)) from exc
 
     scan_row = await _load_scan(scan_id, user_id)
-    language: UserLanguage = scan_row.get("language") or language
+    # Always answer in the scan's original language when known so the user gets
+    # the same language they originally asked in — falls back to the profile.
+    language: UserLanguage = scan_row.get("language") or profile_language
     history = await fetch_scan_history(scan_id, user_id)
     rag_chunks = await retrieve_chat_chunks(
         _build_chat_rag_query(body.question, scan_row),
@@ -155,9 +161,15 @@ async def ask_question(
         rag_chunks=rag_chunks,
     )
 
-    user_message, assistant_message = await _persist_chat_pair(scan_id, user_id, body.question, answer)
+    # Authoritative quota gate — conditional increment closes the race the
+    # advisory check above can't. Charge before persisting so a race loser
+    # never stores an uncharged answer.
+    try:
+        new_count = await try_increment_chat_count(user_id, plan, scan_id, month=usage_period)
+    except QuotaExceededError as exc:
+        raise HTTPException(status_code=status.HTTP_402_PAYMENT_REQUIRED, detail=str(exc)) from exc
 
-    new_count = await increment_chat_count(user_id, scan_id)
+    user_message, assistant_message = await _persist_chat_pair(scan_id, user_id, body.question, answer)
     caps = caps_for_plan(plan)
 
     return ChatAskResponse(
@@ -172,19 +184,20 @@ async def ask_question(
 async def ask_question_stream(
     scan_id: UUID,
     body: ChatAskRequest,
-    user_id: UUID = Depends(get_current_user_id),
+    user_id: UUID = Depends(get_active_user_id),
 ) -> StreamingResponse:
     profile = await _ensure_profile(user_id)
     plan = profile.get("plan", "free")
-    language: UserLanguage = profile.get("language", "cs")
+    usage_period = usage_period_for_profile(profile)
+    profile_language: UserLanguage = profile.get("language", "cs")
 
     try:
-        await check_chat_quota(user_id, plan, scan_id)
-    except ValueError as exc:
+        await check_chat_quota(user_id, plan, scan_id, month=usage_period)
+    except QuotaExceededError as exc:
         raise HTTPException(status_code=status.HTTP_402_PAYMENT_REQUIRED, detail=str(exc)) from exc
 
     scan_row = await _load_scan(scan_id, user_id)
-    language: UserLanguage = scan_row.get("language") or language
+    language: UserLanguage = scan_row.get("language") or profile_language
     history = await fetch_scan_history(scan_id, user_id)
     rag_chunks = await retrieve_chat_chunks(
         _build_chat_rag_query(body.question, scan_row),
@@ -211,10 +224,12 @@ async def ask_question_stream(
                 answer = "Bohužel jsem nemohl odpovědět. Zkuste prosím přeformulovat otázku."
                 yield _sse("token", {"text": answer})
 
+            # Authoritative quota gate — charge before persisting so a race
+            # loser never stores an uncharged answer.
+            new_count = await try_increment_chat_count(user_id, plan, scan_id, month=usage_period)
             user_message, assistant_message = await _persist_chat_pair(
                 scan_id, user_id, body.question, answer
             )
-            new_count = await increment_chat_count(user_id, scan_id)
             yield _sse(
                 "done",
                 {
@@ -224,9 +239,16 @@ async def ask_question_stream(
                     "questions_remaining": max(caps["max_questions_per_scan"] - new_count, 0),
                 },
             )
+        except QuotaExceededError as exc:
+            yield _sse("error", {"status_code": 402, "detail": str(exc)})
+        except HTTPException as exc:
+            yield _sse("error", {"status_code": exc.status_code, "detail": exc.detail})
         except Exception as exc:
+            # Never leak raw exception text to clients — full traceback is in
+            # the server log + Sentry.
             logger.exception("Streaming chat failed scan_id=%s user_id=%s", scan_id, user_id)
-            yield _sse("error", {"detail": str(exc) or "Streaming chat failed"})
+            capture_exception(exc)
+            yield _sse("error", {"detail": "Chat failed — please try again."})
 
     return StreamingResponse(
         events(),

@@ -25,12 +25,34 @@ class _FakeResponse:
         self.data = data
 
 
+def _matches_filter(row_value: Any, op: str, expected: Any) -> bool:
+    if op == "eq":
+        return str(row_value) == str(expected)
+    if op in {"lt", "lte", "gt", "gte"}:
+        left = _sortable(row_value)
+        right = _sortable(expected)
+        if op == "lt":
+            return left < right
+        if op == "lte":
+            return left <= right
+        if op == "gt":
+            return left > right
+        return left >= right
+    return False
+
+
+def _sortable(value: Any) -> Any:
+    if isinstance(value, datetime):
+        return value.isoformat()
+    return "" if value is None else str(value)
+
+
 class _FakeQuery:
     """Minimal in-memory table query emulation."""
 
     def __init__(self, table: _FakeTable):
         self._table = table
-        self._filters: list[tuple[str, Any]] = []
+        self._filters: list[tuple[str, str, Any]] = []
         self._op: str = "select"
         self._op_payload: Any = None
         self._order: str | None = None
@@ -40,7 +62,23 @@ class _FakeQuery:
 
     # --- filters
     def eq(self, column: str, value: Any) -> _FakeQuery:
-        self._filters.append((column, value))
+        self._filters.append(("eq", column, value))
+        return self
+
+    def lt(self, column: str, value: Any) -> _FakeQuery:
+        self._filters.append(("lt", column, value))
+        return self
+
+    def lte(self, column: str, value: Any) -> _FakeQuery:
+        self._filters.append(("lte", column, value))
+        return self
+
+    def gt(self, column: str, value: Any) -> _FakeQuery:
+        self._filters.append(("gt", column, value))
+        return self
+
+    def gte(self, column: str, value: Any) -> _FakeQuery:
+        self._filters.append(("gte", column, value))
         return self
 
     def order(self, column: str, desc: bool = False) -> _FakeQuery:
@@ -90,13 +128,27 @@ class _FakeQuery:
     async def execute(self) -> _FakeResponse:
         rows = self._table.rows
         # apply filters
-        for col, val in self._filters:
-            rows = [r for r in rows if str(r.get(col)) == str(val)]
+        for op, col, val in self._filters:
+            rows = [r for r in rows if _matches_filter(r.get(col), op, val)]
 
         if self._op == "select":
             out = list(rows)
             if self._order:
-                out.sort(key=lambda r: r.get(self._order, ""), reverse=self._order_desc)
+                # Tuple key avoids comparing mixed types when some rows were
+                # seeded directly without the order column (e.g. `seq`):
+                # such rows sort first, as the oldest history.
+                def _order_key(r: dict[str, Any]) -> tuple[bool, Any]:
+                    value = r.get(self._order)
+                    return (value is not None, value if value is not None else 0)
+
+                out.sort(key=_order_key, reverse=self._order_desc)
+            else:
+                # Postgres does NOT guarantee row order without ORDER BY. Real
+                # selects can come back in any order; returning insert-order here
+                # would mask code that relies on it (e.g. chat message ordering
+                # must use ORDER BY seq, see migration 0016). Reverse insert
+                # order so such reliance fails deterministically in tests.
+                out.reverse()
             if self._range:
                 s, e = self._range
                 out = out[s : e + 1]
@@ -112,6 +164,9 @@ class _FakeQuery:
                 row.setdefault("id", str(uuid4()))
                 row.setdefault("created_at", datetime.now(UTC).isoformat())
                 row.setdefault("updated_at", datetime.now(UTC).isoformat())
+                if self._table.name == "scan_messages":
+                    self._table.seq_counter += 1
+                    row.setdefault("seq", self._table.seq_counter)
                 row.setdefault("reminder_days", [30, 14, 7, 1])
                 row.setdefault("status", "active")
                 row.setdefault("deadline_type", row.get("deadline_type", "action"))
@@ -161,15 +216,34 @@ class _FakeQuery:
         if self._op == "delete":
             ids_to_remove = {id(r) for r in rows}
             self._table.rows = [r for r in self._table.rows if id(r) not in ids_to_remove]
+            # Emulate migration 0018: scan_messages cascade; deadlines are
+            # deleted only when auto_created, manual ones get scan_id nulled.
+            if self._table.name == "scans" and self._table.parent is not None:
+                deleted_scan_ids = {str(r.get("id")) for r in rows}
+                messages_tbl = self._table.parent.table("scan_messages")
+                messages_tbl.rows = [
+                    r for r in messages_tbl.rows if str(r.get("scan_id")) not in deleted_scan_ids
+                ]
+                deadlines_tbl = self._table.parent.table("deadlines")
+                surviving = []
+                for r in deadlines_tbl.rows:
+                    if str(r.get("scan_id")) in deleted_scan_ids:
+                        if r.get("auto_created"):
+                            continue
+                        r["scan_id"] = None
+                    surviving.append(r)
+                deadlines_tbl.rows = surviving
             return _FakeResponse(list(rows))
 
         return _FakeResponse([])
 
 
 class _FakeTable:
-    def __init__(self, name: str):
+    def __init__(self, name: str, parent: FakeSupabase | None = None):
         self.name = name
         self.rows: list[dict[str, Any]] = []
+        self.parent = parent
+        self.seq_counter = 0
 
     def select(self, *args, **kwargs) -> _FakeQuery:
         return _FakeQuery(self).select(*args, **kwargs)
@@ -193,13 +267,27 @@ class _FakeTable:
 
 
 class _FakeStorageBucket:
+    def __init__(self, storage: _FakeStorage, bucket: str):
+        self._storage = storage
+        self._bucket = bucket
+
     async def create_signed_url(self, path: str, ttl: int) -> dict[str, str]:
         return {"signedURL": f"https://fake-storage/{path}?ttl={ttl}"}
 
+    async def remove(self, paths: list[str]) -> dict[str, Any]:
+        if self._storage.remove_error is not None:
+            raise self._storage.remove_error
+        self._storage.removed.append({"bucket": self._bucket, "paths": list(paths)})
+        return {"data": list(paths), "error": None}
+
 
 class _FakeStorage:
+    def __init__(self):
+        self.removed: list[dict[str, Any]] = []
+        self.remove_error: Exception | None = None
+
     def from_(self, bucket: str) -> _FakeStorageBucket:
-        return _FakeStorageBucket()
+        return _FakeStorageBucket(self, bucket)
 
 
 class FakeSupabase:
@@ -212,7 +300,7 @@ class FakeSupabase:
 
     def table(self, name: str) -> _FakeTable:
         if name not in self._tables:
-            self._tables[name] = _FakeTable(name)
+            self._tables[name] = _FakeTable(name, parent=self)
         return self._tables[name]
 
     def rpc(self, name: str, params: dict[str, Any]) -> _FakeQuery:
@@ -237,6 +325,57 @@ class FakeSupabase:
                 )
                 return _FakeResponse([1])
 
+            if name == "try_increment_scan_count":
+                user_id = str(params["p_user_id"])
+                month = params["p_month"]
+                cap = int(params["p_cap"])
+                table = self.table("usage_limits")
+                for row in table.rows:
+                    if str(row.get("user_id")) == user_id and row.get("month") == month:
+                        current = int(row.get("scans_count") or 0)
+                        if current >= cap:
+                            return _FakeResponse([-1])
+                        row["scans_count"] = current + 1
+                        return _FakeResponse([row["scans_count"]])
+                if cap < 1:
+                    return _FakeResponse([-1])
+                table.rows.append(
+                    {
+                        "user_id": user_id,
+                        "month": month,
+                        "scans_count": 1,
+                        "questions_per_scan": {},
+                    }
+                )
+                return _FakeResponse([1])
+
+            if name == "try_increment_chat_count":
+                user_id = str(params["p_user_id"])
+                month = params["p_month"]
+                scan_id = str(params["p_scan_id"])
+                cap = int(params["p_cap"])
+                table = self.table("usage_limits")
+                for row in table.rows:
+                    if str(row.get("user_id")) == user_id and row.get("month") == month:
+                        qmap = dict(row.get("questions_per_scan") or {})
+                        current = int(qmap.get(scan_id, 0))
+                        if current >= cap:
+                            return _FakeResponse([-1])
+                        qmap[scan_id] = current + 1
+                        row["questions_per_scan"] = qmap
+                        return _FakeResponse([qmap[scan_id]])
+                if cap < 1:
+                    return _FakeResponse([-1])
+                table.rows.append(
+                    {
+                        "user_id": user_id,
+                        "month": month,
+                        "scans_count": 0,
+                        "questions_per_scan": {scan_id: 1},
+                    }
+                )
+                return _FakeResponse([1])
+
             if name == "increment_chat_count":
                 user_id = str(params["p_user_id"])
                 month = params["p_month"]
@@ -257,6 +396,52 @@ class FakeSupabase:
                     }
                 )
                 return _FakeResponse([1])
+
+            if name == "delete_user_scans":
+                user_id = str(params["p_user_id"])
+                scans_tbl = self.table("scans")
+                deadlines_tbl = self.table("deadlines")
+                messages_tbl = self.table("scan_messages")
+
+                scan_ids = {str(r["id"]) for r in scans_tbl.rows if str(r.get("user_id")) == user_id}
+                deleted_scans = len(scan_ids)
+                # Migration 0018: only auto-created deadlines die with scans;
+                # manual ones are unlinked.
+                deleted_deadlines = sum(
+                    1
+                    for r in deadlines_tbl.rows
+                    if str(r.get("user_id")) == user_id
+                    and str(r.get("scan_id")) in scan_ids
+                    and r.get("auto_created")
+                )
+
+                scans_tbl.rows = [r for r in scans_tbl.rows if str(r.get("user_id")) != user_id]
+                messages_tbl.rows = [r for r in messages_tbl.rows if str(r.get("scan_id")) not in scan_ids]
+                surviving_deadlines = []
+                for r in deadlines_tbl.rows:
+                    if str(r.get("scan_id")) in scan_ids:
+                        if r.get("auto_created"):
+                            continue
+                        r["scan_id"] = None
+                    surviving_deadlines.append(r)
+                deadlines_tbl.rows = surviving_deadlines
+
+                # usage_limits is intentionally untouched — the monthly counter
+                # tracks initiations, not surviving rows. See migration 0009.
+
+                return _FakeResponse(
+                    [{"deleted_scans": deleted_scans, "deleted_deadlines": deleted_deadlines}]
+                )
+
+            if name == "count_scans_by_category":
+                user_id = str(params["p_user_id"])
+                counts: dict[str, int] = {}
+                for r in self.table("scans").rows:
+                    if str(r.get("user_id")) != user_id:
+                        continue
+                    key = r.get("category") or "ostatni"
+                    counts[key] = counts.get(key, 0) + 1
+                return _FakeResponse([{"category": k, "count": v} for k, v in counts.items()])
 
             if name == "list_scans_with_activity":
                 user_id = str(params["p_user_id"])
@@ -285,6 +470,28 @@ class FakeSupabase:
         return q
 
 
+class _FakeAuthAdmin:
+    def __init__(self):
+        self.deleted_user_ids: list[str] = []
+        self.delete_user_error: Exception | None = None
+
+    async def delete_user(self, user_id: str):
+        if self.delete_user_error is not None:
+            raise self.delete_user_error
+        self.deleted_user_ids.append(user_id)
+        return {"id": user_id}
+
+
+class _FakeAuth:
+    def __init__(self):
+        self.admin = _FakeAuthAdmin()
+
+
+class FakeSupabaseAdmin:
+    def __init__(self):
+        self.auth = _FakeAuth()
+
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -296,8 +503,43 @@ def fake_supabase() -> FakeSupabase:
 
 
 @pytest.fixture
+def fake_supabase_admin() -> FakeSupabaseAdmin:
+    return FakeSupabaseAdmin()
+
+
+@pytest.fixture
 def test_user_id() -> UUID:
     return UUID("11111111-1111-1111-1111-111111111111")
+
+
+@pytest.fixture(autouse=True)
+def _reset_rate_limits():
+    """Rate-limit buckets are process-global; tests share one user id."""
+    from app.services.rate_limit import reset
+
+    reset()
+    yield
+    reset()
+
+
+@pytest.fixture(autouse=True)
+def _reset_idempotency():
+    """Idempotency store is process-global; clear between tests."""
+    from app.services.idempotency import reset
+
+    reset()
+    yield
+    reset()
+
+
+@pytest.fixture(autouse=True)
+def _reset_help_snapshot_cache():
+    """The help snapshot TTL cache is process-global; tests seed different rows."""
+    from app.routers.help import invalidate_snapshot_cache
+
+    invalidate_snapshot_cache()
+    yield
+    invalidate_snapshot_cache()
 
 
 @pytest.fixture
@@ -329,27 +571,38 @@ def auth_headers(jwt_token: str) -> dict[str, str]:
 
 @pytest.fixture
 def mock_openai_classify(monkeypatch):
-    """Patch classify_document to return a preset ClassifierResult.
+    """Patch the OCR + classifier pair used by the scan router.
 
-    Signature matches the new multi-page API: takes list[str] of URLs.
+    After the Azure DI migration the scan flow is two steps:
+      1. extract_text(urls) -> OcrResult
+      2. classify_text(ocr_text, page_count, document_language) -> ClassifierResult
+
+    We patch both so existing tests that depend on a stubbed classifier
+    don't need to know about the new OCR boundary.
     """
-    from app.models.schemas import ClassifierResult
+    from app.models.schemas import ClassifierResult, OcrResult
 
-    result = ClassifierResult(
+    ocr = OcrResult(
         ocr_text="Platební výměr č. 12345 VS 9876 částka 4 320 Kč",
+        page_count=1,
+        document_language="cs",
+    )
+    classifier = ClassifierResult(
         category="danove",
         doc_type="platebni_vymer",
         sender="Finanční úřad pro Prahu 3",
-        document_language="cs",
         confidence=0.95,
-        page_count=1,
     )
 
-    async def fake(image_urls: list[str]):
-        return result
+    async def fake_extract(image_urls: list[str]) -> OcrResult:
+        return ocr.model_copy(update={"page_count": max(1, len(image_urls))})
 
-    monkeypatch.setattr("app.routers.scan.classify_document", fake)
-    return result
+    async def fake_classify(ocr_text: str, page_count: int, document_language: str) -> ClassifierResult:
+        return classifier
+
+    monkeypatch.setattr("app.routers.scan.extract_text", fake_extract)
+    monkeypatch.setattr("app.routers.scan.classify_text", fake_classify)
+    return classifier
 
 
 @pytest.fixture
@@ -377,7 +630,7 @@ def mock_openai_analyze(monkeypatch):
         tips=None,
     )
 
-    async def fake(classifier, rag_chunks, language, has_datova_schranka):
+    async def fake(classifier, ocr_text, page_count, rag_chunks, language, has_datova_schranka):
         return result, "gpt-4o"
 
     monkeypatch.setattr("app.routers.scan.analyze_document", fake)
@@ -393,7 +646,7 @@ def mock_rag_empty(monkeypatch):
 
 
 @pytest.fixture
-def client(fake_supabase, monkeypatch):
+def client(fake_supabase, fake_supabase_admin, monkeypatch):
     """FastAPI TestClient with Supabase patched to in-memory fake."""
 
     async def fake_get_supabase():
@@ -405,6 +658,9 @@ def client(fake_supabase, monkeypatch):
     async def fake_close_supabase():
         return None
 
+    async def fake_get_supabase_admin():
+        return fake_supabase_admin
+
     monkeypatch.setattr("app.services.rag.get_supabase", fake_get_supabase)
     monkeypatch.setattr("app.services.rag.init_supabase", fake_init_supabase)
     monkeypatch.setattr("app.services.rag.close_supabase", fake_close_supabase)
@@ -412,7 +668,13 @@ def client(fake_supabase, monkeypatch):
     monkeypatch.setattr("app.routers.scan.get_supabase", fake_get_supabase)
     monkeypatch.setattr("app.routers.chat.get_supabase", fake_get_supabase)
     monkeypatch.setattr("app.routers.deadlines.get_supabase", fake_get_supabase)
+    monkeypatch.setattr("app.routers.push.get_supabase", fake_get_supabase)
+    monkeypatch.setattr("app.routers.tracking.get_supabase", fake_get_supabase)
     monkeypatch.setattr("app.services.limits.get_supabase", fake_get_supabase)
+    monkeypatch.setattr("app.services.account_deletion.get_supabase", fake_get_supabase)
+    monkeypatch.setattr("app.services.account_deletion.get_supabase_admin", fake_get_supabase_admin)
+    monkeypatch.setattr("app.services.push.get_supabase", fake_get_supabase)
+    monkeypatch.setattr("app.services.push_notifications.get_supabase", fake_get_supabase)
     monkeypatch.setattr("app.services.chat.get_supabase", fake_get_supabase, raising=False)
     monkeypatch.setattr("app.services.revenuecat.get_supabase", fake_get_supabase)
 
@@ -431,6 +693,28 @@ def client(fake_supabase, monkeypatch):
     fake_openai = MagicMock()
     fake_openai.models.list = AsyncMock(return_value=MagicMock(data=[]))
     monkeypatch.setattr("app.main.get_openai_client", lambda: fake_openai)
+
+    # Stub Azure DI deep-health check so tests don't hit real Azure.
+    from app.models.schemas import DepStatus
+
+    async def fake_azure_di() -> DepStatus:
+        return DepStatus(status="ok", latency_ms=1, error=None)
+
+    monkeypatch.setattr("app.main._check_azure_di", fake_azure_di)
+
+    # By default, no test should hit Azure DI. Patch the OCR extractor at
+    # module level so unrelated router tests can't accidentally make a real
+    # network call if someone forgets to compose `mock_openai_classify`.
+    from app.models.schemas import OcrResult
+
+    async def fake_extract(image_urls: list[str]) -> OcrResult:
+        return OcrResult(
+            ocr_text="ocr",
+            page_count=max(1, len(image_urls) or 1),
+            document_language="cs",
+        )
+
+    monkeypatch.setattr("app.routers.scan.extract_text", fake_extract)
 
     from app.main import app
 

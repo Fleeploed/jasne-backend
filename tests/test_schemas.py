@@ -15,6 +15,7 @@ from app.models.schemas import (
     DeadlineUpdate,
     HealthResponse,
     LimitsResponse,
+    OcrResult,
     ProfileUpdate,
     ScanListItem,
     ScanRequest,
@@ -24,78 +25,48 @@ from app.models.schemas import (
 class TestClassifierResult:
     def test_valid(self):
         r = ClassifierResult(
-            ocr_text="hello",
             category="danove",
             doc_type="platebni_vymer",
             sender="FÚ",
-            document_language="cs",
             confidence=0.95,
-            page_count=2,
         )
         assert r.category == "danove"
         assert r.confidence == 0.95
-        assert r.page_count == 2
         assert r.error is None
 
     def test_invalid_category_rejected(self):
         with pytest.raises(ValidationError):
-            ClassifierResult(
-                ocr_text="x",
-                category="unknown",
-                doc_type="x",
-                document_language="cs",
-                confidence=0.5,
-            )
+            ClassifierResult(category="unknown", doc_type="x", confidence=0.5)
 
     def test_confidence_range(self):
         with pytest.raises(ValidationError):
-            ClassifierResult(
-                ocr_text="x",
-                category="danove",
-                doc_type="x",
-                document_language="cs",
-                confidence=1.5,
-            )
+            ClassifierResult(category="danove", doc_type="x", confidence=1.5)
         with pytest.raises(ValidationError):
-            ClassifierResult(
-                ocr_text="x",
-                category="danove",
-                doc_type="x",
-                document_language="cs",
-                confidence=-0.1,
-            )
+            ClassifierResult(category="danove", doc_type="x", confidence=-0.1)
+
+    def test_defaults(self):
+        r = ClassifierResult(category="ostatni", doc_type="y", confidence=0.3)
+        assert r.sender is None
+        assert r.error is None
+
+
+class TestOcrResult:
+    def test_valid(self):
+        r = OcrResult(ocr_text="hello", page_count=2, document_language="cs")
+        assert r.ocr_text == "hello"
+        assert r.page_count == 2
+        assert r.document_language == "cs"
+
+    def test_defaults(self):
+        r = OcrResult(ocr_text="")
+        assert r.page_count == 1
+        assert r.document_language == "cs"
 
     def test_page_count_range(self):
         with pytest.raises(ValidationError):
-            ClassifierResult(
-                ocr_text="x",
-                category="ucty",
-                doc_type="x",
-                document_language="cs",
-                confidence=0.5,
-                page_count=0,
-            )
+            OcrResult(ocr_text="x", page_count=0)
         with pytest.raises(ValidationError):
-            ClassifierResult(
-                ocr_text="x",
-                category="ucty",
-                doc_type="x",
-                document_language="cs",
-                confidence=0.5,
-                page_count=11,
-            )
-
-    def test_defaults(self):
-        r = ClassifierResult(
-            ocr_text="x",
-            category="ostatni",
-            doc_type="y",
-            document_language="cs",
-            confidence=0.3,
-        )
-        assert r.sender is None
-        assert r.error is None
-        assert r.page_count == 1
+            OcrResult(ocr_text="x", page_count=11)
 
 
 class TestAnalysisResult:

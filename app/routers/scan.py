@@ -1,5 +1,6 @@
 """POST /scans — multi-page scan: OCR → RAG → analyzer → persist + open chat thread."""
 
+import asyncio
 import base64
 import json
 import logging
@@ -10,26 +11,40 @@ from typing import Any
 from uuid import UUID
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, status
 from fastapi.responses import StreamingResponse
 
 from app.config import get_settings
-from app.middleware.auth import get_current_user_id
+from app.middleware.auth import get_active_user_id
 from app.models.schemas import (
     AnalysisResult,
     ClassifierResult,
     DeadlineItem,
+    OcrResult,
+    ScanBulkDeleteResponse,
+    ScanCountsResponse,
     ScanImageUrlsResponse,
     ScanListItem,
+    ScanListResponse,
     ScanRequest,
     ScanResponse,
     UserLanguage,
 )
+from app.observability import capture_exception
 from app.routers.profile import _ensure_profile
+from app.services import idempotency
 from app.services.analyzer import analyze_document, stream_analyze_document
-from app.services.classifier import classify_document
-from app.services.limits import check_scan_quota, increment_scan_count
+from app.services.classifier import classify_text
+from app.services.limits import (
+    QuotaExceededError,
+    caps_for_plan,
+    check_scan_quota,
+    try_increment_scan_count,
+    usage_period_for_profile,
+)
+from app.services.ocr import extract_text
 from app.services.rag import get_supabase, retrieve_chunks
+from app.services.rate_limit import check_rate_limit
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/scans", tags=["scans"])
@@ -41,8 +56,12 @@ MAX_PDF_BYTES = 20 * 1024 * 1024
 
 
 @dataclass(frozen=True)
-class PreparedVisionInputs:
-    """Prepared GPT Vision inputs after storage validation and PDF rendering."""
+class PreparedOcrInputs:
+    """Prepared OCR inputs after storage validation and PDF rendering.
+
+    These URLs feed Azure Document Intelligence. PDF rendering produces one
+    image per page so Azure DI's prebuilt-read sees pre-segmented inputs.
+    """
 
     urls: list[str]
     page_count: int
@@ -50,6 +69,181 @@ class PreparedVisionInputs:
 
 def _sse(event: str, payload: dict[str, Any]) -> str:
     return f"event: {event}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+
+# iOS NSURLSession-backed XHR drops the connection after ~60s of silence.
+# Heartbeats are SSE comment lines (ignored by parsers) keeping the socket alive
+# during long blocking calls (10-page Azure DI OCR can take 30-60+ seconds).
+SSE_HEARTBEAT_INTERVAL = 10.0
+SSE_HEARTBEAT = ":keep-alive\n\n"
+
+
+async def _yield_heartbeats_until_complete(
+    task: asyncio.Task[Any], interval: float = SSE_HEARTBEAT_INTERVAL
+) -> AsyncIterator[str]:
+    """Yield SSE heartbeat lines until `task` finishes. Task exceptions are not re-raised here —
+    the caller must inspect `task.result()` after this iterator exits."""
+    while not task.done():
+        try:
+            await asyncio.wait_for(asyncio.shield(task), timeout=interval)
+        except TimeoutError:
+            yield SSE_HEARTBEAT
+        except BaseException:
+            # Task failed — let caller handle via task.exception()/result().
+            return
+
+
+async def _stream_analyzer_phase(
+    classifier: ClassifierResult,
+    ocr: OcrResult,
+    rag_chunks: list[str],
+    language: UserLanguage,
+    has_datova_schranka: bool,
+) -> AsyncIterator[Any]:
+    """Stream analyzer fields with heartbeats. Yields SSE strings; final yield is the
+    (analysis, model_used) tuple. Raises RuntimeError if the stream ends without a result."""
+    analyzer_iter = stream_analyze_document(
+        classifier=classifier,
+        ocr_text=ocr.ocr_text,
+        page_count=ocr.page_count,
+        rag_chunks=rag_chunks,
+        language=language,
+        has_datova_schranka=has_datova_schranka,
+    ).__aiter__()
+    analysis: AnalysisResult | None = None
+    model_used: str | None = None
+    while True:
+        next_task = asyncio.create_task(analyzer_iter.__anext__())
+        async for heartbeat in _yield_heartbeats_until_complete(next_task):
+            yield heartbeat
+        try:
+            item = next_task.result()
+        except StopAsyncIteration:
+            break
+        if item["type"] == "field":
+            yield _sse("field", {"field": item["field"], "value": item["value"]})
+        elif item["type"] == "done":
+            analysis = item["analysis"]
+            model_used = item["model_used"]
+    if analysis is None or model_used is None:
+        raise RuntimeError("Analyzer stream ended without a final result")
+    yield (analysis, model_used)
+
+
+def _finalize_idempotency(user_id: UUID, idempotency_key: str | None, scan_id: str | None) -> None:
+    """Complete the idempotency claim on success, release it on failure. No-op without a key."""
+    if not idempotency_key:
+        return
+    if scan_id:
+        idempotency.complete(str(user_id), idempotency_key, scan_id)
+    else:
+        idempotency.release(str(user_id), idempotency_key)
+
+
+async def _scan_stream_events(
+    user_id: UUID,
+    body: ScanRequest,
+    profile: dict,
+    language: UserLanguage,
+    has_datova_schranka: bool,
+    idempotency_key: str | None = None,
+) -> AsyncIterator[str]:
+    """Compose the full SSE event sequence for a single scan request."""
+    plan = profile.get("plan", "free")
+    usage_period = usage_period_for_profile(profile)
+    try:
+        yield _sse("status", {"step": "preparing_inputs", "message": "Preparing document pages"})
+        ocr_inputs = await _prepare_ocr_inputs(user_id, body.image_paths)
+        await _check_scan_quota_or_402(
+            user_id,
+            plan,
+            page_count=ocr_inputs.page_count,
+            usage_period=usage_period,
+        )
+
+        yield _sse("status", {"step": "ocr", "message": "Reading document text"})
+        ocr_task = asyncio.create_task(extract_text(ocr_inputs.urls))
+        async for heartbeat in _yield_heartbeats_until_complete(ocr_task):
+            yield heartbeat
+        ocr = ocr_task.result()
+        # The OCR service returns whatever Azure detected; for safety we anchor
+        # page_count to the prepared input count so downstream UI sees a stable
+        # number even if Azure DI miscounted.
+        ocr = ocr.model_copy(update={"page_count": ocr_inputs.page_count})
+
+        if not ocr.ocr_text.strip():
+            detail = "Could not read document — try a better photo."
+            if ocr.error:
+                # Pipe the underlying Azure / SDK error to the client so we
+                # can debug failures without trawling Render logs. Frontend
+                # may choose to display only the leading human-readable bit.
+                detail = f"{detail} ({ocr.error})"
+            logger.warning(
+                "OCR quality gate failed (empty text) user_id=%s error=%s",
+                user_id,
+                ocr.error,
+            )
+            yield _sse("error", {"status_code": status.HTTP_422_UNPROCESSABLE_ENTITY, "detail": detail})
+            return
+
+        yield _sse("status", {"step": "classify", "message": "Classifying document"})
+        classify_task = asyncio.create_task(
+            classify_text(ocr.ocr_text, ocr.page_count, ocr.document_language)
+        )
+        async for heartbeat in _yield_heartbeats_until_complete(classify_task):
+            yield heartbeat
+        classifier = classify_task.result()
+        yield _sse(
+            "status",
+            {
+                "step": "classified",
+                "category": classifier.category,
+                "doc_type": classifier.doc_type,
+                "confidence": classifier.confidence,
+            },
+        )
+
+        yield _sse("status", {"step": "rag", "message": "Checking relevant Czech rules"})
+        rag_chunks = await retrieve_chunks(ocr.ocr_text, classifier.category)
+
+        yield _sse("status", {"step": "analysis", "message": "Finding summary, actions, and risks"})
+        analysis: AnalysisResult | None = None
+        model_used: str | None = None
+        async for item in _stream_analyzer_phase(classifier, ocr, rag_chunks, language, has_datova_schranka):
+            if isinstance(item, str):
+                yield item
+            else:
+                analysis, model_used = item
+
+        if analysis is None or model_used is None:
+            raise RuntimeError("Analyzer stream ended without a final result")
+
+        yield _sse("status", {"step": "saving", "message": "Saving scan and reminders"})
+        scan = await _persist_completed_scan(
+            user_id,
+            body,
+            classifier,
+            ocr,
+            analysis,
+            language,
+            model_used,
+            plan=plan,
+            usage_period=usage_period,
+        )
+        _finalize_idempotency(user_id, idempotency_key, str(scan.id))
+        yield _sse("done", scan.model_dump(mode="json"))
+    except HTTPException as exc:
+        # Pipeline failed before persisting — release the claim so the client
+        # can retry with the same key.
+        _finalize_idempotency(user_id, idempotency_key, None)
+        yield _sse("error", {"status_code": exc.status_code, "detail": exc.detail})
+    except Exception as exc:
+        # Never leak raw exception text (paths, table names, SQL) to clients —
+        # the full traceback is in the server log + Sentry.
+        _finalize_idempotency(user_id, idempotency_key, None)
+        logger.exception("Streaming scan failed user_id=%s", user_id)
+        capture_exception(exc)
+        yield _sse("error", {"detail": "Scan failed — please try again."})
 
 
 def _storage_suffix(path: str) -> str:
@@ -105,7 +299,7 @@ async def _sign_storage_url(path: str) -> str:
 
 
 async def _download_signed_object(url: str, path: str) -> bytes:
-    """Download a signed Supabase object that must be transformed before GPT Vision."""
+    """Download a signed Supabase object that must be transformed before OCR."""
     try:
         async with httpx.AsyncClient(follow_redirects=True, timeout=30.0) as client:
             response = await client.get(url)
@@ -131,8 +325,8 @@ async def _download_signed_object(url: str, path: str) -> bytes:
     return content
 
 
-def _render_pdf_to_png_data_urls(pdf_bytes: bytes, path: str) -> list[str]:
-    """Render a PDF into PNG data URLs accepted by OpenAI Vision."""
+def _open_pdf(pdf_bytes: bytes, path: str):
+    """Open PDF bytes with PyMuPDF, mapping failures to clean HTTP errors."""
     try:
         import fitz
     except ImportError as exc:
@@ -142,23 +336,48 @@ def _render_pdf_to_png_data_urls(pdf_bytes: bytes, path: str) -> list[str]:
         ) from exc
 
     try:
-        document = fitz.open(stream=pdf_bytes, filetype="pdf")
+        return fitz.open(stream=pdf_bytes, filetype="pdf")
     except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f"Invalid PDF: '{path}'"
         ) from exc
 
+
+def _validated_pdf_page_count(document, path: str) -> int:
+    page_count = int(document.page_count)
+    if page_count < 1:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f"PDF has no pages: '{path}'"
+        )
+    if page_count > 10:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="PDF has more than 10 pages. Split it into a smaller document.",
+        )
+    return page_count
+
+
+def _pdf_page_count(pdf_bytes: bytes, path: str) -> int:
+    """Count and validate PDF pages without rendering (cheap metadata read)."""
+    document = _open_pdf(pdf_bytes, path)
     try:
-        page_count = int(document.page_count)
-        if page_count < 1:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f"PDF has no pages: '{path}'"
-            )
-        if page_count > 10:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="PDF has more than 10 pages. Split it into a smaller document.",
-            )
+        return _validated_pdf_page_count(document, path)
+    finally:
+        document.close()
+
+
+def _render_pdf_to_png_data_urls(pdf_bytes: bytes, path: str) -> list[str]:
+    """Render a PDF into PNG data URLs — previews only (`/image-urls`).
+
+    OCR no longer goes through this: the whole PDF is sent to Azure DI as one
+    document, so the CPU + RAM cost of rasterising stays off the scan path.
+    """
+    import fitz
+
+    document = _open_pdf(pdf_bytes, path)
+
+    try:
+        page_count = _validated_pdf_page_count(document, path)
 
         try:
             matrix = fitz.Matrix(PDF_RENDER_SCALE, PDF_RENDER_SCALE)
@@ -179,37 +398,94 @@ def _render_pdf_to_png_data_urls(pdf_bytes: bytes, path: str) -> list[str]:
         document.close()
 
 
-async def _prepare_vision_inputs(user_id: UUID, image_paths: list[str]) -> PreparedVisionInputs:
-    """Validate storage paths and convert supported inputs into GPT Vision URLs."""
-    urls: list[str] = []
+async def _prepare_single_input(user_id: UUID, raw_path: str) -> tuple[list[str], int]:
+    """Resolve one user-supplied path to OCR-ready URL(s) + its page count.
 
-    for raw_path in image_paths:
-        path = _validate_storage_path(user_id, raw_path)
-        suffix = _storage_suffix(path)
+    PDFs are passed to Azure DI whole (one `data:application/pdf` URL —
+    prebuilt-read OCRs all pages in a single call), so they contribute one
+    URL but N pages. PyMuPDF only counts pages here; rendering is reserved
+    for previews.
+    """
+    path = _validate_storage_path(user_id, raw_path)
+    suffix = _storage_suffix(path)
 
-        if suffix in SUPPORTED_IMAGE_EXTENSIONS:
-            urls.append(await _sign_storage_url(path))
-            continue
+    if suffix in SUPPORTED_IMAGE_EXTENSIONS:
+        return [await _sign_storage_url(path)], 1
 
-        if suffix == PDF_EXTENSION:
-            signed_url = await _sign_storage_url(path)
-            pdf_bytes = await _download_signed_object(signed_url, path)
-            urls.extend(_render_pdf_to_png_data_urls(pdf_bytes, path))
-            continue
+    if suffix == PDF_EXTENSION:
+        signed_url = await _sign_storage_url(path)
+        pdf_bytes = await _download_signed_object(signed_url, path)
+        page_count = await asyncio.to_thread(_pdf_page_count, pdf_bytes, path)
+        encoded = base64.b64encode(pdf_bytes).decode("ascii")
+        return [f"data:application/pdf;base64,{encoded}"], page_count
 
+    raise HTTPException(
+        status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+        detail="Unsupported file type. Upload PNG, JPEG, GIF, WEBP, or PDF.",
+    )
+
+
+async def _prepare_ocr_inputs(user_id: UUID, image_paths: list[str]) -> PreparedOcrInputs:
+    """Validate storage paths and convert supported inputs into OCR-ready URLs.
+
+    Inputs are resolved concurrently — signing + downloading happens in
+    parallel so a 5-page upload doesn't pay 5× the network latency.
+    """
+    grouped = await asyncio.gather(*(_prepare_single_input(user_id, raw_path) for raw_path in image_paths))
+    urls = [url for group, _ in grouped for url in group]
+    page_count = sum(count for _, count in grouped)
+    return PreparedOcrInputs(urls=urls, page_count=page_count)
+
+
+async def _check_scan_quota_or_402(
+    user_id: UUID,
+    plan: str,
+    page_count: int,
+    usage_period: str | None = None,
+) -> None:
+    try:
+        await check_scan_quota(user_id, plan, page_count=page_count, month=usage_period)
+    except QuotaExceededError as exc:
+        raise HTTPException(status_code=status.HTTP_402_PAYMENT_REQUIRED, detail=str(exc)) from exc
+
+
+def _enforce_scan_rate_limit(user_id: UUID) -> None:
+    """Cap scan *attempts* per user per hour, regardless of outcome.
+
+    Quota only charges successful scans, so failed pipelines (e.g. garbage
+    PDFs dying at the OCR gate) would otherwise mean unlimited paid Azure
+    calls.
+    """
+    settings = get_settings()
+    if not check_rate_limit(f"scans:{user_id}", settings.scan_attempts_per_hour, 3600.0):
+        logger.warning("Scan rate limit hit user_id=%s", user_id)
         raise HTTPException(
-            status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
-            detail="Unsupported file type. Upload PNG, JPEG, GIF, WEBP, or PDF.",
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=f"Too many scan attempts — limited to {settings.scan_attempts_per_hour}/hour. Try again later.",
         )
 
-    return PreparedVisionInputs(urls=urls, page_count=len(urls))
+
+async def _load_scan_response(scan_id: str, user_id: UUID) -> ScanResponse:
+    """Refetch a persisted scan as a ScanResponse (idempotent-replay path)."""
+    supabase = await get_supabase()
+    result = (
+        await supabase.table("scans")
+        .select("*")
+        .eq("id", scan_id)
+        .eq("user_id", str(user_id))
+        .limit(1)
+        .execute()
+    )
+    if not result.data:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Scan not found")
+    return ScanResponse.model_validate(result.data[0])
 
 
-async def _check_scan_quota_or_402(user_id: UUID, plan: str, page_count: int) -> None:
-    try:
-        await check_scan_quota(user_id, plan, page_count=page_count)
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_402_PAYMENT_REQUIRED, detail=str(exc)) from exc
+def _idempotency_conflict() -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail="A scan with this Idempotency-Key is already being processed.",
+    )
 
 
 async def _create_deadlines(user_id: UUID, scan_id: UUID, deadlines: list[DeadlineItem]) -> int:
@@ -260,22 +536,33 @@ async def _persist_completed_scan(
     user_id: UUID,
     body: ScanRequest,
     classifier: ClassifierResult,
+    ocr: OcrResult,
     analysis: AnalysisResult,
     language: UserLanguage,
     model_used: str,
+    plan: str = "free",
+    usage_period: str | None = None,
 ) -> ScanResponse:
+    # Charge quota BEFORE saving: the conditional increment is the
+    # authoritative cap gate (the pre-check at request start races with
+    # concurrent scans). A race loser gets 402 here and nothing persisted.
+    try:
+        await try_increment_scan_count(user_id, plan, month=usage_period)
+    except QuotaExceededError as exc:
+        raise HTTPException(status_code=status.HTTP_402_PAYMENT_REQUIRED, detail=str(exc)) from exc
+
     supabase = await get_supabase()
     scan_row = {
         "user_id": str(user_id),
         "image_paths": body.image_paths,
-        "ocr_text": classifier.ocr_text,
+        "ocr_text": ocr.ocr_text,
         "category": classifier.category,
         "doc_type": classifier.doc_type,
         "category_confidence": classifier.confidence,
         "result": analysis.model_dump(mode="json"),
         "language": language,
         "model_used": model_used,
-        "page_count": classifier.page_count,
+        "page_count": ocr.page_count,
     }
     try:
         inserted = await supabase.table("scans").insert(scan_row).execute()
@@ -296,10 +583,8 @@ async def _persist_completed_scan(
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to save scan")
 
     scan_data = inserted.data[0]
-    scan_data["page_count"] = classifier.page_count
+    scan_data["page_count"] = ocr.page_count
     scan_id = UUID(scan_data["id"])
-
-    await increment_scan_count(user_id)
 
     # Side-effects below must not fail the scan — the row is already committed.
     # We log and continue so the user gets their analysis back even if reminders
@@ -318,7 +603,7 @@ async def _persist_completed_scan(
     logger.info(
         "Scan created scan_id=%s pages=%d category=%s model=%s ocr_conf=%.2f deadlines=%d",
         scan_id,
-        classifier.page_count,
+        ocr.page_count,
         classifier.category,
         model_used,
         classifier.confidence,
@@ -330,123 +615,131 @@ async def _persist_completed_scan(
 @router.post("", response_model=ScanResponse, status_code=status.HTTP_201_CREATED)
 async def create_scan(
     body: ScanRequest,
-    user_id: UUID = Depends(get_current_user_id),
+    user_id: UUID = Depends(get_active_user_id),
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> ScanResponse:
+    # Idempotency: a retried request with the same key returns the original scan
+    # instead of running a second paid pipeline. Claim before any expensive work.
+    if idempotency_key:
+        existing = idempotency.claim(str(user_id), idempotency_key)
+        if existing is not None:
+            if existing["state"] == "done" and existing["scan_id"]:
+                return await _load_scan_response(existing["scan_id"], user_id)
+            raise _idempotency_conflict()
+
+    try:
+        return await _run_create_scan(user_id, body, idempotency_key)
+    except Exception:
+        # A genuine failure should not lock the key — let the client retry.
+        if idempotency_key:
+            idempotency.release(str(user_id), idempotency_key)
+        raise
+
+
+async def _run_create_scan(user_id: UUID, body: ScanRequest, idempotency_key: str | None) -> ScanResponse:
     profile = await _ensure_profile(user_id)
     plan = profile.get("plan", "free")
+    usage_period = usage_period_for_profile(profile)
     language: UserLanguage = body.language or profile.get("language", "cs")
     has_datova_schranka: bool = bool(profile.get("has_datova_schranka", False))
 
+    _enforce_scan_rate_limit(user_id)
     # Plan-based quota check (monthly scans + per-scan page cap)
-    await _check_scan_quota_or_402(user_id, plan, page_count=len(body.image_paths))
+    await _check_scan_quota_or_402(user_id, plan, page_count=len(body.image_paths), usage_period=usage_period)
 
-    vision_inputs = await _prepare_vision_inputs(user_id, body.image_paths)
-    await _check_scan_quota_or_402(user_id, plan, page_count=vision_inputs.page_count)
+    ocr_inputs = await _prepare_ocr_inputs(user_id, body.image_paths)
+    await _check_scan_quota_or_402(
+        user_id,
+        plan,
+        page_count=ocr_inputs.page_count,
+        usage_period=usage_period,
+    )
 
-    # Call 1 — OCR + classification (multi-page, single Vision call)
-    classifier = await classify_document(vision_inputs.urls)
-    classifier = classifier.model_copy(update={"page_count": vision_inputs.page_count})
+    # Step 1 — OCR via Azure Document Intelligence
+    ocr = await extract_text(ocr_inputs.urls)
+    ocr = ocr.model_copy(update={"page_count": ocr_inputs.page_count})
 
-    if not classifier.ocr_text.strip():
+    if not ocr.ocr_text.strip():
         logger.warning(
-            "OCR quality gate failed (empty text) user_id=%s confidence=%.2f error=%s",
+            "OCR quality gate failed (empty text) user_id=%s error=%s",
             user_id,
-            classifier.confidence,
-            classifier.error,
+            ocr.error,
         )
+        detail = "Could not read document — try a better photo."
+        if ocr.error:
+            detail = f"{detail} ({ocr.error})"
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=f"Could not read document — try a better photo. {classifier.error or ''}".strip(),
+            detail=detail,
         )
 
+    # Step 2 — GPT-4o text-only classifier
+    classifier = await classify_text(ocr.ocr_text, ocr.page_count, ocr.document_language)
+
     # RAG — pull category-specific knowledge chunks
-    rag_chunks = await retrieve_chunks(classifier.ocr_text, classifier.category)
+    rag_chunks = await retrieve_chunks(ocr.ocr_text, classifier.category)
 
     # Call 2 — analyzer (default model or escalation, picked by category)
     analysis, model_used = await analyze_document(
         classifier=classifier,
+        ocr_text=ocr.ocr_text,
+        page_count=ocr.page_count,
         rag_chunks=rag_chunks,
         language=language,
         has_datova_schranka=has_datova_schranka,
     )
 
-    return await _persist_completed_scan(user_id, body, classifier, analysis, language, model_used)
+    scan = await _persist_completed_scan(
+        user_id,
+        body,
+        classifier,
+        ocr,
+        analysis,
+        language,
+        model_used,
+        plan=plan,
+        usage_period=usage_period,
+    )
+    if idempotency_key:
+        idempotency.complete(str(user_id), idempotency_key, str(scan.id))
+    return scan
 
 
 @router.post("/stream")
 async def create_scan_stream(
     body: ScanRequest,
-    user_id: UUID = Depends(get_current_user_id),
+    user_id: UUID = Depends(get_active_user_id),
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> StreamingResponse:
     profile = await _ensure_profile(user_id)
     plan = profile.get("plan", "free")
+    usage_period = usage_period_for_profile(profile)
     language: UserLanguage = body.language or profile.get("language", "cs")
     has_datova_schranka: bool = bool(profile.get("has_datova_schranka", False))
 
-    await _check_scan_quota_or_402(user_id, plan, page_count=len(body.image_paths))
+    # Idempotency claim happens here (synchronously) so a duplicate is caught
+    # before the streaming pipeline starts.
+    replay: ScanResponse | None = None
+    if idempotency_key:
+        existing = idempotency.claim(str(user_id), idempotency_key)
+        if existing is not None:
+            if existing["state"] == "done" and existing["scan_id"]:
+                replay = await _load_scan_response(existing["scan_id"], user_id)
+            else:
+                raise _idempotency_conflict()
 
-    async def events() -> AsyncIterator[str]:
-        try:
-            yield _sse("status", {"step": "preparing_inputs", "message": "Preparing document pages"})
-            vision_inputs = await _prepare_vision_inputs(user_id, body.image_paths)
-            await _check_scan_quota_or_402(user_id, plan, page_count=vision_inputs.page_count)
+    if replay is not None:
+        # Re-emit the original scan's terminal event without redoing the work.
+        async def _replay_events() -> AsyncIterator[str]:
+            yield _sse("done", replay.model_dump(mode="json"))
 
-            yield _sse("status", {"step": "ocr", "message": "Reading document text"})
-            classifier = await classify_document(vision_inputs.urls)
-            classifier = classifier.model_copy(update={"page_count": vision_inputs.page_count})
-            yield _sse(
-                "status",
-                {
-                    "step": "classified",
-                    "category": classifier.category,
-                    "doc_type": classifier.doc_type,
-                    "confidence": classifier.confidence,
-                },
-            )
+        return StreamingResponse(_replay_events(), media_type="text/event-stream")
 
-            if not classifier.ocr_text.strip():
-                detail = f"Could not read document — try a better photo. {classifier.error or ''}".strip()
-                logger.warning(
-                    "OCR quality gate failed (empty text) user_id=%s confidence=%.2f error=%s",
-                    user_id,
-                    classifier.confidence,
-                    classifier.error,
-                )
-                yield _sse("error", {"status_code": status.HTTP_422_UNPROCESSABLE_ENTITY, "detail": detail})
-                return
-
-            yield _sse("status", {"step": "rag", "message": "Checking relevant Czech rules"})
-            rag_chunks = await retrieve_chunks(classifier.ocr_text, classifier.category)
-
-            yield _sse("status", {"step": "analysis", "message": "Finding summary, actions, and risks"})
-            analysis: AnalysisResult | None = None
-            model_used: str | None = None
-            async for item in stream_analyze_document(
-                classifier=classifier,
-                rag_chunks=rag_chunks,
-                language=language,
-                has_datova_schranka=has_datova_schranka,
-            ):
-                if item["type"] == "field":
-                    yield _sse("field", {"field": item["field"], "value": item["value"]})
-                elif item["type"] == "done":
-                    analysis = item["analysis"]
-                    model_used = item["model_used"]
-
-            if analysis is None or model_used is None:
-                raise RuntimeError("Analyzer stream ended without a final result")
-
-            yield _sse("status", {"step": "saving", "message": "Saving scan and reminders"})
-            scan = await _persist_completed_scan(user_id, body, classifier, analysis, language, model_used)
-            yield _sse("done", scan.model_dump(mode="json"))
-        except HTTPException as exc:
-            yield _sse("error", {"status_code": exc.status_code, "detail": exc.detail})
-        except Exception as exc:
-            logger.exception("Streaming scan failed user_id=%s", user_id)
-            yield _sse("error", {"detail": str(exc) or "Streaming scan failed"})
+    _enforce_scan_rate_limit(user_id)
+    await _check_scan_quota_or_402(user_id, plan, page_count=len(body.image_paths), usage_period=usage_period)
 
     return StreamingResponse(
-        events(),
+        _scan_stream_events(user_id, body, profile, language, has_datova_schranka, idempotency_key),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -455,27 +748,112 @@ async def create_scan_stream(
     )
 
 
-@router.get("", response_model=list[ScanListItem])
+@router.get("", response_model=ScanListResponse)
 async def list_scans(
     limit: int = 20,
     offset: int = 0,
-    user_id: UUID = Depends(get_current_user_id),
-) -> list[ScanListItem]:
+    user_id: UUID = Depends(get_active_user_id),
+) -> ScanListResponse:
     limit = max(1, min(limit, 100))
     offset = max(0, offset)
+
+    profile = await _ensure_profile(user_id)
+    plan = profile.get("plan", "free")
+    archive_limit = caps_for_plan(plan)["archive_limit"]
+
+    # Free plans only see the most-recent `archive_limit` scans. Clamp the
+    # paging window to that range so older scans are never returned, and report
+    # how many are hidden so the client can show the upgrade paywall.
+    hidden_count = 0
+    if archive_limit is not None:
+        total = sum((await _scan_counts_by_category(user_id)).values())
+        hidden_count = max(0, total - archive_limit)
+        if offset >= archive_limit:
+            return ScanListResponse(
+                scans=[], plan=plan, archive_limit=archive_limit, hidden_count=hidden_count
+            )
+        limit = min(limit, archive_limit - offset)
 
     supabase = await get_supabase()
     result = await supabase.rpc(
         "list_scans_with_activity",
         {"p_user_id": str(user_id), "p_limit": limit, "p_offset": offset},
     ).execute()
-    return [ScanListItem.from_row(row) for row in (result.data or [])]
+    return ScanListResponse(
+        scans=[ScanListItem.from_row(row) for row in (result.data or [])],
+        plan=plan,
+        archive_limit=archive_limit,
+        hidden_count=hidden_count,
+    )
+
+
+def _looks_like_missing_rpc(exc: Exception, function_name: str) -> bool:
+    """Detect Supabase/PostgREST schema-cache misses for newly added RPCs."""
+    text = str(exc)
+    return (
+        "PGRST202" in text
+        and function_name in text
+        and ("Could not find the function" in text or "schema cache" in text)
+    )
+
+
+async def _count_scans_by_category_fallback(user_id: UUID) -> dict[str, int]:
+    """Python aggregation used until migration 0015 is applied.
+
+    Pulls only the category column. Range covers any realistic user; if a single
+    user ever exceeds it the chips under-count, but the list page stays correct.
+    """
+    supabase = await get_supabase()
+    result = (
+        await supabase.table("scans").select("category").eq("user_id", str(user_id)).range(0, 9999).execute()
+    )
+    by_category: dict[str, int] = {}
+    for row in result.data or []:
+        key = row.get("category") or "ostatni"
+        by_category[key] = by_category.get(key, 0) + 1
+    return by_category
+
+
+async def _scan_counts_by_category(user_id: UUID) -> dict[str, int]:
+    """Per-category scan counts via the GROUP BY RPC, Python fallback if missing."""
+    supabase = await get_supabase()
+    try:
+        result = await supabase.rpc("count_scans_by_category", {"p_user_id": str(user_id)}).execute()
+        return {
+            str(row["category"]): int(row["count"])
+            for row in (result.data or [])
+            if row.get("category") is not None
+        }
+    except Exception as exc:
+        if not _looks_like_missing_rpc(exc, "count_scans_by_category"):
+            raise
+        logger.warning(
+            "Supabase RPC count_scans_by_category is missing; using Python fallback. "
+            "Apply supabase/migrations/0015_count_scans_by_category.sql."
+        )
+        return await _count_scans_by_category_fallback(user_id)
+
+
+@router.get("/counts", response_model=ScanCountsResponse)
+async def get_scan_counts(
+    user_id: UUID = Depends(get_active_user_id),
+) -> ScanCountsResponse:
+    """Return total scan count and per-category counts for the current user.
+
+    Used by the frontend to render filter chips with true DB counts instead of
+    counting only what's been paginated into the list view. Aggregation runs in
+    Postgres (GROUP BY) with a Python fallback for environments where migration
+    0015 hasn't landed yet.
+    """
+    by_category = await _scan_counts_by_category(user_id)
+
+    return ScanCountsResponse(total=sum(by_category.values()), by_category=by_category)
 
 
 @router.get("/{scan_id}", response_model=ScanResponse)
 async def get_scan(
     scan_id: UUID,
-    user_id: UUID = Depends(get_current_user_id),
+    user_id: UUID = Depends(get_active_user_id),
 ) -> ScanResponse:
     supabase = await get_supabase()
     result = (
@@ -495,7 +873,7 @@ async def get_scan(
 async def get_scan_image_urls(
     scan_id: UUID,
     render_pdf: bool = False,
-    user_id: UUID = Depends(get_current_user_id),
+    user_id: UUID = Depends(get_active_user_id),
 ) -> ScanImageUrlsResponse:
     """Return signed preview URLs for files attached to a scan owned by the user."""
     supabase = await get_supabase()
@@ -526,11 +904,64 @@ async def get_scan_image_urls(
     return ScanImageUrlsResponse(urls=urls)
 
 
+@router.delete("", response_model=ScanBulkDeleteResponse)
+async def delete_all_scans(
+    user_id: UUID = Depends(get_active_user_id),
+) -> ScanBulkDeleteResponse:
+    """Delete every scan owned by the authenticated user.
+
+    Executes the `delete_user_scans` RPC, which runs in a single transaction:
+    counts rows and deletes `scans`. `scan_messages` cascade via FK;
+    auto-created `deadlines` are removed by the scans delete trigger, while
+    manually created ones survive with `scan_id` nulled (migration 0018).
+    `usage_limits` stays untouched — it tracks initiations (migration 0009).
+    Idempotent: returns `{0, 0}` with 200 when the user has nothing to delete.
+    """
+    supabase = await get_supabase()
+    result = await supabase.rpc("delete_user_scans", {"p_user_id": str(user_id)}).execute()
+
+    row: dict[str, Any] | None = None
+    if isinstance(result.data, list):
+        row = result.data[0] if result.data else None
+    elif isinstance(result.data, dict):
+        row = result.data
+
+    deleted_scans = int((row or {}).get("deleted_scans") or 0)
+    deleted_deadlines = int((row or {}).get("deleted_deadlines") or 0)
+    logger.info(
+        "Bulk scan delete user_id=%s scans=%d deadlines=%d",
+        user_id,
+        deleted_scans,
+        deleted_deadlines,
+    )
+    return ScanBulkDeleteResponse(
+        deleted_scans=deleted_scans,
+        deleted_deadlines=deleted_deadlines,
+    )
+
+
 @router.delete("/{scan_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_scan(
     scan_id: UUID,
-    user_id: UUID = Depends(get_current_user_id),
+    user_id: UUID = Depends(get_active_user_id),
 ) -> None:
+    """Delete a single scan owned by the authenticated user.
+
+    `scan_messages` cascade via FK. Auto-created `deadlines` are removed by
+    the scans delete trigger; manually created ones survive with `scan_id`
+    nulled (migration 0018).
+    """
     supabase = await get_supabase()
+    existing = (
+        await supabase.table("scans")
+        .select("id")
+        .eq("id", str(scan_id))
+        .eq("user_id", str(user_id))
+        .limit(1)
+        .execute()
+    )
+    if not existing.data:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Scan not found")
+
     await supabase.table("scans").delete().eq("id", str(scan_id)).eq("user_id", str(user_id)).execute()
     logger.info("Scan deleted scan_id=%s user_id=%s", scan_id, user_id)

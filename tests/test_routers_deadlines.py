@@ -77,6 +77,34 @@ class TestListDeadlines:
         assert len(r.json()) == 1
         assert r.json()[0]["title"] == "mine"
 
+    def test_paginates(self, client, fake_supabase, auth_headers, test_user_id):
+        _seed_deadline(fake_supabase, str(test_user_id), title="first", due_date="2026-06-01")
+        _seed_deadline(fake_supabase, str(test_user_id), title="second", due_date="2026-06-02")
+        _seed_deadline(fake_supabase, str(test_user_id), title="third", due_date="2026-06-03")
+        r = client.get("/deadlines?limit=1&offset=1", headers=auth_headers)
+        assert r.status_code == 200
+        assert [d["title"] for d in r.json()] == ["second"]
+
+    def test_filters_by_status_filter(self, client, fake_supabase, auth_headers, test_user_id):
+        _seed_deadline(fake_supabase, str(test_user_id), title="active", status="active")
+        _seed_deadline(
+            fake_supabase,
+            str(test_user_id),
+            title="done-newer",
+            status="completed",
+            due_date="2026-06-03",
+        )
+        _seed_deadline(
+            fake_supabase,
+            str(test_user_id),
+            title="done-older",
+            status="completed",
+            due_date="2026-06-01",
+        )
+        r = client.get("/deadlines?status_filter=completed&limit=10&offset=0", headers=auth_headers)
+        assert r.status_code == 200
+        assert [d["title"] for d in r.json()] == ["done-newer", "done-older"]
+
 
 class TestGetDeadline:
     def test_get_by_id(self, client, fake_supabase, auth_headers, test_user_id):

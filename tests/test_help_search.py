@@ -71,7 +71,7 @@ def _guide(
 
 
 def _content_with(*guides: HelpGuide, categories: list[HelpCategory] | None = None) -> HelpContent:
-    cats = categories or [_category("visa-pobyt", ru_title="Виза и pobyt")]
+    cats = categories or [_category("visa-pobyt", ru_title="Визы и проживание")]
     by_slug: dict[str, dict] = {}
     for g in guides:
         by_slug.setdefault(g.slug, {})[g.language] = g
@@ -180,16 +180,21 @@ def test_keyword_ranks_above_subtitle():
 def test_categories_appear_in_results():
     content = _content_with(
         _guide("g1", "visa-pobyt", title="Other"),
-        categories=[_category("visa-pobyt", ru_title="Виза и pobyt", ru_subtitle="OAMP, разрешения")],
+        categories=[
+            _category(
+                "visa-pobyt",
+                ru_title="Визы и проживание",
+                ru_subtitle="МВД Чехии, разрешения",
+            )
+        ],
     )
-    results = search(content, "pobyt", "ru")
+    results = search(content, "проживание", "ru")
     # Should include both the guide (no match) and the category
     types = {r.type for r in results}
     assert "category" in types
 
 
-def test_language_fallback_to_cs():
-    """If guide isn't in ru, search falls back to cs."""
+def test_missing_requested_language_excluded():
     cs_only = HelpGuide(
         slug="g1",
         category="visa-pobyt",
@@ -199,8 +204,7 @@ def test_language_fallback_to_cs():
     )
     content = _content_with(cs_only)
     results = search(content, "pobyt", "ru")
-    assert len(results) >= 1
-    assert any(r.slug == "g1" for r in results)
+    assert all(r.slug != "g1" for r in results)
 
 
 def test_unpublished_guide_excluded():

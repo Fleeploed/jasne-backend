@@ -1,11 +1,13 @@
 """Tests for usage limits service (Free vs Pro caps)."""
 
+from datetime import UTC, datetime
 from uuid import UUID
 
 import pytest
 
 from app.services.limits import (
     PLAN_LIMITS,
+    QuotaExceededError,
     caps_for_plan,
     check_chat_quota,
     check_scan_quota,
@@ -13,6 +15,10 @@ from app.services.limits import (
     get_or_init_usage,
     increment_chat_count,
     increment_scan_count,
+    try_increment_chat_count,
+    try_increment_scan_count,
+    usage_period_for_plan,
+    usage_period_for_profile,
 )
 
 USER_ID = UUID("11111111-1111-1111-1111-111111111111")
@@ -44,6 +50,37 @@ class TestPlanLimits:
     def test_caps_for_plan_unknown_falls_back_to_free(self):
         caps = caps_for_plan("enterprise")  # type: ignore[arg-type]
         assert caps == PLAN_LIMITS["free"]
+
+
+class TestUsagePeriods:
+    def test_free_uses_calendar_month(self):
+        assert usage_period_for_plan("free") == current_month()
+
+    def test_monthly_pro_uses_subscription_period(self):
+        period = usage_period_for_plan(
+            "pro",
+            subscription_expires_at="2099-06-22T10:30:00+00:00",
+            subscription_product_id="jasne_pro_monthly",
+        )
+        assert period == "pro:2099-05-22:2099-06-22"
+
+    def test_yearly_pro_uses_annual_subscription_period(self):
+        period = usage_period_for_plan(
+            "pro",
+            subscription_expires_at=datetime(2099, 5, 22, 10, 30, tzinfo=UTC),
+            subscription_product_id="jasne_pro_yearly",
+        )
+        assert period == "pro:2098-05-22:2099-05-22"
+
+    def test_profile_period_uses_subscription_fields(self):
+        period = usage_period_for_profile(
+            {
+                "plan": "pro",
+                "subscription_product_id": "jasne_pro_monthly",
+                "subscription_expires_at": "2099-06-22T10:30:00Z",
+            }
+        )
+        assert period == "pro:2099-05-22:2099-06-22"
 
 
 @pytest.fixture
@@ -79,7 +116,7 @@ class TestCheckScanQuota:
 
     @pytest.mark.asyncio
     async def test_free_user_too_many_pages(self, patched_supabase):
-        with pytest.raises(ValueError, match="max 3 pages"):
+        with pytest.raises(QuotaExceededError, match="max 3 pages"):
             await check_scan_quota(USER_ID, "free", page_count=5)
 
     @pytest.mark.asyncio
@@ -91,7 +128,7 @@ class TestCheckScanQuota:
         # Exhaust free tier (5 scans/month)
         for _ in range(5):
             await increment_scan_count(USER_ID)
-        with pytest.raises(ValueError, match="5 scans/month"):
+        with pytest.raises(QuotaExceededError, match="5 scans/month"):
             await check_scan_quota(USER_ID, "free", page_count=1)
 
 
@@ -145,7 +182,7 @@ class TestIncrementScanCount:
 class TestCheckChatQuota:
     @pytest.mark.asyncio
     async def test_free_user_blocked(self, patched_supabase):
-        with pytest.raises(ValueError, match="does not include chat"):
+        with pytest.raises(QuotaExceededError, match="does not include chat"):
             await check_chat_quota(USER_ID, "free", SCAN_ID)
 
     @pytest.mark.asyncio
@@ -157,7 +194,7 @@ class TestCheckChatQuota:
     async def test_pro_user_blocked_at_10(self, patched_supabase):
         for _ in range(10):
             await increment_chat_count(USER_ID, SCAN_ID)
-        with pytest.raises(ValueError, match="10 questions per"):
+        with pytest.raises(QuotaExceededError, match="10 questions per"):
             await check_chat_quota(USER_ID, "pro", SCAN_ID)
 
     @pytest.mark.asyncio
@@ -210,3 +247,60 @@ class TestCheckChatQuota:
         assert new == 1
         new = await increment_chat_count(USER_ID, SCAN_ID)
         assert new == 2
+
+
+class TestTryIncrementScanCount:
+    @pytest.mark.asyncio
+    async def test_increments_below_cap(self, patched_supabase):
+        assert await try_increment_scan_count(USER_ID, "free") == 1
+        assert await try_increment_scan_count(USER_ID, "free") == 2
+
+    @pytest.mark.asyncio
+    async def test_rejects_at_cap_atomically(self, patched_supabase):
+        for _ in range(PLAN_LIMITS["free"]["monthly_scans"]):
+            await try_increment_scan_count(USER_ID, "free")
+        with pytest.raises(QuotaExceededError, match="5 scans/month"):
+            await try_increment_scan_count(USER_ID, "free")
+        # Counter must not move past the cap.
+        usage = await get_or_init_usage(USER_ID)
+        assert usage["scans_count"] == 5
+
+    @pytest.mark.asyncio
+    async def test_fallback_when_rpc_migration_missing(self, patched_supabase, monkeypatch):
+        original_rpc = patched_supabase.rpc
+
+        def missing_try_rpc(name, params):
+            if name == "try_increment_scan_count":
+                raise Exception(
+                    "{'code': 'PGRST202', 'message': 'Could not find the function "
+                    "public.try_increment_scan_count(p_cap, p_month, p_user_id) in the schema cache'}"
+                )
+            return original_rpc(name, params)
+
+        monkeypatch.setattr(patched_supabase, "rpc", missing_try_rpc)
+        assert await try_increment_scan_count(USER_ID, "free") == 1
+        for _ in range(4):
+            await try_increment_scan_count(USER_ID, "free")
+        with pytest.raises(QuotaExceededError):
+            await try_increment_scan_count(USER_ID, "free")
+
+
+class TestTryIncrementChatCount:
+    @pytest.mark.asyncio
+    async def test_increments_below_cap(self, patched_supabase):
+        assert await try_increment_chat_count(USER_ID, "pro", SCAN_ID) == 1
+        assert await try_increment_chat_count(USER_ID, "pro", SCAN_ID) == 2
+
+    @pytest.mark.asyncio
+    async def test_free_plan_rejected_without_rpc_call(self, patched_supabase):
+        with pytest.raises(QuotaExceededError, match="does not include chat"):
+            await try_increment_chat_count(USER_ID, "free", SCAN_ID)
+
+    @pytest.mark.asyncio
+    async def test_rejects_at_cap_atomically(self, patched_supabase):
+        for _ in range(PLAN_LIMITS["pro"]["max_questions_per_scan"]):
+            await try_increment_chat_count(USER_ID, "pro", SCAN_ID)
+        with pytest.raises(QuotaExceededError, match="10 questions per scan"):
+            await try_increment_chat_count(USER_ID, "pro", SCAN_ID)
+        usage = await get_or_init_usage(USER_ID)
+        assert usage["questions_per_scan"][str(SCAN_ID)] == 10

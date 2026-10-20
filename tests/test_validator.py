@@ -6,6 +6,7 @@ from app.models.schemas import DeadlineItem
 from app.services.validator import (
     MAX_DEADLINE_HORIZON,
     coerce_deadline_type,
+    detect_relative_deadline_days,
     filter_valid_deadlines,
 )
 
@@ -94,6 +95,55 @@ class TestFilterValidDeadlines:
         assert kept == [termination]
         assert len(rejected) == 1
         assert "non-critical" in rejected[0]
+
+    def test_keeps_deadline_written_with_czech_month_name(self):
+        # "do 15. května 2026" — written-out month names were previously dropped.
+        item = DeadlineItem(date=date(2026, 5, 15), description="Odvolání", type="response")
+        kept, rejected = filter_valid_deadlines(
+            [item],
+            today=date(2026, 1, 1),
+            source_text="Odvolání je možné podat do 15. května 2026.",
+        )
+        assert kept == [item]
+        assert rejected == []
+
+    def test_smlouvy_keeps_expiration_type_without_keyword(self):
+        # An explicit expiration type is itself the critical signal.
+        item = DeadlineItem(date=date(2026, 6, 1), description="Smlouva na dobu určitou", type="expiration")
+        kept, rejected = filter_valid_deadlines(
+            [item],
+            today=date(2026, 1, 1),
+            source_text="Platnost do 1. 6. 2026.",
+            category="smlouvy",
+        )
+        assert kept == [item]
+        assert rejected == []
+
+    def test_smlouvy_keeps_expiration_phrasing_keyword(self):
+        # "platnost vyprší" should now qualify as critical.
+        item = DeadlineItem(date=date(2026, 6, 1), description="Platnost smlouvy vyprší", type="action")
+        kept, rejected = filter_valid_deadlines(
+            [item],
+            today=date(2026, 1, 1),
+            source_text="Platnost smlouvy vyprší 1. 6. 2026.",
+            category="smlouvy",
+        )
+        assert kept == [item]
+        assert rejected == []
+
+
+class TestDetectRelativeDeadline:
+    def test_detects_days_from_delivery(self):
+        assert detect_relative_deadline_days("Odvolání lze podat do 15 dnů od doručení.") == 15
+
+    def test_detects_lhuta_phrasing(self):
+        assert detect_relative_deadline_days("Ve lhůtě 30 dnů ode dne doručení.") == 30
+
+    def test_ignores_absolute_dates(self):
+        assert detect_relative_deadline_days("Splatnost do 15. května 2026.") is None
+
+    def test_returns_none_without_relative_phrase(self):
+        assert detect_relative_deadline_days("Žádná lhůta zde není.") is None
 
 
 class TestCoerceDeadlineType:

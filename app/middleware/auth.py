@@ -10,7 +10,7 @@ from jwt import PyJWKClient
 from app.config import Settings, get_settings
 
 logger = logging.getLogger(__name__)
-bearer_scheme = HTTPBearer(auto_error=True)
+bearer_scheme = HTTPBearer(auto_error=False)
 
 
 @lru_cache
@@ -58,9 +58,12 @@ def _decode_token_payload(token: str, settings: Settings) -> dict:
 
 
 def get_current_user_id(
-    credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
     settings: Settings = Depends(get_settings),
 ) -> UUID:
+    if credentials is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+
     token = credentials.credentials
 
     try:
@@ -77,3 +80,15 @@ def get_current_user_id(
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Malformed token payload"
         ) from exc
+
+
+async def get_active_user_id(user_id: UUID = Depends(get_current_user_id)) -> UUID:
+    """Authenticated user dependency for normal app actions.
+
+    `/profile` uses `get_current_user_id` directly so a pending-deletion user
+    can still fetch their deletion status or restore the account.
+    """
+    from app.services.account_deletion import ensure_account_active
+
+    await ensure_account_active(user_id)
+    return user_id

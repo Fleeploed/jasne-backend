@@ -48,6 +48,11 @@ OMEZENÍ:
   pokud RAG obsahuje úřední hodiny pro přesně stejnou adresu. Nevymýšlej
   hodiny a nepoužívej hodiny jiného pracoviště. Pokud je nenajdeš, vrať null.
 - Pokud OCR confidence < 0.7 → upozorni v poli tips
+- `translation` NENÍ doslovný překlad celého dokumentu slovo od slova.
+  Je to stručné vysvětlení podstaty a klíčových pasáží v jazyce {language}
+  (cca 3–6 vět, max ~150 slov). U dlouhých 8–10stránkových dokumentů
+  shrň hlavní body, ne každý odstavec — jinak se odpověď nevejde do limitu
+  a JSON se ořízne.
 
 FORMÁT ODPOVĚDI (striktně JSON):
 - Dodrž pořadí polí níže. Je důležité pro streamování výsledku uživateli:

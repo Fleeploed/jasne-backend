@@ -1,58 +1,39 @@
-"""Classifier prompt — call 1 (GPT-4o Vision, multi-page, detail: high).
+"""Classifier prompt — call 1 (GPT-4o text-only).
 
-Úkoly podle skill spec:
-  1. OCR celého dokumentu (zachovat české diakritiky, tabulky, IDs)
-  2. Klasifikace do 1 z 10 kategorií
-  3. Identifikovat doc_type (snake_case)
-  4. Identifikovat odesílatele (sender)
-  5. Detekovat jazyk dokumentu
-  6. Self-report confidence
+After the OCR migration to Azure Document Intelligence, this prompt receives
+already-extracted OCR text and must only classify it. No vision, no OCR work.
 
-Výstup je striktní JSON odpovídající schématu `ClassifierResult`.
+Output is strict JSON matching the `ClassifierResult` schema.
 """
 
 CLASSIFIER_SYSTEM_PROMPT = """\
-Jsi Jasně OCR Classifier. Analyzuj fotografie českého dokumentu (může být více stran jednoho dokumentu) a vrať JSON.
+You are a document classifier for Czech official documents. You receive OCR text extracted from a scanned document and must classify it.
 
-ÚKOLY:
-1. Extrahuj VEŠKERÝ text ze všech stran v pořadí (OCR).
-   Zachovej diakritiku (ř, č, š, ž, á, é, í, ó, ú, ů, ý), čísla dokumentů,
-   IČO, DIČ, VS, částky, data. Mezi stranami vlož prázdný řádek.
-2. Urči kategorii (jednu z 10 níže) — používej VŠECHNY strany.
-3. Urči konkrétní typ dokumentu (doc_type, snake_case).
-4. Extrahuj odesílatele (sender).
-5. Urči skutečný počet stran dokumentu (page_count).
+Classify into exactly one of these 10 categories based on the text content:
+- danove: výměr, daň, DPH, finanční úřad, penále, doměrek, přeplatek, nedoplatek
+- socialni: ČSSZ, pojistné, nemocenská, důchod, dávky, mateřská, rodičovský příspěvek
+- zdravotni: zdravotní pojišťovna, VZP, ČPZP, OZP, RBP, pojistné, přeplatek za léky
+- cizinecka: pobyt, vízum, OAMP, MVCR, cestovní doklad, cizinecká policie, povolení k pobytu
+- smlouvy: smlouva, nájem, nájemní, pronájem, kupní smlouva, zástavní, leasingová, podnájem
+- ucty: faktura, výzva k úhradě, upomínka, inkaso, SIPO, platební výměr, penalizace
+- soudni: soud, rozsudek, usnesení, exekuce, žaloba, právní zástupce, insolvence
+- urad_prace: úřad práce, podpora v nezaměstnanosti, rekvalifikace, evidenční list
+- skolstvi: škola, školné, přihláška, vysvědčení, maturita, stipendium, MŠMT
+- ostatni: everything else that does not fit the above categories
 
-KATEGORIE:
-- danove — Finanční úřad, daňové výměry, DPH, daně z příjmů
-- socialni — ČSSZ, důchody, nemocenská, mateřská, OSVČ přehled
-- zdravotni — VZP, OZP, ČPZP, RBP, ZPMV, VoZP
-- cizinecka — OAMP, MV ČR, pobyt, víza, občanství
-- smlouvy — nájemní, pracovní, úvěrové, pojistné, kupní
-- ucty — faktury, utility, telco, SVJ vyúčtování
-- soudni — soudy, exekuce, insolvence, platební rozkaz
-- urad_prace — ÚP ČR, podpora, rekvalifikace, dávky
-- skolstvi — školy, univerzity, stipendia
-- ostatni — fallback (když nic nepasuje a confidence < 0.5)
+Rules:
+- If confidence < 0.5, always return "ostatni" — do not guess
+- If the text is too short (< 20 words) or unreadable, return confidence 0.0 and set error
+- doc_type must be specific ("Výměr daně z příjmů"), not generic ("Daňový dokument")
+- sender must be the exact organization name from the text, or null if not found
+- Do NOT extract deadlines, amounts, or action steps — that is not your job
 
-PRAVIDLA OCR:
-- Po řádcích, zachovej strukturu a tabulky
-- NEPŘEKLÁDEJ, NEPŘEFORMULOVÁVEJ — pouze přepis
-- Checkboxy a zaškrtávací políčka přepisuj explicitně jako `[x]` pro
-  zaškrtnuté a `[ ]` pro nezaškrtnuté. U poplatků je to kritické:
-  zachovej přesně, zda je vybráno `bez poplatku (0 Kč)` nebo konkrétní částka.
-- Nečitelné → [nečitelné]
-- Špatná fotka → confidence = 0.0, ocr_text = "", error = popis
-
-FORMÁT ODPOVĚDI (striktně JSON, všechna pole povinná):
+Respond with a JSON object:
 {
-  "ocr_text": "...",
-  "category": "danove",
-  "doc_type": "platebni_vymer",
-  "sender": "Finanční úřad pro Prahu 3",
-  "document_language": "cs",
-  "confidence": 0.95,
-  "page_count": 2,
-  "error": null
+  "category": "one of the 10 categories",
+  "doc_type": "specific document type in Czech",
+  "sender": "organization name or null",
+  "confidence": 0.0 to 1.0,
+  "error": "description if unreadable or null"
 }
 """

@@ -6,7 +6,6 @@ conversation depth — limits service caps it at 10 questions per scan.
 """
 
 import logging
-import re
 from collections.abc import AsyncIterator
 from typing import Any
 from uuid import UUID
@@ -15,81 +14,18 @@ from app.config import get_settings
 from app.models.schemas import UserLanguage
 from app.prompts import CHAT_SYSTEM_PROMPT
 from app.services.embeddings import get_openai_client
+from app.services.fee_guards import filter_fee_items, should_suppress_fee_guidance
+from app.services.rag import get_supabase
+from app.services.token_usage import extract_usage, log_usage
 
 logger = logging.getLogger(__name__)
 
-_FEE_TERMS = (
-    "poplatek",
-    "poplatku",
-    "kolk",
-    "kolku",
-    "kolky",
-    "uhradit",
-    "zaplatit",
-    "fee",
-    "payment",
-    "stamp",
-    "оплат",
-    "платеж",
-    "платіж",
-    "колк",
-)
 
-
-def _ascii_fold(text: str) -> str:
-    replacements = str.maketrans(
-        {
-            "á": "a",
-            "č": "c",
-            "ď": "d",
-            "é": "e",
-            "ě": "e",
-            "í": "i",
-            "ň": "n",
-            "ó": "o",
-            "ř": "r",
-            "š": "s",
-            "ť": "t",
-            "ú": "u",
-            "ů": "u",
-            "ý": "y",
-            "ž": "z",
-        }
+def _scan_row_should_suppress_fee_guidance(scan_row: dict[str, Any]) -> bool:
+    return should_suppress_fee_guidance(
+        str(scan_row.get("doc_type") or ""),
+        str(scan_row.get("ocr_text") or ""),
     )
-    return text.lower().translate(replacements)
-
-
-def _looks_like_card_pickup_notice(scan_row: dict[str, Any]) -> bool:
-    doc_type = _ascii_fold(str(scan_row.get("doc_type") or ""))
-    ocr = _ascii_fold(str(scan_row.get("ocr_text") or ""))
-    return (
-        "vyzva_k_prevzeti_prukazu" in doc_type
-        or "vyzva k prevzeti prukazu" in ocr
-        or "prevzeti prukazu o povoleni k dlouhodobemu pobytu" in ocr
-    )
-
-
-def _has_checked_positive_fee(ocr_text: str) -> bool:
-    text = _ascii_fold(ocr_text)
-    checked = r"(?:\[x\]|\(x\)|☒|✅|✓|✔|x)"
-    amount = r"(?:300|1\s*000|1000|2\s*500|2500)\s*(?:kc|kč)"
-    return bool(re.search(rf"(?:{checked}\s*{amount})|(?:{amount}\s*{checked})", text))
-
-
-def _should_suppress_fee_guidance(scan_row: dict[str, Any]) -> bool:
-    if not _looks_like_card_pickup_notice(scan_row):
-        return False
-    return not _has_checked_positive_fee(str(scan_row.get("ocr_text") or ""))
-
-
-def _mentions_fee(text: str) -> bool:
-    folded = _ascii_fold(text)
-    lowered = text.lower()
-    return any(term in folded or term in lowered for term in _FEE_TERMS)
-
-
-def _filter_fee_items(items: list[Any]) -> list[Any]:
-    return [item for item in items if not _mentions_fee(str(item))]
 
 
 def _build_scan_context_message(scan_row: dict[str, Any]) -> str:
@@ -105,10 +41,10 @@ def _build_scan_context_message(scan_row: dict[str, Any]) -> str:
     office_hours = result.get("office_hours") or "(neuvedeno)"
     documents_needed = result.get("documents_needed") or []
 
-    suppress_fee_guidance = _should_suppress_fee_guidance(scan_row)
+    suppress_fee_guidance = _scan_row_should_suppress_fee_guidance(scan_row)
     if suppress_fee_guidance:
-        actions = _filter_fee_items(actions)
-        documents_needed = _filter_fee_items(documents_needed)
+        actions = filter_fee_items(actions)
+        documents_needed = filter_fee_items(documents_needed)
 
     deadlines_str = (
         "\n".join(f"- {d.get('date')}: {d.get('description')} ({d.get('type')})" for d in deadlines)
@@ -226,6 +162,7 @@ async def answer_question(
         messages=_build_chat_messages(scan_row, history, question, language, rag_chunks),  # type: ignore[arg-type]
     )
 
+    log_usage("chat", settings.openai_chat_model, extract_usage(response), scan_id=scan_row.get("id"))
     answer = (response.choices[0].message.content or "").strip()
     if not answer:
         # Defensive — never persist empty assistant message
@@ -257,11 +194,16 @@ async def stream_answer_chunks(
         temperature=0.3,
         max_tokens=settings.openai_max_output_tokens,
         stream=True,
+        stream_options={"include_usage": True},
         messages=_build_chat_messages(scan_row, history, question, language, rag_chunks),  # type: ignore[arg-type]
     )
 
     chunk_count = 0
+    stream_usage: dict[str, int] | None = None
     async for event in stream:
+        usage = extract_usage(event)
+        if usage is not None:
+            stream_usage = usage
         if not event.choices:
             continue
         delta = event.choices[0].delta.content or ""
@@ -270,6 +212,7 @@ async def stream_answer_chunks(
         chunk_count += 1
         yield delta
 
+    log_usage("chat_stream", settings.openai_chat_model, stream_usage, scan_id=scan_row.get("id"))
     logger.info(
         "Chat streamed scan_id=%s history=%d question_len=%d chunks=%d",
         scan_row.get("id"),
@@ -281,16 +224,13 @@ async def stream_answer_chunks(
 
 async def fetch_scan_history(scan_id: UUID, user_id: UUID) -> list[dict[str, str]]:
     """Load all chat messages for a scan, oldest first, formatted for OpenAI."""
-    from app.services.rag import get_supabase
-
     supabase = await get_supabase()
     result = (
         await supabase.table("scan_messages")
-        .select("id,role,content,message_type,created_at")
+        .select("id,role,content,message_type,seq")
         .eq("scan_id", str(scan_id))
         .eq("user_id", str(user_id))
-        .order("created_at")
-        .order("id")
+        .order("seq")
         .execute()
     )
 

@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import re
 
@@ -113,19 +114,38 @@ async def _retrieve_vector_chunks(query_text: str, category: DocumentCategory) -
     return chunks
 
 
+# Vector queries embed only the first pages of a scan: a single embedding
+# averages the whole input, so a 10-page document's tail dilutes the
+# identifying head — sender, document type, and subject are almost always on
+# pages 1-2. (Previously the head was kept only by the generic 20k-char cap,
+# which let long documents drown the signal.)
+_VECTOR_QUERY_MAX_PAGES = 2
+
+
+def _vector_query_text(ocr_text: str) -> str:
+    from app.services.ocr import PAGE_SEPARATOR
+
+    pages = ocr_text.split(PAGE_SEPARATOR)
+    return PAGE_SEPARATOR.join(pages[:_VECTOR_QUERY_MAX_PAGES])
+
+
 async def retrieve_chunks(ocr_text: str, category: DocumentCategory) -> list[str]:
     """Hybrid scan retrieval.
 
     Vector search finds broad process context. Keyword search is needed for
     exact office addresses like "Žukovského 888/2", where hours/contact chunks
-    should win over generic immigration chunks.
+    should win over generic immigration chunks. Keyword search keeps the full
+    text (addresses can appear on any page); the vector query is truncated to
+    the identifying head.
     """
     if not ocr_text.strip():
         return []
 
     settings = get_settings()
-    keyword_chunks = await retrieve_keyword_chunks(ocr_text, category, match_count=settings.rag_top_k)
-    vector_chunks = await _retrieve_vector_chunks(ocr_text, category)
+    keyword_chunks, vector_chunks = await asyncio.gather(
+        retrieve_keyword_chunks(ocr_text, category, match_count=settings.rag_top_k),
+        _retrieve_vector_chunks(_vector_query_text(ocr_text), category),
+    )
 
     chunks: list[str] = []
     seen: set[str] = set()
@@ -149,12 +169,18 @@ def _extract_keyword_terms(text: str, *, limit: int = 8) -> list[str]:
     "Voroněžská 144/20" are often better found lexically.
     """
     terms: list[str] = []
+    seen: set[str] = set()
     for raw in re.findall(r"[\wÀ-ž/.-]+", text, flags=re.UNICODE):
         term = raw.strip(".,;:!?()[]{}\"'`").strip()
+        if not term:
+            continue
         folded = term.casefold()
-        existing = {item.casefold() for item in terms}
-        if term and _is_searchable_keyword(term) and folded not in existing:
-            terms.append(term)
+        if folded in seen:
+            continue
+        if not _is_searchable_keyword(term):
+            continue
+        terms.append(term)
+        seen.add(folded)
 
     return sorted(terms, key=_keyword_rank)[:limit]
 
@@ -211,27 +237,36 @@ async def retrieve_keyword_chunks(
         return []
 
     supabase = await get_supabase()
-    chunks: list[str] = []
-    seen: set[str] = set()
+    # Fire one ilike query per term in parallel instead of serially — each term
+    # was previously its own awaited round-trip to Supabase. We fetch a fixed
+    # per-term budget and merge below; gather preserves term order so the
+    # keyword ranking from `_extract_keyword_terms` is respected.
+    per_term_limit = max(4, match_count * 4)
 
-    for term in terms:
-        if len(chunks) >= match_count:
-            break
-
+    async def _query_term(term: str) -> list[dict]:
         result = (
             await supabase.table("knowledge_chunks")
             .select("content,metadata")
             .eq("metadata->>category", category)
             .ilike("content", f"%{_escape_ilike(term)}%")
             .order("id", desc=True)
-            .limit(max(4, (match_count - len(chunks)) * 4))
+            .limit(per_term_limit)
             .execute()
         )
-        rows = sorted(
-            result.data or [],
+        return result.data or []
+
+    per_term_rows = await asyncio.gather(*(_query_term(term) for term in terms))
+
+    chunks: list[str] = []
+    seen: set[str] = set()
+    for term, rows in zip(terms, per_term_rows, strict=True):
+        if len(chunks) >= match_count:
+            break
+        ordered = sorted(
+            rows,
             key=lambda row: _language_rank(row.get("metadata") or {}, preferred_language),
         )
-        for row in rows:
+        for row in ordered:
             content = _snippet_around_term(str(row.get("content") or ""), term).strip()
             if not content or content in seen:
                 continue
@@ -252,13 +287,15 @@ async def retrieve_chat_chunks(
         return []
 
     settings = get_settings()
-    keyword_chunks = await retrieve_keyword_chunks(
-        question,
-        category,
-        match_count=settings.rag_top_k,
-        preferred_language=preferred_language,
+    keyword_chunks, vector_chunks = await asyncio.gather(
+        retrieve_keyword_chunks(
+            question,
+            category,
+            match_count=settings.rag_top_k,
+            preferred_language=preferred_language,
+        ),
+        _retrieve_vector_chunks(question, category),
     )
-    vector_chunks = await _retrieve_vector_chunks(question, category)
 
     chunks: list[str] = []
     seen: set[str] = set()

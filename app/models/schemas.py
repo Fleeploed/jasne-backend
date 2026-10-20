@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import re
 from datetime import date, datetime
 from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 # ---------------------------------------------------------------------------
 # Enums / literals
@@ -27,8 +28,14 @@ DeadlineType = Literal["payment", "action", "response", "expiration"]
 DeadlineStatus = Literal["active", "completed", "missed"]
 UserLanguage = Literal["cs", "en", "uk", "ru"]
 UserPlan = Literal["free", "pro"]
+AccountDeletionStatus = Literal["active", "pending"]
 MessageRole = Literal["user", "assistant"]
 MessageType = Literal["text", "image", "result_card"]
+PushPlatform = Literal["ios", "android"]
+OampStatusQueryKind = Literal["proceedings", "visa"]
+OampStatusOutcome = Literal["approved", "processing", "not_found", "rejected", "found", "unknown"]
+OampTrackingStatus = Literal["probiha", "schvaleno", "zamitnuto", "not_found", "error"]
+TrackingType = str
 
 DEFAULT_REMINDER_DAYS: list[int] = [30, 14, 7, 1]
 
@@ -63,6 +70,11 @@ class ProfileResponse(_Base):
     subscription_product_id: str | None = None
     subscription_expires_at: datetime | None = None
     subscription_will_renew: bool = False
+    deletion_status: AccountDeletionStatus = "active"
+    deletion_requested_at: datetime | None = None
+    deletion_scheduled_at: datetime | None = None
+    deletion_reason: str | None = None
+    deletion_restored_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -75,19 +87,41 @@ class ProfileUpdate(_Base):
     # the RevenueCat webhook (server-to-server) once payments are wired up.
 
 
+class ProfileDeletionStatusResponse(_Base):
+    deletion_status: AccountDeletionStatus = "active"
+    deletion_requested_at: datetime | None = None
+    deletion_scheduled_at: datetime | None = None
+    deletion_reason: str | None = None
+
+
 # ---------------------------------------------------------------------------
-# Classifier (LLM call 1 output)
+# OCR (Azure Document Intelligence output) and Classifier (LLM call 1 output)
 # ---------------------------------------------------------------------------
+
+
+class OcrResult(_Base):
+    """Raw text extraction result from Azure Document Intelligence.
+
+    `ocr_text` is the full text of all pages joined with "\\n\\n---\\n\\n".
+    On failure (Azure error, empty result, etc.) we return an OcrResult with
+    `ocr_text=""` and let the downstream classifier handle the gate.
+
+    `error` carries a short diagnostic string when OCR failed; the scan router
+    surfaces it on the 422 SSE event so we can see WHY a document failed
+    without hunting through Render logs.
+    """
+
+    ocr_text: str
+    page_count: int = Field(default=1, ge=1, le=MAX_PAGES_HARD_LIMIT)
+    document_language: str = "cs"
+    error: str | None = None
 
 
 class ClassifierResult(_Base):
-    ocr_text: str
     category: DocumentCategory
     doc_type: str
     sender: str | None = None
-    document_language: str = "cs"
     confidence: float = Field(ge=0.0, le=1.0)
-    page_count: int = Field(default=1, ge=1, le=MAX_PAGES_HARD_LIMIT)
     error: str | None = None
 
 
@@ -97,6 +131,12 @@ class ClassifierResult(_Base):
 
 
 class DeadlineItem(_Base):
+    # NB: the skill spec for the analysis prompt mentions a per-deadline
+    # `source_text` (the OCR snippet a date came from). We intentionally do NOT
+    # carry it: an LLM-provided snippet is itself a hallucination vector, and
+    # the validator already verifies each date by searching the real OCR text
+    # (validator._date_appears_in_source), which is strictly more trustworthy.
+    # Spec is stale on this point; schema is the source of truth.
     date: date
     description: str
     type: DeadlineType
@@ -163,6 +203,31 @@ class ScanImageUrlsResponse(_Base):
     urls: list[str]
 
 
+class ScanBulkDeleteResponse(_Base):
+    deleted_scans: int
+    deleted_deadlines: int
+
+
+class ScanCountsResponse(_Base):
+    total: int
+    by_category: dict[str, int]
+
+
+class ScanListResponse(_Base):
+    """Envelope for GET /scans so Free can be told how much archive is locked.
+
+    Free plans only see the most-recent `archive_limit` scans; `hidden_count`
+    is how many older scans are gated behind Pro — the client renders the
+    "+N hidden, upgrade to Pro" paywall row from it. Pro returns
+    archive_limit=null and hidden_count=0.
+    """
+
+    scans: list[ScanListItem]
+    plan: UserPlan
+    archive_limit: int | None = None
+    hidden_count: int = 0
+
+
 class ScanListItem(_Base):
     id: UUID
     category: DocumentCategory | None = None
@@ -173,10 +238,18 @@ class ScanListItem(_Base):
     page_count: int = 1
     created_at: datetime
     last_message_at: datetime | None = None
+    # Set when the analysis extracted at least one deadline. Lets the client
+    # group scans under "Со сроками" even if no DB deadline row was created
+    # (e.g., the user dismissed it, or auto-creation hasn't run yet).
+    has_analysis_deadlines: bool = False
+    next_analysis_deadline_at: str | None = None
 
     @classmethod
     def from_row(cls, row: dict[str, Any]) -> ScanListItem:
         result = row.get("result") or {}
+        analysis_deadlines = result.get("deadlines") or []
+        dates = [d.get("date") for d in analysis_deadlines if isinstance(d, dict) and d.get("date")]
+        next_deadline = min(dates) if dates else None
         return cls(
             id=row["id"],
             category=row.get("category"),
@@ -187,6 +260,8 @@ class ScanListItem(_Base):
             page_count=row.get("page_count") or len(row.get("image_paths") or []) or 1,
             created_at=row["created_at"],
             last_message_at=row.get("last_message_at"),
+            has_analysis_deadlines=bool(analysis_deadlines),
+            next_analysis_deadline_at=next_deadline,
         )
 
 
@@ -270,6 +345,76 @@ class DeadlineResponse(_Base):
 
 
 # ---------------------------------------------------------------------------
+# Push notifications
+# ---------------------------------------------------------------------------
+
+
+class PushTokenCreate(_Base):
+    expo_push_token: str = Field(min_length=20, max_length=240)
+    platform: PushPlatform
+    timezone: str | None = Field(default=None, max_length=80)
+    locale: str | None = Field(default=None, max_length=16)
+    device_id: str | None = Field(default=None, max_length=200)
+    app_version: str | None = Field(default=None, max_length=40)
+
+    @field_validator("expo_push_token")
+    @classmethod
+    def validate_expo_push_token(cls, value: str) -> str:
+        token = value.strip()
+        if not (token.startswith("ExponentPushToken[") or token.startswith("ExpoPushToken[")):
+            raise ValueError("expo_push_token must be an Expo push token")
+        return token
+
+
+class PushTokenResponse(_Base):
+    id: UUID
+    user_id: UUID
+    expo_push_token: str
+    platform: PushPlatform
+    timezone: str | None = None
+    locale: str | None = None
+    device_id: str | None = None
+    app_version: str | None = None
+    enabled: bool
+    created_at: datetime
+    last_seen_at: datetime
+
+
+class NotificationRunResponse(_Base):
+    scanned_deadlines: int
+    candidate_notifications: int
+    attempted: int
+    sent: int
+    failed: int
+    skipped: int
+
+
+class NotificationReceiptRunResponse(_Base):
+    checked: int
+    delivered: int
+    failed: int
+    tokens_disabled: int
+    pending: int
+
+
+class AccountDeletionPurgeResponse(_Base):
+    scanned_profiles: int
+    purged: int
+    failed: int
+
+
+class TrackingCronResponse(_Base):
+    """Stats from one run of the background tracking cron (OAMP, etc.)."""
+
+    due: int
+    checked: int
+    changed: int
+    pushes_attempted: int
+    deactivated: int
+    errors: int
+
+
+# ---------------------------------------------------------------------------
 # Limits — current usage vs plan caps (used by mobile to gate UI)
 # ---------------------------------------------------------------------------
 
@@ -291,6 +436,139 @@ class LimitsResponse(_Base):
 
 
 # ---------------------------------------------------------------------------
+# OAMP status lookup
+# ---------------------------------------------------------------------------
+
+
+# Canonical OAMP case-number shape. Single source of truth: the tracker
+# (app/services/trackers/oamp.py) imports this so manual status lookup and
+# "track this case" accept exactly the same identifiers (incl. the optional
+# `-4` suffix in OAM-19391-4/ZM-2026).
+OAMP_CASE_RE = re.compile(
+    r"^OAM-?(?P<reference_number>\d+)(?:-?(?P<additional_suffix>[A-Z0-9]+))?"
+    r"/?(?P<category>[A-Z]{2,4})-?(?P<year>\d{4})$"
+)
+
+
+class OampStatusCheckRequest(_Base):
+    """Payload accepted by the mobile status form.
+
+    Frontend can either send a preformatted `case_number`
+    (`OAM-19391-4/ZM-2026`) or separate fields from the segmented form.
+    `visa_number` is accepted as a distinct query kind and is submitted through
+    the public IPC visa application number (ŽOV) field.
+    """
+
+    case_number: str | None = Field(default=None, max_length=80)
+    reference_number: str | None = Field(default=None, min_length=1, max_length=16)
+    additional_suffix: str | None = Field(default=None, max_length=12)
+    category: str | None = Field(default=None, min_length=2, max_length=4)
+    year: str | None = Field(default=None, pattern=r"^\d{4}$")
+    visa_number: str | None = Field(default=None, min_length=1, max_length=80)
+    language: UserLanguage | None = None
+
+    @field_validator(
+        "case_number", "reference_number", "additional_suffix", "category", "year", "visa_number"
+    )
+    @classmethod
+    def normalize_uppercase(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        cleaned = " ".join(value.strip().upper().split())
+        return cleaned or None
+
+    @field_validator("reference_number")
+    @classmethod
+    def reference_number_digits_only(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        cleaned = re.sub(r"\D", "", value)
+        if not cleaned:
+            raise ValueError("reference_number must contain digits")
+        return cleaned
+
+    @field_validator("additional_suffix")
+    @classmethod
+    def additional_suffix_alphanumeric(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        cleaned = re.sub(r"[^A-Z0-9]", "", value)
+        return cleaned or None
+
+    @field_validator("category")
+    @classmethod
+    def category_letters_only(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        if not re.fullmatch(r"[A-Z]{2,4}", value):
+            raise ValueError("category must contain 2-4 letters")
+        return value
+
+    @model_validator(mode="after")
+    def parse_and_validate_query(self) -> OampStatusCheckRequest:
+        if self.case_number and not (self.reference_number and self.category and self.year):
+            normalized_case = re.sub(r"^0AM", "OAM", self.case_number.replace(" ", ""))
+            match = OAMP_CASE_RE.fullmatch(normalized_case)
+            if match:
+                self.reference_number = match.group("reference_number")
+                self.additional_suffix = match.group("additional_suffix")
+                self.category = match.group("category")
+                self.year = match.group("year")
+            elif not self.visa_number:
+                raise ValueError("case_number must look like OAM-19391-4/ZM-2026")
+
+        has_proceedings = bool(self.reference_number and self.category and self.year)
+        if not has_proceedings and not self.visa_number:
+            raise ValueError("Send either OAMP proceedings fields or visa_number")
+        return self
+
+
+class OampStatusCheckResponse(_Base):
+    kind: OampStatusQueryKind
+    query: str
+    status: OampStatusOutcome
+    message: str
+    source_url: str
+    checked_at: datetime
+
+
+# ---------------------------------------------------------------------------
+# OAMP status tracking
+# ---------------------------------------------------------------------------
+
+
+class TrackingCreate(_Base):
+    tracking_type: TrackingType = Field(min_length=2, max_length=80)
+    identifier: str = Field(min_length=3, max_length=120)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("tracking_type")
+    @classmethod
+    def normalize_tracking_type(cls, value: str) -> str:
+        return value.strip().lower()
+
+    @field_validator("identifier")
+    @classmethod
+    def normalize_identifier(cls, value: str) -> str:
+        return value.strip()
+
+
+class TrackingResponse(_Base):
+    id: UUID
+    user_id: UUID
+    tracking_type: str
+    identifier: str
+    current_status: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    last_checked_at: datetime | None = None
+    next_check_at: datetime
+    is_active: bool = True
+    notification_count: int = 0
+    created_at: datetime
+    updated_at: datetime
+
+
+# ---------------------------------------------------------------------------
 # API wrappers / system
 # ---------------------------------------------------------------------------
 
@@ -301,6 +579,15 @@ class ErrorResponse(_Base):
 
 class HealthResponse(_Base):
     status: Literal["ok"] = "ok"
+    environment: str = "development"
+    version: str = "0.1.0"
+
+
+class VersionResponse(_Base):
+    """Identifies the deployed code revision — used by CI to verify rollout."""
+
+    git_sha: str
+    git_sha_short: str
     environment: str = "development"
     version: str = "0.1.0"
 

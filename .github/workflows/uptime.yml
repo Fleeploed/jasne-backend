@@ -1,11 +1,11 @@
 name: Uptime Check
 
-# Lightweight external health probe — runs every 15 minutes against the live
-# Railway deployment. If /health stops returning 200 (or returns the wrong
+# Lightweight external health probe — runs against the live Railway deployment.
+# If /health stops returning 200 (or returns the wrong
 # body), the workflow fails and GitHub emails repo admins automatically.
 #
 # This complements the in-CI smoke test (which only runs on push) by catching
-# failures that happen between deploys: Railway crash-loops, Supabase outages,
+# failures that happen between deploys: service crash-loops, Supabase outages,
 # expired keys, OpenAI quota issues that bubble up at startup, etc.
 
 on:
@@ -32,13 +32,15 @@ jobs:
         env:
           # /health/deep checks Supabase + OpenAI in addition to liveness.
           # /health (used by Railway's healthcheck) is a cheap liveness-only probe.
-          URL: https://jasne-backend-production.up.railway.app/health/deep
+          URL: ${{ vars.UPTIME_URL || 'https://jasne-backend-api-production.up.railway.app/health/deep' }}
+          # /health/deep requires the cron secret (each call fans out to paid deps).
+          CRON_SECRET: ${{ secrets.INTERNAL_CRON_SECRET }}
         run: |
           set -uo pipefail
 
-          # Single attempt with reasonable timeout; if Railway is slow that's
+          # Single attempt with reasonable timeout; if the service is slow that's
           # itself a signal worth alerting on.
-          response=$(curl -s -m 10 -w "\n%{http_code}\n%{time_total}" "$URL" || echo "")
+          response=$(curl -s -m 10 -H "X-Cron-Secret: $CRON_SECRET" -w "\n%{http_code}\n%{time_total}" "$URL" || echo "")
           if [ -z "$response" ]; then
             echo "::error::No response from $URL (network error or timeout)"
             exit 1

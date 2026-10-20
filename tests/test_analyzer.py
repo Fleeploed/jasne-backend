@@ -5,8 +5,74 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from app.models.schemas import ClassifierResult
-from app.services.analyzer import _build_system_prompt, _extract_completed_json_fields, analyze_document
+from app.models.schemas import AnalysisResult, ClassifierResult
+from app.services.analyzer import (
+    ANALYSIS_GUARDRAILS,
+    STREAM_ANALYSIS_FIELDS,
+    STREAM_INCREMENTAL_FIELDS,
+    _apply_analysis_guardrails,
+    _build_system_prompt,
+    _extract_completed_json_fields,
+    _sanitize_stream_field,
+    analyze_document,
+)
+
+
+class TestGuardrailRegistry:
+    """The batch applier and the stream-field applier must derive from the same
+    registry so they can never disagree (the old hand-written if-ladders did)."""
+
+    def _submission_confirmation_inputs(self):
+        classifier = ClassifierResult(
+            category="cizinecka",
+            doc_type="potvrzeni_o_podani_zadosti",
+            confidence=0.95,
+        )
+        ocr_text = "POTVRZENÍ O PODÁNÍ ŽÁDOSTI. Žádost byla podána."
+        return classifier, ocr_text
+
+    def _result(self) -> AnalysisResult:
+        return AnalysisResult(
+            document_type="potvrzeni",
+            document_type_cz="Potvrzení",
+            summary="Žádost byla podána.",
+            actions_required=["Doložit doklad o ubytování", "Uschovat potvrzení"],
+            penalty="Hrozí vyhoštění.",
+            documents_needed=["Cestovní doklad"],
+            confidence=0.9,
+        )
+
+    def test_stream_field_matches_batch_per_field(self):
+        classifier, ocr_text = self._submission_confirmation_inputs()
+        batch = _apply_analysis_guardrails(self._result(), classifier, ocr_text, "cs")
+        original = self._result()
+
+        for field in ("documents_needed", "penalty", "deadlines", "actions_required"):
+            streamed = _sanitize_stream_field(field, getattr(original, field), classifier, ocr_text, "cs")
+            assert streamed == getattr(batch, field), f"{field} drift between stream and batch"
+
+    def test_submission_confirmation_blanks_fields(self):
+        classifier, ocr_text = self._submission_confirmation_inputs()
+        result = _apply_analysis_guardrails(self._result(), classifier, ocr_text, "cs")
+        assert result.documents_needed == []
+        assert result.penalty is None
+        assert result.deadlines == []
+        # Blocklisted "doložit" action dropped; benign one kept.
+        assert result.actions_required == ["Uschovat potvrzení"]
+
+    def test_noop_when_no_guardrail_applies(self):
+        classifier = ClassifierResult(category="ucty", doc_type="faktura", confidence=0.9)
+        result = _apply_analysis_guardrails(self._result(), classifier, "Faktura.", "cs")
+        assert result.penalty == "Hrozí vyhoštění."
+        assert result.documents_needed == ["Cestovní doklad"]
+
+    def test_registry_is_the_single_source(self):
+        # Both appliers iterate this one registry — guards against re-introducing
+        # a parallel hand-maintained branch.
+        assert {rail.name for rail in ANALYSIS_GUARDRAILS} == {
+            "card_pickup_unconfirmed_fee",
+            "submission_confirmation",
+        }
 
 
 class TestBuildSystemPrompt:
@@ -48,6 +114,20 @@ class TestBuildSystemPrompt:
         buffer += '"Pokuta nehrozí","where_to_go":'
         fields = _extract_completed_json_fields(buffer, emitted)
         assert fields == {"penalty": "Pokuta nehrozí"}
+
+    def test_deadlines_never_streamed_before_validation(self):
+        # Raw deadlines must not leak to the client as a field event — they go
+        # through filter_valid_deadlines first and are emitted only at the end.
+        buffer = (
+            '{"deadlines":[{"date":"2020-01-01","description":"hallucinated","type":"payment"}],'
+            '"summary":"Hotovo",'
+        )
+        fields = _extract_completed_json_fields(buffer, set(), fields=STREAM_INCREMENTAL_FIELDS)
+        assert "deadlines" not in fields
+        assert fields == {"summary": "Hotovo"}
+        # But the validated value is still delivered via the final field pass.
+        assert "deadlines" in STREAM_ANALYSIS_FIELDS
+        assert "deadlines" not in STREAM_INCREMENTAL_FIELDS
 
     def test_datova_schranka_yes(self):
         prompt = _build_system_prompt("ucty", "cs", True)
@@ -98,15 +178,19 @@ class TestAnalyzeDocument:
         )
 
         classifier = ClassifierResult(
-            ocr_text=f"Platební výměr se splatností {future.isoformat()}",
             category="danove",  # → escalation
             doc_type="platebni_vymer",
             sender="FÚ",
-            document_language="cs",
             confidence=0.9,
-            page_count=1,
         )
-        result, model = await analyze_document(classifier, [], "cs", False)
+        result, model = await analyze_document(
+            classifier,
+            f"Platební výměr se splatností {future.isoformat()}",
+            1,
+            [],
+            "cs",
+            False,
+        )
 
         assert result.document_type == "platebni_vymer"
         assert len(result.deadlines) == 1  # validator kept the future deadline
@@ -127,14 +211,11 @@ class TestAnalyzeDocument:
             }
         )
         classifier = ClassifierResult(
-            ocr_text="Faktura bez termínu splatnosti",
             category="ucty",  # → default model
             doc_type="faktura",
-            document_language="cs",
             confidence=0.8,
-            page_count=1,
         )
-        _, model = await analyze_document(classifier, [], "cs", False)
+        _, model = await analyze_document(classifier, "Faktura bez termínu splatnosti", 1, [], "cs", False)
         assert model == "gpt-4o-mini"
 
     @pytest.mark.asyncio
@@ -156,17 +237,45 @@ class TestAnalyzeDocument:
             }
         )
         classifier = ClassifierResult(
-            ocr_text=f"Faktura se splatností {future.isoformat()}",
             category="ucty",
             doc_type="faktura",
-            document_language="cs",
             confidence=0.9,
-            page_count=1,
         )
-        result, _ = await analyze_document(classifier, [], "cs", False)
+        result, _ = await analyze_document(
+            classifier, f"Faktura se splatností {future.isoformat()}", 1, [], "cs", False
+        )
         # Past deadline filtered out, future kept
         assert len(result.deadlines) == 1
         assert result.deadlines[0].description == "new"
+
+    @pytest.mark.asyncio
+    async def test_relative_deadline_surfaced_as_tip(self, openai_chat_mock):
+        # The model can't produce a valid absolute date for "do 15 dnů od
+        # doručení", so it's dropped — but we must not lose it silently.
+        openai_chat_mock(
+            {
+                "document_type": "rozhodnuti",
+                "document_type_cz": "Rozhodnutí",
+                "summary": "Rozhodnutí soudu.",
+                "deadlines": [],
+                "actions_required": [],
+                "documents_needed": [],
+                "tips": "Uschovejte dokument.",
+                "confidence": 0.9,
+            }
+        )
+        classifier = ClassifierResult(category="soudni", doc_type="rozhodnuti", confidence=0.9)
+        result, _ = await analyze_document(
+            classifier,
+            "Proti rozhodnutí lze podat odvolání do 15 dnů od doručení.",
+            1,
+            [],
+            "cs",
+            False,
+        )
+        assert result.deadlines == []
+        assert "15 dnů" in (result.tips or "")
+        assert "Uschovejte dokument." in (result.tips or "")
 
     @pytest.mark.asyncio
     async def test_submission_confirmation_drops_rag_hallucinated_requirements(self, openai_chat_mock):
@@ -195,19 +304,19 @@ class TestAnalyzeDocument:
             }
         )
         classifier = ClassifierResult(
-            ocr_text=(
-                "POTVRZENÍ O PODÁNÍ ŽÁDOSTI. Tímto potvrzujeme, že výše uvedený cizinec "
-                "dne 25.03.2026 podal žádost o prodloužení doby platnosti zaměstnanecké karty."
-            ),
             category="cizinecka",
             doc_type="potvrzeni_o_podani_zadosti",
             sender="Ministerstvo vnitra ČR",
-            document_language="cs",
             confidence=0.95,
-            page_count=1,
+        )
+        ocr_text = (
+            "POTVRZENÍ O PODÁNÍ ŽÁDOSTI. Tímto potvrzujeme, že výše uvedený cizinec "
+            "dne 25.03.2026 podal žádost o prodloužení doby platnosti zaměstnanecké karty."
         )
         result, _ = await analyze_document(
             classifier,
+            ocr_text,
+            1,
             ["Obecný RAG o přílohách k zaměstnanecké kartě."],
             "cs",
             False,
@@ -248,19 +357,17 @@ class TestAnalyzeDocument:
             }
         )
         classifier = ClassifierResult(
-            ocr_text=(
-                "Výzva k převzetí průkazu o povolení k dlouhodobému pobytu. "
-                "S sebou je třeba si přinést platný cestovní doklad a uhradit správní poplatek "
-                "VE FORMĚ KOLKU ve výši: [ ] bez poplatku (0 Kč) [ ] 2 500 Kč [ ] 300 Kč [ ] 1 000 Kč."
-            ),
             category="cizinecka",
             doc_type="vyzva_k_prevzeti_prukazu",
             sender="Ministerstvo vnitra ČR",
-            document_language="cs",
             confidence=0.95,
-            page_count=1,
         )
-        result, _ = await analyze_document(classifier, [], "cs", False)
+        ocr_text = (
+            "Výzva k převzetí průkazu o povolení k dlouhodobému pobytu. "
+            "S sebou je třeba si přinést platný cestovní doklad a uhradit správní poplatek "
+            "VE FORMĚ KOLKU ve výši: [ ] bez poplatku (0 Kč) [ ] 2 500 Kč [ ] 300 Kč [ ] 1 000 Kč."
+        )
+        result, _ = await analyze_document(classifier, ocr_text, 1, [], "cs", False)
 
         assert "poplatek" not in result.summary.lower()
         assert "kolk" not in result.summary.lower()
@@ -287,18 +394,16 @@ class TestAnalyzeDocument:
             }
         )
         classifier = ClassifierResult(
-            ocr_text=(
-                "Výzva k převzetí průkazu. Poplatek ve formě kolku ve výši: "
-                "[ ] bez poplatku (0 Kč) [ ] 2 500 Kč [x] 300 Kč [ ] 1 000 Kč."
-            ),
             category="cizinecka",
             doc_type="vyzva_k_prevzeti_prukazu",
             sender="Ministerstvo vnitra ČR",
-            document_language="cs",
             confidence=0.95,
-            page_count=1,
         )
-        result, _ = await analyze_document(classifier, [], "cs", False)
+        ocr_text = (
+            "Výzva k převzetí průkazu. Poplatek ve formě kolku ve výši: "
+            "[ ] bez poplatku (0 Kč) [ ] 2 500 Kč [x] 300 Kč [ ] 1 000 Kč."
+        )
+        result, _ = await analyze_document(classifier, ocr_text, 1, [], "cs", False)
 
         assert result.actions_required == ["Uhradit správní poplatek 300 Kč ve formě kolku."]
         assert "Kolek 300 Kč." in result.documents_needed
@@ -313,15 +418,12 @@ class TestAnalyzeDocument:
         monkeypatch.setattr("app.services.analyzer.get_openai_client", lambda: mock_client)
 
         classifier = ClassifierResult(
-            ocr_text="x",
             category="ucty",
             doc_type="faktura",
-            document_language="cs",
             confidence=0.8,
-            page_count=1,
         )
         with pytest.raises(ValueError, match="invalid JSON"):
-            await analyze_document(classifier, [], "cs", False)
+            await analyze_document(classifier, "x", 1, [], "cs", False)
 
     @pytest.mark.asyncio
     async def test_schema_violation_raises(self, openai_chat_mock):
@@ -334,12 +436,9 @@ class TestAnalyzeDocument:
             }
         )
         classifier = ClassifierResult(
-            ocr_text="x",
             category="ucty",
             doc_type="faktura",
-            document_language="cs",
             confidence=0.8,
-            page_count=1,
         )
         with pytest.raises(ValueError, match="schema"):
-            await analyze_document(classifier, [], "cs", False)
+            await analyze_document(classifier, "x", 1, [], "cs", False)

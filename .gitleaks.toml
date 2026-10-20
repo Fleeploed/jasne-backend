@@ -1,0 +1,16 @@
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Exact non-credential storage identifier and synthetic unit-test fixture"
+regexTarget = "secret"
+regexes = [
+  '''^jasne\.pinnedScans\.v1$''',
+  '''^test-jwt-secret-must-be-long-enough-for-hs256$''',
+]
+
+[[rules]]
+id = "revenuecat-client-key"
+description = "Keep RevenueCat public SDK keys in environment configuration"
+regex = '''\b(?:appl_|goog_|test_)[A-Za-z0-9]{20,}\b'''
+keywords = ["appl_", "goog_", "test_"]

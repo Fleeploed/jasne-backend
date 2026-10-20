@@ -1,0 +1,22 @@
+slug: extend-pobyt
+category: visa-pobyt
+language: uk
+published: true
+title: "Як продовжити pobyt"
+subtitle: "Подання заяви на продовження"
+short_summary: "Коли подавати заяву на продовження pobyt і які документи підготувати."
+keywords:
+  - pobyt
+  - продовження
+  - OAMP
+  - заява
+sections:
+  - type: text
+    title: "Коли подавати заяву"
+    body: "Заяву на продовження pobyt зазвичай подають не раніше ніж за 120 днів і не пізніше ніж за 14 днів до кінця чинного дозволу. Подати в останній момент можливо, але це ризиковано: якщо бракує додатку, може залишитися мало часу на виправлення."
+
+  - type: cta
+    title: "Що далі"
+    actions:
+      - scan_oamp_letter
+      - open_help_center

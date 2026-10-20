@@ -1,0 +1,22 @@
+slug: registration
+category: urad-prace
+language: en
+published: true
+title: "Registration at the Labour Office"
+subtitle: "How to become a job seeker"
+short_summary: "What to prepare for registration after losing a job or after a contract ends."
+keywords:
+  - labour office
+  - registration
+  - unemployment
+  - support
+sections:
+  - type: text
+    title: "When to register"
+    body: "If you want unemployment support and health insurance to continue without an unnecessary gap, handle registration as soon as possible after your job ends. In practice, people often mention a period of 3 working days from the end of employment."
+
+  - type: cta
+    title: "Next steps"
+    actions:
+      - add_deadline_manual
+      - open_help_center

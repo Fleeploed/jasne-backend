@@ -1,7 +1,7 @@
 # Help categories — ordered list. Position here = display order in mobile UI.
 # Each category needs at minimum a `cs` translation and `cs` fallback.
-# `ru` provided alongside since MVP launches in Russian-speaking community.
-# Other languages fall back to `cs`.
+# `ru`, `uk`, and `en` are provided alongside `cs` so the Help tab can stay
+# in the user's selected language.
 
 - slug: visa-pobyt
   icon: passport
@@ -10,17 +10,25 @@
     - extend-pobyt
   translations:
     cs:
-      title: "Vízum a pobyt"
-      subtitle: "OAMP, prodloužení, povolení"
-      badge: "Nejčastější"
+      title: "Víza a pobyt"
+      subtitle: "Ministerstvo vnitra, povolení, praktické tipy"
       hero_title: "Pobyt v Česku"
-      hero_text: "Praktické návody pro práci s OAMP — od kontroly stavu řízení po prodloužení povolení."
+      hero_text: "Praktické návody k pobytu v Česku: kontrola stavu řízení, prodloužení pobytu a další povolení."
     ru:
-      title: "Виза и pobyt"
-      subtitle: "OAMP, продление, разрешения"
-      badge: "Самое частое"
-      hero_title: "Жизнь в Чехии"
-      hero_text: "Гайды по работе с OAMP — от проверки статуса заявления до продления pobyt."
+      title: "Визы и проживание"
+      subtitle: "МВД Чехии, разрешения, практические советы"
+      hero_title: "Проживание в Чехии"
+      hero_text: "Практические гайды по проживанию в Чехии: проверка статуса заявления, продление разрешения и другие документы."
+    uk:
+      title: "Візи та проживання"
+      subtitle: "МВС Чехії, дозволи, практичні поради"
+      hero_title: "Проживання в Чехії"
+      hero_text: "Практичні інструкції щодо проживання в Чехії: перевірка статусу заяви, продовження дозволу та інші документи."
+    en:
+      title: "Visas & living"
+      subtitle: "Interior Ministry, permits, practical tips"
+      hero_title: "Staying in Czechia"
+      hero_text: "Practical guides for staying in Czechia: checking application status, extending residence permits, and handling related documents."
   fallback:
     cs:
       title: "Zatím prázdné"
@@ -28,6 +36,22 @@
     ru:
       title: "Раздел в работе"
       text: "Гайды по визе и pobyt мы добавим в ближайшее время."
+    uk:
+      title: "Розділ у роботі"
+      text: "Інструкції щодо візи та pobyt ми додамо найближчим часом."
+    en:
+      title: "Section in progress"
+      text: "Guides for visas and residence will be added soon."
+  useful_actions:
+    - key: scan_oamp_letter
+      action: scan_new
+      highlighted: true
+    - key: add_deadline_manual
+      action: deadline_new
+      highlighted: false
+    - key: open_deadlines
+      action: deadlines_tab
+      highlighted: false
 
 - slug: taxes
   icon: receipt
@@ -44,6 +68,16 @@
       subtitle: "Декларация, НДС, OSVČ"
       hero_title: "Налоговые обязательства"
       hero_text: "Что делать с письмами от налоговой — сроки, штрафы, действия."
+    uk:
+      title: "Податки"
+      subtitle: "Декларація, ПДВ, OSVČ"
+      hero_title: "Податкові обов'язки"
+      hero_text: "Що робити з листами від податкової — терміни, штрафи, дії."
+    en:
+      title: "Taxes"
+      subtitle: "Tax return, VAT, OSVČ"
+      hero_title: "Tax obligations"
+      hero_text: "What to do with letters from the tax office — deadlines, penalties, and next steps."
   fallback:
     cs:
       title: "Zatím prázdné"
@@ -51,6 +85,12 @@
     ru:
       title: "Раздел в работе"
       text: "Гайды по налогам мы добавим в ближайшее время."
+    uk:
+      title: "Розділ у роботі"
+      text: "Інструкції щодо податків ми додамо найближчим часом."
+    en:
+      title: "Section in progress"
+      text: "Tax guides will be added soon."
 
 - slug: bills
   icon: zap
@@ -65,6 +105,16 @@
       subtitle: "Электричество, газ, вода, интернет"
       hero_title: "Платежи за жильё"
       hero_text: "Как читать счета, разбираться с долгами и сравнивать тарифы."
+    uk:
+      title: "Рахунки та платежі"
+      subtitle: "Електрика, газ, вода, інтернет"
+      hero_title: "Платежі за житло"
+      hero_text: "Як читати рахунки, розбиратися з боргами та порівнювати тарифи."
+    en:
+      title: "Bills and payments"
+      subtitle: "Electricity, gas, water, internet"
+      hero_title: "Housing payments"
+      hero_text: "How to read bills, handle reminders, and compare tariffs."
   fallback:
     cs:
       title: "Zatím prázdné"
@@ -72,6 +122,12 @@
     ru:
       title: "Раздел в работе"
       text: "Гайды по счетам и тарифам мы добавим в ближайшее время."
+    uk:
+      title: "Розділ у роботі"
+      text: "Інструкції щодо рахунків і тарифів ми додамо найближчим часом."
+    en:
+      title: "Section in progress"
+      text: "Guides for bills and tariffs will be added soon."
 
 - slug: contracts
   icon: doc
@@ -86,6 +142,16 @@
       subtitle: "Аренда, работа, услуги"
       hero_title: "Договоры и соглашения"
       hero_text: "Ключевые пункты договоров — сроки, расторжение, обязательства."
+    uk:
+      title: "Договори"
+      subtitle: "Оренда, робота, послуги"
+      hero_title: "Договори та угоди"
+      hero_text: "Ключові пункти договорів — строки, розірвання, обов'язки."
+    en:
+      title: "Contracts"
+      subtitle: "Rent, work, services"
+      hero_title: "Contracts and agreements"
+      hero_text: "Key contract points — notice periods, termination, obligations, and risks."
   fallback:
     cs:
       title: "Zatím prázdné"
@@ -93,6 +159,12 @@
     ru:
       title: "Раздел в работе"
       text: "Гайды по договорам мы добавим в ближайшее время."
+    uk:
+      title: "Розділ у роботі"
+      text: "Інструкції щодо договорів ми додамо найближчим часом."
+    en:
+      title: "Section in progress"
+      text: "Contract guides will be added soon."
 
 - slug: urad-prace
   icon: briefcase
@@ -109,6 +181,16 @@
       subtitle: "Безработица, пособия, поддержка"
       hero_title: "Úřad práce ČR"
       hero_text: "Регистрация, пособия и обязанности соискателей."
+    uk:
+      title: "Бюро праці"
+      subtitle: "Безробіття, допомога, підтримка"
+      hero_title: "Úřad práce ČR"
+      hero_text: "Реєстрація, виплати та обов'язки шукачів роботи."
+    en:
+      title: "Labour Office"
+      subtitle: "Unemployment, benefits, support"
+      hero_title: "Úřad práce ČR"
+      hero_text: "Registration, benefits, and obligations for job seekers."
   fallback:
     cs:
       title: "Zatím prázdné"
@@ -116,6 +198,12 @@
     ru:
       title: "Раздел в работе"
       text: "Гайды по Úřad práce мы добавим в ближайшее время."
+    uk:
+      title: "Розділ у роботі"
+      text: "Інструкції щодо Úřad práce ми додамо найближчим часом."
+    en:
+      title: "Section in progress"
+      text: "Labour Office guides will be added soon."
 
 - slug: health-insurance
   icon: shield
@@ -130,6 +218,16 @@
       subtitle: "VZP, страховые, обязанности"
       hero_title: "Медстраховка в Чехии"
       hero_text: "Смена страховой, обязательные взносы, особенности для OSVČ и иностранцев."
+    uk:
+      title: "Медичне страхування"
+      subtitle: "VZP, страхові, обов'язки"
+      hero_title: "Медичне страхування в Чехії"
+      hero_text: "Зміна страхової, обов'язкові внески, особливості для OSVČ та іноземців."
+    en:
+      title: "Health insurance"
+      subtitle: "VZP, insurers, obligations"
+      hero_title: "Health insurance in Czechia"
+      hero_text: "Changing insurers, reporting changes, and obligations for OSVČ and foreigners."
   fallback:
     cs:
       title: "Zatím prázdné"
@@ -137,3 +235,9 @@
     ru:
       title: "Раздел в работе"
       text: "Гайды по медстраховке мы добавим в ближайшее время."
+    uk:
+      title: "Розділ у роботі"
+      text: "Інструкції щодо медичного страхування ми додамо найближчим часом."
+    en:
+      title: "Section in progress"
+      text: "Health insurance guides will be added soon."

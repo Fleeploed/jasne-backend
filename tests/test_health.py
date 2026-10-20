@@ -1,8 +1,17 @@
-"""Tests for /health (liveness) and /health/deep (readiness with dep checks)."""
+"""Tests for /health (liveness), /health/deep (readiness), and /version (rollout)."""
 
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+
+from app.config import get_settings
+
+
+@pytest.fixture(autouse=True)
+def _open_deep_health(monkeypatch):
+    """/health/deep requires X-Cron-Secret when configured; tests that don't
+    exercise the auth itself run with the secret unset (open in test env)."""
+    monkeypatch.setattr(get_settings(), "internal_cron_secret", None)
 
 
 class TestLivenessHealth:
@@ -32,7 +41,7 @@ class TestDeepHealth:
         assert r.status_code == 200
         body = r.json()
         assert body["status"] == "ok"
-        assert set(body["deps"].keys()) == {"supabase", "openai"}
+        assert set(body["deps"].keys()) == {"supabase", "openai", "azure_di"}
         for name, dep in body["deps"].items():
             assert dep["status"] == "ok", f"{name} should be ok"
             assert dep["latency_ms"] is not None
@@ -83,6 +92,14 @@ class TestDeepHealth:
         assert body["deps"]["supabase"]["status"] == "error"
         assert body["deps"]["openai"]["status"] == "error"
 
+    def test_requires_cron_secret_when_configured(self, client, monkeypatch):
+        monkeypatch.setattr(get_settings(), "internal_cron_secret", "expected-secret")
+
+        assert client.get("/health/deep").status_code == 403
+        assert client.get("/health/deep", headers={"X-Cron-Secret": "wrong"}).status_code == 403
+        r = client.get("/health/deep", headers={"X-Cron-Secret": "expected-secret"})
+        assert r.status_code == 200
+
     def test_error_messages_are_truncated(self, client, monkeypatch):
         """Avoid leaking long stack traces / credentials in the response body."""
         long_msg = "x" * 5000
@@ -127,3 +144,73 @@ class TestDeepHealth:
         result = await _check_supabase()
         assert result.status == "error"
         assert "timeout" in result.error.lower()
+
+
+class TestVersion:
+    """The /version endpoint is the rollout-verification hook for CI.
+
+    `railway up --detach` returns before the new container is live, so polling
+    /health alone can match the OLD container. CI polls /version until the SHA
+    flips to prove the new build is actually serving traffic.
+    """
+
+    def test_returns_200_with_sha_fields(self, client):
+        r = client.get("/version")
+        assert r.status_code == 200
+        body = r.json()
+        assert "git_sha" in body
+        assert "git_sha_short" in body
+        assert "environment" in body
+        assert "version" in body
+
+    def test_short_sha_is_seven_chars_when_known(self, client, monkeypatch):
+        from app.main import app
+
+        monkeypatch.setattr(app.state, "git_sha", "abcdef0123456789")
+        r = client.get("/version")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["git_sha"] == "abcdef0123456789"
+        assert body["git_sha_short"] == "abcdef0"
+
+    def test_unknown_sha_falls_through_to_unknown_short(self, client, monkeypatch):
+        from app.main import app
+
+        monkeypatch.setattr(app.state, "git_sha", "unknown")
+        r = client.get("/version")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["git_sha"] == "unknown"
+        assert body["git_sha_short"] == "unknown"
+
+    def test_load_git_sha_prefers_GIT_SHA(self, monkeypatch):
+        from app.main import _load_git_sha
+
+        monkeypatch.setenv("GIT_SHA", "deadbeefcafef00d")
+        monkeypatch.setenv("RENDER_GIT_COMMIT", "1111111111111111")
+        monkeypatch.setenv("RAILWAY_GIT_COMMIT_SHA", "0000000000000000")
+        assert _load_git_sha() == "deadbeefcafef00d"
+
+    def test_load_git_sha_falls_back_to_render_var(self, monkeypatch):
+        from app.main import _load_git_sha
+
+        monkeypatch.delenv("GIT_SHA", raising=False)
+        monkeypatch.setenv("RENDER_GIT_COMMIT", "1111111111111111")
+        monkeypatch.setenv("RAILWAY_GIT_COMMIT_SHA", "0000000000000000")
+        assert _load_git_sha() == "1111111111111111"
+
+    def test_load_git_sha_falls_back_to_railway_var(self, monkeypatch):
+        from app.main import _load_git_sha
+
+        monkeypatch.delenv("GIT_SHA", raising=False)
+        monkeypatch.delenv("RENDER_GIT_COMMIT", raising=False)
+        monkeypatch.setenv("RAILWAY_GIT_COMMIT_SHA", "0000000000000000")
+        assert _load_git_sha() == "0000000000000000"
+
+    def test_load_git_sha_defaults_to_unknown(self, monkeypatch):
+        from app.main import _load_git_sha
+
+        monkeypatch.delenv("GIT_SHA", raising=False)
+        monkeypatch.delenv("RENDER_GIT_COMMIT", raising=False)
+        monkeypatch.delenv("RAILWAY_GIT_COMMIT_SHA", raising=False)
+        assert _load_git_sha() == "unknown"

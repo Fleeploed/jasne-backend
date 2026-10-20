@@ -1,21 +1,28 @@
-"""GET /help/* — read-only content endpoints for the Help tab.
+"""GET /help/* — read endpoints for the Help tab.
 
-All four endpoints require auth (Supabase JWT). Help is signed-in only;
-guest mode uses the onboarding flow.
+As of migration 0011_help_admin, guides live in the `help_guides` table
+and are written through the standalone web admin (help-admin/index.html).
+Category UI metadata (hero block, fallback block, useful_actions override,
+guides_order) and the help_ui_strings.yaml lookup map are still loaded
+from help_content/*.yaml at startup — the admin doesn't edit those.
 
-Content comes from the in-memory `HelpContent` singleton populated by
-`load_help_content()` during app startup — no DB tables, no per-request
-filesystem reads.
+Per-request we fetch published guides from Postgres, then assemble a
+HelpContent-shaped snapshot so the existing response composer + search
+ranker keep working unchanged. The Supabase backend client uses the
+service key and bypasses RLS, so we filter status='published' explicitly.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import time
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from pydantic import ValidationError
 
-from app.middleware.auth import get_current_user_id
+from app.middleware.auth import get_active_user_id
 from app.models.help_schemas import (
     HelpCategoryHero,
     HelpCategoryResponse,
@@ -30,35 +37,122 @@ from app.models.help_schemas import (
     HelpQuickAction,
     HelpScanCta,
     HelpSearchResponse,
+    HelpSection,
+    HelpUiLocale,
     HelpUsefulAction,
+    HelpUsefulActionDef,
 )
+from app.routers.profile import _ensure_profile
 from app.services.help_loader import HelpContent, get_help_content
 from app.services.help_search import search as run_search
+from app.services.rag import get_supabase
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/help", tags=["help"])
 
-# Hardcoded ordering of UI sections. The labels for these keys live in
-# help_ui_strings.yaml. Adding a new key here also requires adding the
-# strings entry in every locale; the loader validates the cs entry.
-
 _QUICK_ACTION_ROUTES: dict[str, str] = {
     "check_status": "/help/guides/check-status",
-    "prepare_documents": "/help/categories/visa-pobyt",
     "understand_letter": "/scan/new",
 }
 
-# Default useful_actions when a category does not override.
 _DEFAULT_USEFUL_ACTIONS: list[dict[str, object]] = [
-    {"key": "scan_oamp_letter", "action": "scan_new", "highlighted": True},
     {"key": "add_deadline_manual", "action": "deadline_new", "highlighted": False},
     {"key": "open_deadlines", "action": "deadlines_tab", "highlighted": False},
 ]
 
-# Order in which categories appear in the Home screen "popular" carousel.
-# Falls back to file order if not listed here.
 _POPULAR_CATEGORY_ORDER: tuple[str, ...] = ("visa-pobyt", "taxes", "bills", "urad-prace")
-_GUIDE_FALLBACK_ORDER: tuple[HelpLanguage, ...] = ("cs", "ru", "en", "uk")
+
+
+# ---------------------------------------------------------------------------
+# DB → HelpGuide hydration
+# ---------------------------------------------------------------------------
+
+
+async def _load_published_guides() -> dict[str, dict[HelpLanguage, HelpGuide]]:
+    """Fetch all published guides from Postgres and return the same
+    guides_by_slug shape the YAML loader used to produce."""
+    supabase = await get_supabase()
+    res = await (
+        supabase.table("help_guides")
+        .select(
+            "slug, category_slug, language, status, title, subtitle, "
+            "short_summary, keywords, official_source_url, updated_at, sections"
+        )
+        .eq("status", "published")
+        .execute()
+    )
+    rows = res.data or []
+
+    out: dict[str, dict[HelpLanguage, HelpGuide]] = {}
+    for row in rows:
+        try:
+            guide = HelpGuide.model_validate(
+                {
+                    "slug": row["slug"],
+                    "category": row["category_slug"],
+                    "language": row["language"],
+                    "published": row["status"] == "published",
+                    "title": row["title"],
+                    "subtitle": row.get("subtitle"),
+                    "short_summary": row.get("short_summary"),
+                    "keywords": row.get("keywords") or [],
+                    "official_source_url": row.get("official_source_url"),
+                    "updated_at": row.get("updated_at"),
+                    "sections": row.get("sections") or [],
+                }
+            )
+        except ValidationError:
+            logger.exception(
+                "Skipping malformed help_guides row slug=%s lang=%s",
+                row.get("slug"),
+                row.get("language"),
+            )
+            continue
+        out.setdefault(guide.slug, {})[guide.language] = guide
+    return out
+
+
+# Snapshot TTL cache: guides change rarely (admin edits), but every Help-tab
+# request was fetching the whole help_guides table. 60s staleness is invisible
+# to users and removes the per-request full-table read.
+_SNAPSHOT_TTL_SECONDS = 60.0
+_snapshot_cache: tuple[float, HelpContent] | None = None
+_snapshot_lock = asyncio.Lock()
+
+
+async def _snapshot() -> HelpContent:
+    """HelpContent assembled from YAML (categories + ui_strings) + DB (guides).
+
+    Categories metadata still comes from YAML — the new help_categories
+    table only holds basics the admin edits, and the mobile response model
+    needs the rich fields. Cached for _SNAPSHOT_TTL_SECONDS.
+    """
+    global _snapshot_cache
+    now = time.monotonic()
+    if _snapshot_cache is not None and now - _snapshot_cache[0] < _SNAPSHOT_TTL_SECONDS:
+        return _snapshot_cache[1]
+
+    async with _snapshot_lock:
+        # Re-check under the lock — a concurrent request may have refreshed it.
+        now = time.monotonic()
+        if _snapshot_cache is not None and now - _snapshot_cache[0] < _SNAPSHOT_TTL_SECONDS:
+            return _snapshot_cache[1]
+
+        yaml_content = get_help_content()
+        guides_by_slug = await _load_published_guides()
+        content = HelpContent(
+            categories=yaml_content.categories,
+            guides_by_slug=guides_by_slug,
+            ui_strings=yaml_content.ui_strings,
+        )
+        _snapshot_cache = (time.monotonic(), content)
+        return content
+
+
+def invalidate_snapshot_cache() -> None:
+    """Drop the cached snapshot (admin writes + tests)."""
+    global _snapshot_cache
+    _snapshot_cache = None
 
 
 # ---------------------------------------------------------------------------
@@ -69,16 +163,15 @@ _GUIDE_FALLBACK_ORDER: tuple[HelpLanguage, ...] = ("cs", "ru", "en", "uk")
 @router.get("/home", response_model=HelpHomeResponse)
 async def help_home(
     language: HelpLanguage = Query("cs"),
-    _user_id: UUID = Depends(get_current_user_id),
+    _user_id: UUID = Depends(get_active_user_id),
 ) -> HelpHomeResponse:
-    content = get_help_content()
+    content = await _snapshot()
     ui = _resolve_ui(content, language)
 
     quick_actions: list[HelpQuickAction] = []
     for key, route in _QUICK_ACTION_ROUTES.items():
         strings = ui.quick_actions.get(key)
         if strings is None:
-            # Missing translation for this key — skip, do not crash.
             logger.warning("Quick action '%s' has no string for language=%s", key, language)
             continue
         quick_actions.append(
@@ -110,9 +203,9 @@ async def help_home(
 async def help_category(
     slug: str,
     language: HelpLanguage = Query("cs"),
-    _user_id: UUID = Depends(get_current_user_id),
+    _user_id: UUID = Depends(get_active_user_id),
 ) -> HelpCategoryResponse:
-    content = get_help_content()
+    content = await _snapshot()
     category = content.find_category(slug)
     if category is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Category not found")
@@ -120,9 +213,8 @@ async def help_category(
     translation = category.translations.get(language) or category.translations["cs"]
     fallback_translation = category.fallback.get(language) or category.fallback["cs"]
 
-    guides_in_language = _published_guides_with_fallback(content, slug, language)
-    has_any_published = bool(guides_in_language)
-    is_completely_empty = not has_any_published
+    guides_in_language = _published_guides_for_language(content, slug, language)
+    is_completely_empty = not guides_in_language
 
     ordered_cards = _ordered_guide_cards(category.guides_order, guides_in_language)
 
@@ -154,27 +246,34 @@ async def help_category(
 async def help_guide(
     slug: str,
     language: HelpLanguage = Query("cs"),
-    _user_id: UUID = Depends(get_current_user_id),
+    user_id: UUID = Depends(get_active_user_id),
 ) -> HelpGuideResponse:
-    content = get_help_content()
+    content = await _snapshot()
     langs = content.guides_by_slug.get(slug)
     if not langs:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Guide not found")
 
-    guide = _published_guide_with_fallback(langs, language)
+    guide = _published_guide_for_language(langs, language)
     if guide is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Guide not available")
-    fallback_language: HelpLanguage | None = guide.language if guide.language != language else None
 
     category = content.find_category(guide.category)
     if category is None:
-        # Should never happen — loader validates this. Defensive 500.
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Guide references unknown category",
         )
 
     cat_translation = category.translations.get(language) or category.translations["cs"]
+
+    # Pro gating is applied here: a free user's pro_only sections are flagged
+    # locked=True (full content retained) and the client renders them blurred
+    # behind the upgrade gate. The blur is cosmetic, not a security boundary —
+    # see _gate_sections_for_plan for the accepted product tradeoff. plan is
+    # updated solely through the RevenueCat webhook.
+    profile = await _ensure_profile(user_id)
+    plan = profile.get("plan", "free")
+    sections = _gate_sections_for_plan(guide.sections, plan)
 
     return HelpGuideResponse(
         slug=guide.slug,
@@ -183,10 +282,42 @@ async def help_guide(
         subtitle=guide.subtitle,
         short_summary=guide.short_summary,
         language=guide.language,
-        fallback_language=fallback_language,
-        sections=guide.sections,
+        fallback_language=None,
+        sections=sections,
         official_source_url=guide.official_source_url,
+        updated_at=guide.updated_at,
     )
+
+
+# Section types whose pro_only content is gated. warning/cta are always shown
+# in full — they carry disclaimers and navigation, not the Pro payload. This
+# mirrors the client's gating condition in features/help/components.tsx.
+_GATED_SECTION_TYPES = ("text", "steps", "checklist")
+
+
+def _gate_sections_for_plan(sections: list[HelpSection], plan: str) -> list[HelpSection]:
+    """Return sections with pro_only text/steps/checklist flagged locked for free users.
+
+    Pro users get the untouched list. For free users, every pro_only
+    text/steps/checklist section keeps its full content but is flagged
+    `locked=True`, so the client renders it blurred behind the upgrade gate.
+
+    PRODUCT TRADEOFF: the full Pro content crosses the API boundary for free
+    users — the blur is a cosmetic shell, not a security boundary, so the text
+    is technically readable (e.g. via a network inspector). This is an accepted
+    decision to show real content under the blur. The cached snapshot's section
+    objects are never mutated — locking builds fresh instances.
+    """
+    if plan == "pro":
+        return sections
+
+    gated: list[HelpSection] = []
+    for section in sections:
+        if section.pro_only and section.type in _GATED_SECTION_TYPES:
+            gated.append(section.model_copy(update={"locked": True}))
+        else:
+            gated.append(section)
+    return gated
 
 
 # ---------------------------------------------------------------------------
@@ -198,9 +329,9 @@ async def help_guide(
 async def help_search(
     q: str = Query("", min_length=0, max_length=200),
     language: HelpLanguage = Query("cs"),
-    _user_id: UUID = Depends(get_current_user_id),
+    _user_id: UUID = Depends(get_active_user_id),
 ) -> HelpSearchResponse:
-    content = get_help_content()
+    content = await _snapshot()
     results = run_search(content, q, language)
     return HelpSearchResponse(query=q, results_count=len(results), results=results)
 
@@ -210,14 +341,12 @@ async def help_search(
 # ---------------------------------------------------------------------------
 
 
-def _resolve_ui(content: HelpContent, language: HelpLanguage):
-    """Fetch UI strings for the requested language, falling back to cs."""
+def _resolve_ui(content: HelpContent, language: HelpLanguage) -> HelpUiLocale:
     locales = content.ui_strings.translations
     return locales.get(language) or locales["cs"]
 
 
 def _popular_categories(content: HelpContent, language: HelpLanguage) -> list[HelpPopularCategory]:
-    """Order = explicit popular order, then file order for any extras."""
     ordered_slugs = list(_POPULAR_CATEGORY_ORDER)
     seen = set(ordered_slugs)
     for category in content.categories:
@@ -243,37 +372,27 @@ def _popular_categories(content: HelpContent, language: HelpLanguage) -> list[He
     return out
 
 
-def _language_fallback_order(language: HelpLanguage) -> tuple[HelpLanguage, ...]:
-    ordered: list[HelpLanguage] = [language]
-    for fallback in _GUIDE_FALLBACK_ORDER:
-        if fallback not in ordered:
-            ordered.append(fallback)
-    return tuple(ordered)
-
-
-def _published_guide_with_fallback(
+def _published_guide_for_language(
     langs: dict[HelpLanguage, HelpGuide], language: HelpLanguage
 ) -> HelpGuide | None:
-    for candidate in _language_fallback_order(language):
-        guide = langs.get(candidate)
-        if guide and guide.published:
-            return guide
+    guide = langs.get(language)
+    if guide and guide.published:
+        return guide
     return None
 
 
-def _published_guides_with_fallback(
+def _published_guides_for_language(
     content: HelpContent, category_slug: str, language: HelpLanguage
 ) -> list[HelpGuide]:
     out: list[HelpGuide] = []
     for langs in content.guides_by_slug.values():
-        guide = _published_guide_with_fallback(langs, language)
+        guide = _published_guide_for_language(langs, language)
         if guide and guide.category == category_slug:
             out.append(guide)
     return out
 
 
-def _ordered_guide_cards(order: list[str], guides) -> list[HelpGuideCard]:
-    """Apply category.guides_order, then append any not listed in author order."""
+def _ordered_guide_cards(order: list[str], guides: list[HelpGuide]) -> list[HelpGuideCard]:
     by_slug = {guide.slug: guide for guide in guides}
     out: list[HelpGuideCard] = []
     seen: set[str] = set()
@@ -288,8 +407,11 @@ def _ordered_guide_cards(order: list[str], guides) -> list[HelpGuideCard]:
     return out
 
 
-def _resolve_useful_actions(content: HelpContent, override, language: HelpLanguage) -> list[HelpUsefulAction]:
-    """Per-category override wins; otherwise the default block in code."""
+def _resolve_useful_actions(
+    content: HelpContent,
+    override: list[HelpUsefulActionDef] | None,
+    language: HelpLanguage,
+) -> list[HelpUsefulAction]:
     ui = _resolve_ui(content, language)
     raw_actions: list[dict[str, object]] = (
         [{"key": a.key, "action": a.action, "highlighted": a.highlighted} for a in override]

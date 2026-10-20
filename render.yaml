@@ -1,0 +1,80 @@
+services:
+  - type: web
+    name: jasne-backend
+    runtime: docker
+    plan: free
+    region: frankfurt
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /health
+    envVars:
+      - key: PORT
+        value: "10000"
+      - key: WEB_CONCURRENCY
+        value: "1"
+      - key: ENVIRONMENT
+        value: staging
+      - key: ALLOWED_ORIGINS
+        value: "*"
+      - key: LOG_LEVEL
+        value: INFO
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: OPENAI_CLASSIFIER_MODEL
+        value: gpt-4o
+      - key: OPENAI_DEFAULT_ANALYZER_MODEL
+        value: gpt-4o-mini
+      - key: OPENAI_ESCALATION_ANALYZER_MODEL
+        value: gpt-4o
+      - key: OPENAI_CHAT_MODEL
+        value: gpt-4o-mini
+      - key: OPENAI_EMBEDDING_MODEL
+        value: text-embedding-3-small
+      - key: OPENAI_EMBEDDING_DIMS
+        value: "1536"
+      - key: OPENAI_TIMEOUT_SECONDS
+        value: "60"
+      - key: OPENAI_MAX_RETRIES
+        value: "3"
+      - key: OPENAI_MAX_OUTPUT_TOKENS
+        value: "2000"
+      - key: OPENAI_CLASSIFIER_MAX_OUTPUT_TOKENS
+        value: "8000"
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_KEY
+        sync: false
+      - key: SUPABASE_JWT_SECRET
+        sync: false
+      - key: SUPABASE_STORAGE_BUCKET
+        value: documents
+      - key: SUPABASE_SIGNED_URL_TTL
+        value: "300"
+      - key: REVENUECAT_WEBHOOK_AUTH
+        sync: false
+      - key: REVENUECAT_API_KEY
+        sync: false
+      - key: REVENUECAT_ENTITLEMENT_ID
+        value: pro
+      - key: REVENUECAT_API_BASE_URL
+        value: https://api.revenuecat.com/v1
+      - key: INTERNAL_CRON_SECRET
+        sync: false
+      - key: EXPO_PUSH_API_URL
+        value: https://exp.host/--/api/v2/push/send
+      - key: OAMP_BASE_URL
+        value: https://ipc.gov.cz
+      - key: OAMP_STATUS_PATH
+        value: /informace-o-stavu-rizeni/
+      - key: OAMP_STATUS_PATH_EN
+        value: /en/status-of-your-application/
+      - key: OAMP_TIMEOUT_SECONDS
+        value: "60"
+      - key: OAMP_USER_AGENTS
+        value: Mozilla/5.0 (Macintosh; Intel Mac OS X 14_6) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36,Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/125.0.0.0 Safari/537.36
+      - key: RAG_TOP_K
+        value: "5"
+      - key: RAG_SIMILARITY_THRESHOLD
+        value: "0.50"
+      - key: EMBEDDING_MAX_CHARS
+        value: "20000"

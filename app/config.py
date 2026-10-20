@@ -19,10 +19,10 @@ class Settings(BaseSettings):
     # =====================================================================
     openai_api_key: str
 
-    # Vision/classifier (call 1): MUST be full GPT-4o, never mini.
-    # GPT-4o mini tokenizes images at ~2833 tokens/tile vs 85 for gpt-4o,
-    # which makes it ~33× more expensive per image and worse on Czech
-    # diacritics. Skill explicitly forbids mini for vision.
+    # Classifier (call 1): text-only GPT-4o, never mini. Mini is markedly
+    # weaker at the Czech-bureaucracy category signals, and full 4o at temp 0
+    # is cheap on the short classifier prompt. (Historically this also had to
+    # be 4o because call 1 did Vision OCR; OCR now runs on Azure DI.)
     openai_classifier_model: str = "gpt-4o"
 
     # Default analyzer (call 2) for routine categories
@@ -42,15 +42,35 @@ class Settings(BaseSettings):
     openai_embedding_model: str = "text-embedding-3-small"
     openai_embedding_dims: int = 1536
 
-    # Classifier must return full OCR text for every page. The shared 2k
-    # output cap is too small for normal 3+ page documents and can truncate
-    # JSON, which then looks like a false "unreadable photo" error.
-    openai_classifier_max_output_tokens: int = 8000
+    # Call 1 is text-only classification: it returns a tiny JSON object
+    # ({category, doc_type, sender, confidence, error}), NOT the OCR text
+    # (that comes from Azure DI now). A few hundred tokens is plenty; the old
+    # 8000 cap was a leftover from the GPT-4o-Vision era when call 1 re-emitted
+    # the whole document.
+    openai_classifier_max_output_tokens: int = 500
 
     # Shared OpenAI client tuning.
     openai_timeout_seconds: float = 60.0
     openai_max_retries: int = 3
     openai_max_output_tokens: int = 2000
+
+    # The analyzer emits a JSON object with ~10 fields plus several arrays
+    # (deadlines, actions_required, documents_needed). A dense 10-page document
+    # can blow past the shared 2k cap mid-object, which truncates the JSON and
+    # surfaces as a bogus "LLM returned invalid JSON" 500. Give it more room.
+    openai_analyzer_max_output_tokens: int = 4000
+
+    # =====================================================================
+    # Azure Document Intelligence — OCR (prebuilt-read)
+    # =====================================================================
+    # Replaces GPT-4o Vision for OCR. Both endpoint and key are required;
+    # app fails to start if missing. Endpoint format:
+    # https://<resource>.cognitiveservices.azure.com/
+    azure_document_intelligence_endpoint: str
+    azure_document_intelligence_key: str
+    # Azure DI per-call timeout. Multi-page docs can take a while; the
+    # prebuilt-read poller normally returns within ~10s but we leave room.
+    azure_document_intelligence_timeout_seconds: float = 60.0
 
     # =====================================================================
     # Supabase
@@ -59,7 +79,7 @@ class Settings(BaseSettings):
     supabase_service_key: str
     supabase_jwt_secret: str
     supabase_storage_bucket: str = "documents"
-    supabase_signed_url_ttl: int = 300  # seconds — Vision must fetch within this
+    supabase_signed_url_ttl: int = 300  # seconds — Azure DI must fetch the signed URL within this
 
     # =====================================================================
     # RevenueCat
@@ -73,18 +93,50 @@ class Settings(BaseSettings):
     revenuecat_api_base_url: str = "https://api.revenuecat.com/v1"
 
     # =====================================================================
+    # Push notifications
+    # =====================================================================
+    # Shared secret required by Railway/GitHub cron when calling internal
+    # notification jobs. In local/test environments an unset value allows
+    # manual calls; production must configure it.
+    internal_cron_secret: str | None = None
+    expo_push_api_url: str = "https://exp.host/--/api/v2/push/send"
+    expo_push_receipts_url: str = "https://exp.host/--/api/v2/push/getReceipts"
+
+    # =====================================================================
+    # Abuse protection
+    # =====================================================================
+    # Per-user cap on scan *attempts* (successful or not) per hour. Quota only
+    # charges successful scans, so without this a user spamming garbage PDFs
+    # generates unlimited paid Azure OCR calls. Pro's 100 scans/month is ~3/day,
+    # so 20/hour is generous for honest burst usage.
+    scan_attempts_per_hour: int = 20
+
+    # =====================================================================
+    # OAMP status tracking
+    # =====================================================================
+    oamp_base_url: str = "https://ipc.gov.cz"
+    oamp_status_path: str = "/informace-o-stavu-rizeni/"
+    oamp_status_path_en: str = "/en/status-of-your-application/"
+    oamp_timeout_seconds: float = 60.0
+    oamp_user_agents: Annotated[list[str], NoDecode] = Field(
+        default_factory=lambda: [
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_6) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/125.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36",
+        ]
+    )
+
+    # =====================================================================
     # RAG
     # =====================================================================
     rag_top_k: int = 5
+    # Deliberately 0.50, not the 0.65 the original skill spec suggested:
+    # migration 0004 loosened it because cosine similarity on the cs/en/ru/uk
+    # OAMP corpus rarely clears 0.65 even for clearly relevant chunks. The
+    # skill/project doc still says 0.65 and is stale — code is the source of
+    # truth here.
     rag_similarity_threshold: float = 0.50
     embedding_max_chars: int = 20000  # text-embedding-3 accepts ~8k tokens (~32k chars)
-
-    # =====================================================================
-    # Quality gates
-    # =====================================================================
-    # Below this OCR confidence we skip call 2 entirely and return early
-    # — the photo is unreadable, no point burning the analyzer call.
-    min_ocr_confidence: float = 0.3
 
     # =====================================================================
     # App
@@ -92,6 +144,10 @@ class Settings(BaseSettings):
     environment: str = "development"
     allowed_origins: Annotated[list[str], NoDecode] = Field(default_factory=lambda: ["*"])
     log_level: str = "INFO"
+
+    # Error tracking. When unset, Sentry is disabled (no-op). Crash/error
+    # reporting only — no performance tracing, no PII.
+    sentry_dsn: str | None = None
 
     @field_validator("allowed_origins", mode="before")
     @classmethod
@@ -109,6 +165,24 @@ class Settings(BaseSettings):
                 except (json.JSONDecodeError, ValueError):
                     pass
             return [origin.strip() for origin in v.split(",") if origin.strip()]
+        return v  # type: ignore[return-value]
+
+    @field_validator("oamp_user_agents", mode="before")
+    @classmethod
+    def parse_oamp_user_agents(cls, v: object) -> list[str]:
+        if v is None:
+            return []
+        if isinstance(v, str):
+            if not v.strip():
+                return []
+            if v.strip().startswith("["):
+                try:
+                    parsed = json.loads(v)
+                    if isinstance(parsed, list):
+                        return [str(x).strip() for x in parsed if str(x).strip()]
+                except (json.JSONDecodeError, ValueError):
+                    pass
+            return [item.strip() for item in v.split(",") if item.strip()]
         return v  # type: ignore[return-value]
 
     @field_validator("allowed_origins")

@@ -66,6 +66,58 @@ def _parse_sse(text: str) -> list[tuple[str, dict]]:
 
 
 class TestCreateScan:
+    def test_internal_value_error_not_leaked_to_client(
+        self, client, fake_supabase, auth_headers, test_user_id, monkeypatch
+    ):
+        _seed_profile(fake_supabase, str(test_user_id))
+
+        async def leaky_prepare(*args, **kwargs):
+            raise ValueError("postgres://user:pass@db.internal/secret_table")
+
+        monkeypatch.setattr("app.routers.scan._prepare_ocr_inputs", leaky_prepare)
+
+        r = client.post(
+            "/scans",
+            headers=auth_headers,
+            json={"image_paths": [f"{test_user_id}/test.jpg"]},
+        )
+        assert r.status_code == 422
+        body = r.json()
+        assert "secret_table" not in str(body)
+        assert body["detail"] == "Request could not be processed."
+        assert "request_id" in body
+
+    def test_idempotency_key_returns_same_scan_without_redoing_work(
+        self,
+        client,
+        fake_supabase,
+        auth_headers,
+        test_user_id,
+        mock_openai_classify,
+        mock_openai_analyze,
+        mock_rag_empty,
+        monkeypatch,
+    ):
+        _seed_profile(fake_supabase, str(test_user_id))
+        headers = {**auth_headers, "Idempotency-Key": "retry-123"}
+        body = {"image_paths": [f"{test_user_id}/test.jpg"]}
+
+        r1 = client.post("/scans", headers=headers, json=body)
+        assert r1.status_code == 201, r1.json()
+        scan_id = r1.json()["id"]
+
+        # A retry with the same key must NOT run the pipeline again.
+        async def fail_extract(*args, **kwargs):
+            raise AssertionError("OCR must not run on an idempotent replay")
+
+        monkeypatch.setattr("app.routers.scan.extract_text", fail_extract)
+
+        r2 = client.post("/scans", headers=headers, json=body)
+        assert r2.status_code == 201
+        assert r2.json()["id"] == scan_id
+        # Only one scan row was created.
+        assert len([s for s in fake_supabase.table("scans").rows]) == 1
+
     def test_happy_path_single_page(
         self,
         client,
@@ -116,7 +168,7 @@ class TestCreateScan:
         assert body["page_count"] == 3
         assert body["image_paths"] == paths
 
-    def test_pdf_scan_is_rendered_before_classifier(
+    def test_pdf_scan_goes_to_azure_as_one_document(
         self,
         client,
         fake_supabase,
@@ -128,7 +180,9 @@ class TestCreateScan:
     ):
         _seed_profile(fake_supabase, str(test_user_id))
 
-        from app.models.schemas import ClassifierResult
+        import base64 as b64
+
+        from app.models.schemas import ClassifierResult, OcrResult
 
         seen = {}
 
@@ -137,26 +191,28 @@ class TestCreateScan:
             seen["download_path"] = path
             return b"%PDF-1.6"
 
-        def fake_render(pdf_bytes: bytes, path: str) -> list[str]:
+        def fake_page_count(pdf_bytes: bytes, path: str) -> int:
             seen["pdf_bytes"] = pdf_bytes
-            seen["render_path"] = path
-            return ["data:image/png;base64,page1", "data:image/png;base64,page2"]
+            seen["count_path"] = path
+            return 2
 
-        async def fake_classify(image_urls: list[str]) -> ClassifierResult:
-            seen["classifier_urls"] = image_urls
+        async def fake_extract(image_urls: list[str]) -> OcrResult:
+            seen["ocr_urls"] = image_urls
+            return OcrResult(ocr_text="PDF text", page_count=2, document_language="cs")
+
+        async def fake_classify(ocr_text: str, page_count: int, document_language: str) -> ClassifierResult:
+            seen["classifier_ocr"] = ocr_text
             return ClassifierResult(
-                ocr_text="PDF text",
                 category="ostatni",
                 doc_type="pdf_document",
                 sender=None,
-                document_language="cs",
                 confidence=0.95,
-                page_count=1,
             )
 
         monkeypatch.setattr("app.routers.scan._download_signed_object", fake_download)
-        monkeypatch.setattr("app.routers.scan._render_pdf_to_png_data_urls", fake_render)
-        monkeypatch.setattr("app.routers.scan.classify_document", fake_classify)
+        monkeypatch.setattr("app.routers.scan._pdf_page_count", fake_page_count)
+        monkeypatch.setattr("app.routers.scan.extract_text", fake_extract)
+        monkeypatch.setattr("app.routers.scan.classify_text", fake_classify)
 
         path = f"{test_user_id}/document.pdf"
         r = client.post(
@@ -169,8 +225,11 @@ class TestCreateScan:
         assert seen["download_url"].startswith(f"https://fake-storage/{path}")
         assert seen["download_path"] == path
         assert seen["pdf_bytes"] == b"%PDF-1.6"
-        assert seen["render_path"] == path
-        assert seen["classifier_urls"] == ["data:image/png;base64,page1", "data:image/png;base64,page2"]
+        assert seen["count_path"] == path
+        # The WHOLE pdf goes to Azure DI as ONE data URL — no per-page rendering.
+        expected_payload = b64.b64encode(b"%PDF-1.6").decode("ascii")
+        assert seen["ocr_urls"] == [f"data:application/pdf;base64,{expected_payload}"]
+        assert seen["classifier_ocr"] == "PDF text"
         assert r.json()["page_count"] == 2
 
     def test_multi_page_pdf_counts_pages_for_quota(
@@ -188,15 +247,19 @@ class TestCreateScan:
         async def fake_download(url: str, path: str) -> bytes:
             return b"%PDF-1.6"
 
-        def fake_render(pdf_bytes: bytes, path: str) -> list[str]:
-            return [f"data:image/png;base64,page{i}" for i in range(4)]
+        def fake_page_count(pdf_bytes: bytes, path: str) -> int:
+            return 4
 
-        async def fake_classify(image_urls: list[str]):
+        async def fake_extract(image_urls: list[str]):
+            raise AssertionError("quota should block before OCR")
+
+        async def fake_classify(ocr_text: str, page_count: int, document_language: str):
             raise AssertionError("quota should block before classifier")
 
         monkeypatch.setattr("app.routers.scan._download_signed_object", fake_download)
-        monkeypatch.setattr("app.routers.scan._render_pdf_to_png_data_urls", fake_render)
-        monkeypatch.setattr("app.routers.scan.classify_document", fake_classify)
+        monkeypatch.setattr("app.routers.scan._pdf_page_count", fake_page_count)
+        monkeypatch.setattr("app.routers.scan.extract_text", fake_extract)
+        monkeypatch.setattr("app.routers.scan.classify_text", fake_classify)
 
         r = client.post(
             "/scans",
@@ -339,29 +402,27 @@ class TestCreateScan:
         monkeypatch,
         mock_rag_empty,
     ):
-        """If OCR confidence is below gate, don't call analyze — return 422."""
+        """If OCR returns empty text, don't call classify/analyze — return 422."""
         _seed_profile(fake_supabase, str(test_user_id))
 
-        from app.models.schemas import ClassifierResult
+        from app.models.schemas import OcrResult
 
-        async def fake_classify(urls):
-            return ClassifierResult(
-                ocr_text="",
-                category="ostatni",
-                doc_type="unknown",
-                document_language="cs",
-                confidence=0.0,
-                page_count=1,
-                error="Photo too blurry",
-            )
+        async def fake_extract(urls):
+            return OcrResult(ocr_text="", page_count=1, document_language="cs")
 
+        classify_called = {"count": 0}
         analyze_called = {"count": 0}
+
+        async def fake_classify(*a, **kw):
+            classify_called["count"] += 1
+            raise AssertionError("should not reach classifier")
 
         async def fake_analyze(*a, **kw):
             analyze_called["count"] += 1
             raise AssertionError("should not reach analyze")
 
-        monkeypatch.setattr("app.routers.scan.classify_document", fake_classify)
+        monkeypatch.setattr("app.routers.scan.extract_text", fake_extract)
+        monkeypatch.setattr("app.routers.scan.classify_text", fake_classify)
         monkeypatch.setattr("app.routers.scan.analyze_document", fake_analyze)
 
         r = client.post(
@@ -370,7 +431,8 @@ class TestCreateScan:
             json={"image_paths": [f"{test_user_id}/x.jpg"]},
         )
         assert r.status_code == 422
-        assert "blurry" in r.json()["detail"].lower() or "document" in r.json()["detail"].lower()
+        assert "document" in r.json()["detail"].lower()
+        assert classify_called["count"] == 0
         assert analyze_called["count"] == 0
 
     def test_empty_image_paths_rejected(self, client, auth_headers):
@@ -454,24 +516,87 @@ class TestListScans:
     def test_empty(self, client, auth_headers):
         r = client.get("/scans", headers=auth_headers)
         assert r.status_code == 200
-        assert r.json() == []
+        body = r.json()
+        assert body["scans"] == []
+        assert body["hidden_count"] == 0
+        assert body["archive_limit"] == 5  # default profile is free
 
     def test_returns_own_scans(self, client, fake_supabase, auth_headers, test_user_id):
         _seed_scan(fake_supabase, str(test_user_id))
         _seed_scan(fake_supabase, str(test_user_id))
         r = client.get("/scans", headers=auth_headers)
-        assert len(r.json()) == 2
-        assert r.json()[0]["confidence"] == 0.85
+        body = r.json()
+        assert len(body["scans"]) == 2
+        assert body["scans"][0]["confidence"] == 0.85
+        assert body["hidden_count"] == 0
 
     def test_isolates_users(self, client, fake_supabase, auth_headers, test_user_id):
         _seed_scan(fake_supabase, str(test_user_id))
         _seed_scan(fake_supabase, "99999999-9999-9999-9999-999999999999")
         r = client.get("/scans", headers=auth_headers)
-        assert len(r.json()) == 1
+        assert len(r.json()["scans"]) == 1
 
     def test_limit_clamped(self, client, auth_headers):
         r = client.get("/scans?limit=500", headers=auth_headers)
         assert r.status_code == 200
+
+    def test_free_archive_caps_at_five_with_hidden_count(
+        self, client, fake_supabase, auth_headers, test_user_id
+    ):
+        _seed_profile(fake_supabase, str(test_user_id), plan="free")
+        for _ in range(8):
+            _seed_scan(fake_supabase, str(test_user_id))
+
+        r = client.get("/scans?limit=50", headers=auth_headers)
+        body = r.json()
+        assert len(body["scans"]) == 5  # only the most recent 5 are visible
+        assert body["archive_limit"] == 5
+        assert body["hidden_count"] == 3
+        assert body["plan"] == "free"
+
+    def test_free_archive_offset_past_cap_returns_empty_but_keeps_hidden_count(
+        self, client, fake_supabase, auth_headers, test_user_id
+    ):
+        _seed_profile(fake_supabase, str(test_user_id), plan="free")
+        for _ in range(8):
+            _seed_scan(fake_supabase, str(test_user_id))
+
+        r = client.get("/scans?offset=5&limit=50", headers=auth_headers)
+        body = r.json()
+        assert body["scans"] == []
+        assert body["hidden_count"] == 3
+
+    def test_pro_archive_unlimited(self, client, fake_supabase, auth_headers, test_user_id):
+        _seed_profile(fake_supabase, str(test_user_id), plan="pro")
+        for _ in range(8):
+            _seed_scan(fake_supabase, str(test_user_id))
+
+        r = client.get("/scans?limit=50", headers=auth_headers)
+        body = r.json()
+        assert len(body["scans"]) == 8
+        assert body["archive_limit"] is None
+        assert body["hidden_count"] == 0
+
+
+class TestScanCounts:
+    def test_empty(self, client, auth_headers):
+        r = client.get("/scans/counts", headers=auth_headers)
+        assert r.status_code == 200
+        assert r.json() == {"total": 0, "by_category": {}}
+
+    def test_aggregates_by_category(self, client, fake_supabase, auth_headers, test_user_id):
+        _seed_scan(fake_supabase, str(test_user_id), category="ucty")
+        _seed_scan(fake_supabase, str(test_user_id), category="ucty")
+        _seed_scan(fake_supabase, str(test_user_id), category="danove")
+        # Another user's scan must not leak into the counts.
+        _seed_scan(fake_supabase, "99999999-9999-9999-9999-999999999999", category="ucty")
+
+        r = client.get("/scans/counts", headers=auth_headers)
+
+        assert r.status_code == 200
+        body = r.json()
+        assert body["total"] == 3
+        assert body["by_category"] == {"ucty": 2, "danove": 1}
 
 
 class TestGetScan:
@@ -564,6 +689,298 @@ class TestDeleteScan:
         assert r.status_code == 204
         r2 = client.get(f"/scans/{row['id']}", headers=auth_headers)
         assert r2.status_code == 404
+
+    def test_delete_cascades_messages_and_deadlines(self, client, fake_supabase, auth_headers, test_user_id):
+        row = _seed_scan(fake_supabase, str(test_user_id))
+        scan_id = row["id"]
+        other = _seed_scan(fake_supabase, str(test_user_id))
+        fake_supabase.table("scan_messages").rows.extend(
+            [
+                {
+                    "id": str(uuid4()),
+                    "scan_id": scan_id,
+                    "user_id": str(test_user_id),
+                    "role": "user",
+                    "content": "x",
+                    "message_type": "text",
+                    "created_at": datetime.now(UTC).isoformat(),
+                },
+                {
+                    "id": str(uuid4()),
+                    "scan_id": other["id"],
+                    "user_id": str(test_user_id),
+                    "role": "user",
+                    "content": "y",
+                    "message_type": "text",
+                    "created_at": datetime.now(UTC).isoformat(),
+                },
+            ]
+        )
+        fake_supabase.table("deadlines").rows.extend(
+            [
+                {
+                    "id": str(uuid4()),
+                    "user_id": str(test_user_id),
+                    "scan_id": scan_id,
+                    "title": "t",
+                    "description": None,
+                    "due_date": "2099-01-01",
+                    "reminder_days": [1],
+                    "deadline_type": "action",
+                    "status": "active",
+                    "auto_created": True,
+                    "created_at": datetime.now(UTC).isoformat(),
+                },
+                {
+                    "id": str(uuid4()),
+                    "user_id": str(test_user_id),
+                    "scan_id": other["id"],
+                    "title": "keep",
+                    "description": None,
+                    "due_date": "2099-01-01",
+                    "reminder_days": [1],
+                    "deadline_type": "action",
+                    "status": "active",
+                    "auto_created": True,
+                    "created_at": datetime.now(UTC).isoformat(),
+                },
+            ]
+        )
+
+        r = client.delete(f"/scans/{scan_id}", headers=auth_headers)
+        assert r.status_code == 204
+
+        msgs = fake_supabase.table("scan_messages").rows
+        assert all(m["scan_id"] != scan_id for m in msgs)
+        assert any(m["scan_id"] == other["id"] for m in msgs)
+        dds = fake_supabase.table("deadlines").rows
+        assert all(d["scan_id"] != scan_id for d in dds)
+        assert any(d["scan_id"] == other["id"] for d in dds)
+
+    def test_delete_unlinks_manual_deadlines_instead_of_deleting(
+        self, client, fake_supabase, auth_headers, test_user_id
+    ):
+        # Migration 0018: a reminder the user created by hand and linked to a
+        # scan must survive scan deletion (unlinked), not vanish silently.
+        row = _seed_scan(fake_supabase, str(test_user_id))
+        scan_id = row["id"]
+        manual_id = str(uuid4())
+        fake_supabase.table("deadlines").rows.append(
+            {
+                "id": manual_id,
+                "user_id": str(test_user_id),
+                "scan_id": scan_id,
+                "title": "Ручное напоминание",
+                "description": None,
+                "due_date": "2099-01-01",
+                "reminder_days": [1],
+                "deadline_type": "action",
+                "status": "active",
+                "auto_created": False,
+                "created_at": datetime.now(UTC).isoformat(),
+            }
+        )
+
+        r = client.delete(f"/scans/{scan_id}", headers=auth_headers)
+        assert r.status_code == 204
+
+        survivors = [d for d in fake_supabase.table("deadlines").rows if d["id"] == manual_id]
+        assert len(survivors) == 1
+        assert survivors[0]["scan_id"] is None
+
+    def test_delete_404_when_not_owner(self, client, fake_supabase, auth_headers):
+        row = _seed_scan(fake_supabase, "99999999-9999-9999-9999-999999999999")
+        r = client.delete(f"/scans/{row['id']}", headers=auth_headers)
+        assert r.status_code == 404
+
+
+class TestBulkDeleteScans:
+    def test_deletes_all_user_data_and_returns_counts(
+        self, client, fake_supabase, auth_headers, test_user_id
+    ):
+        s1 = _seed_scan(fake_supabase, str(test_user_id))
+        s2 = _seed_scan(fake_supabase, str(test_user_id))
+        fake_supabase.table("scan_messages").rows.append(
+            {
+                "id": str(uuid4()),
+                "scan_id": s1["id"],
+                "user_id": str(test_user_id),
+                "role": "user",
+                "content": "q",
+                "message_type": "text",
+                "created_at": datetime.now(UTC).isoformat(),
+            }
+        )
+        fake_supabase.table("deadlines").rows.extend(
+            [
+                {
+                    "id": str(uuid4()),
+                    "user_id": str(test_user_id),
+                    "scan_id": s1["id"],
+                    "title": "a",
+                    "description": None,
+                    "due_date": "2099-01-01",
+                    "reminder_days": [1],
+                    "deadline_type": "action",
+                    "status": "active",
+                    "auto_created": True,
+                    "created_at": datetime.now(UTC).isoformat(),
+                },
+                {
+                    "id": str(uuid4()),
+                    "user_id": str(test_user_id),
+                    "scan_id": s2["id"],
+                    "title": "b",
+                    "description": None,
+                    "due_date": "2099-01-01",
+                    "reminder_days": [1],
+                    "deadline_type": "action",
+                    "status": "active",
+                    "auto_created": True,
+                    "created_at": datetime.now(UTC).isoformat(),
+                },
+            ]
+        )
+        # Seed usage row for current month — must remain untouched after delete.
+        from app.services.limits import current_month
+
+        fake_supabase.table("usage_limits").rows.append(
+            {
+                "user_id": str(test_user_id),
+                "month": current_month(),
+                "scans_count": 4,
+                "questions_per_scan": {s1["id"]: 2},
+            }
+        )
+
+        r = client.delete("/scans", headers=auth_headers)
+        assert r.status_code == 200, r.json()
+        body = r.json()
+        assert body == {"deleted_scans": 2, "deleted_deadlines": 2}
+
+        assert fake_supabase.table("scans").rows == []
+        assert fake_supabase.table("scan_messages").rows == []
+        assert fake_supabase.table("deadlines").rows == []
+
+        # Monthly counter is preserved: deletion does not refund quota.
+        usage = fake_supabase.table("usage_limits").rows[0]
+        assert usage["scans_count"] == 4
+        assert usage["questions_per_scan"] == {s1["id"]: 2}
+
+    def test_does_not_touch_other_users(self, client, fake_supabase, auth_headers, test_user_id):
+        other_id = "99999999-9999-9999-9999-999999999999"
+        _seed_scan(fake_supabase, str(test_user_id))
+        other_scan = _seed_scan(fake_supabase, other_id)
+        fake_supabase.table("deadlines").rows.append(
+            {
+                "id": str(uuid4()),
+                "user_id": other_id,
+                "scan_id": other_scan["id"],
+                "title": "other",
+                "description": None,
+                "due_date": "2099-01-01",
+                "reminder_days": [1],
+                "deadline_type": "action",
+                "status": "active",
+                "auto_created": True,
+                "created_at": datetime.now(UTC).isoformat(),
+            }
+        )
+
+        r = client.delete("/scans", headers=auth_headers)
+        assert r.status_code == 200
+        assert r.json() == {"deleted_scans": 1, "deleted_deadlines": 0}
+
+        scans_left = fake_supabase.table("scans").rows
+        assert len(scans_left) == 1 and scans_left[0]["user_id"] == other_id
+        dds = fake_supabase.table("deadlines").rows
+        assert len(dds) == 1 and dds[0]["user_id"] == other_id
+
+    def test_empty_account_returns_zero_counts(self, client, auth_headers):
+        r = client.delete("/scans", headers=auth_headers)
+        assert r.status_code == 200
+        assert r.json() == {"deleted_scans": 0, "deleted_deadlines": 0}
+
+
+class TestDeleteDoesNotResetUsage:
+    """Regression: deletion must never refund the monthly scan quota."""
+
+    def test_single_scan_delete_does_not_change_scans_count(
+        self, client, fake_supabase, auth_headers, test_user_id
+    ):
+        from app.services.limits import current_month
+
+        row = _seed_scan(fake_supabase, str(test_user_id))
+        fake_supabase.table("usage_limits").rows.append(
+            {
+                "user_id": str(test_user_id),
+                "month": current_month(),
+                "scans_count": 3,
+                "questions_per_scan": {row["id"]: 1},
+            }
+        )
+
+        r = client.delete(f"/scans/{row['id']}", headers=auth_headers)
+        assert r.status_code == 204
+
+        usage = fake_supabase.table("usage_limits").rows[0]
+        assert usage["scans_count"] == 3
+        assert usage["questions_per_scan"] == {row["id"]: 1}
+
+    def test_bulk_delete_does_not_change_scans_count(self, client, fake_supabase, auth_headers, test_user_id):
+        from app.services.limits import current_month
+
+        _seed_scan(fake_supabase, str(test_user_id))
+        _seed_scan(fake_supabase, str(test_user_id))
+        fake_supabase.table("usage_limits").rows.append(
+            {
+                "user_id": str(test_user_id),
+                "month": current_month(),
+                "scans_count": 5,
+                "questions_per_scan": {},
+            }
+        )
+
+        r = client.delete("/scans", headers=auth_headers)
+        assert r.status_code == 200
+
+        usage = fake_supabase.table("usage_limits").rows[0]
+        assert usage["scans_count"] == 5
+
+    def test_free_user_cannot_bypass_quota_by_deleting(
+        self,
+        client,
+        fake_supabase,
+        auth_headers,
+        test_user_id,
+        mock_openai_classify,
+        mock_openai_analyze,
+        mock_rag_empty,
+    ):
+        _seed_profile(fake_supabase, str(test_user_id), plan="free")
+
+        # Exhaust the Free monthly cap (5 scans).
+        for _ in range(5):
+            r = client.post(
+                "/scans",
+                headers=auth_headers,
+                json={"image_paths": [f"{test_user_id}/p.jpg"]},
+            )
+            assert r.status_code == 201
+
+        # Wipe everything — counter must NOT reset.
+        r = client.delete("/scans", headers=auth_headers)
+        assert r.status_code == 200
+        assert r.json()["deleted_scans"] == 5
+
+        # 6th attempt must still be blocked by the monthly cap.
+        r = client.post(
+            "/scans",
+            headers=auth_headers,
+            json={"image_paths": [f"{test_user_id}/p.jpg"]},
+        )
+        assert r.status_code == 402
+        assert "5 scans/month" in r.json()["detail"]
 
 
 class TestHealth:

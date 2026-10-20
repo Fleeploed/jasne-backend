@@ -8,7 +8,8 @@ through the `validator` to drop hallucinated dates.
 import json
 import logging
 import re
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
+from dataclasses import dataclass
 from typing import Any
 
 from pydantic import ValidationError
@@ -17,8 +18,14 @@ from app.config import get_settings
 from app.models.schemas import AnalysisResult, ClassifierResult, UserLanguage
 from app.prompts import BASE_SYSTEM_PROMPT, CATEGORY_MODULES, LANGUAGE_MODULES, OSTATNI_MODULE
 from app.services.embeddings import get_openai_client
+from app.services.fee_guards import (
+    filter_fee_items,
+    mentions_fee,
+    should_suppress_fee_guidance,
+)
 from app.services.model_router import pick_analyzer_model
-from app.services.validator import filter_valid_deadlines
+from app.services.token_usage import extract_usage, log_usage
+from app.services.validator import detect_relative_deadline_days, filter_valid_deadlines
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +39,13 @@ STREAM_ANALYSIS_FIELDS: tuple[str, ...] = (
     "documents_needed",
     "tips",
     "deadlines",
+)
+
+# Deadlines must never reach the client before filter_valid_deadlines runs on
+# the full result — a streamed raw deadline could flash a hallucinated or past
+# date that later disappears. They are emitted only post-validation.
+STREAM_INCREMENTAL_FIELDS: tuple[str, ...] = tuple(
+    field for field in STREAM_ANALYSIS_FIELDS if field != "deadlines"
 )
 
 _CONFIRMATION_ACTION_BLOCKLIST = (
@@ -54,50 +68,10 @@ _CONFIRMATION_ACTION_BLOCKLIST = (
     "оплат",
 )
 
-_FEE_TERMS = (
-    "poplatek",
-    "poplatku",
-    "kolk",
-    "kolku",
-    "kolky",
-    "uhradit",
-    "zaplatit",
-    "fee",
-    "payment",
-    "stamp",
-    "оплат",
-    "платеж",
-    "платіж",
-    "колк",
-)
 
-
-def _ascii_fold(text: str) -> str:
-    replacements = str.maketrans(
-        {
-            "á": "a",
-            "č": "c",
-            "ď": "d",
-            "é": "e",
-            "ě": "e",
-            "í": "i",
-            "ň": "n",
-            "ó": "o",
-            "ř": "r",
-            "š": "s",
-            "ť": "t",
-            "ú": "u",
-            "ů": "u",
-            "ý": "y",
-            "ž": "z",
-        }
-    )
-    return text.lower().translate(replacements)
-
-
-def _looks_like_submission_confirmation(classifier: ClassifierResult) -> bool:
+def _looks_like_submission_confirmation(classifier: ClassifierResult, ocr_text: str) -> bool:
     doc_type = classifier.doc_type.lower()
-    ocr = classifier.ocr_text.lower()
+    ocr = ocr_text.lower()
     return (
         "potvrzeni_o_podani_zadosti" in doc_type
         or "potvrzeni o podani zadosti" in doc_type
@@ -105,46 +79,8 @@ def _looks_like_submission_confirmation(classifier: ClassifierResult) -> bool:
     )
 
 
-def _looks_like_card_pickup_notice(classifier: ClassifierResult) -> bool:
-    doc_type = _ascii_fold(classifier.doc_type)
-    ocr = _ascii_fold(classifier.ocr_text)
-    return (
-        "vyzva_k_prevzeti_prukazu" in doc_type
-        or "vyzva k prevzeti prukazu" in ocr
-        or "prevzeti prukazu o povoleni k dlouhodobemu pobytu" in ocr
-    )
-
-
-def _has_checked_positive_fee(ocr_text: str) -> bool:
-    text = _ascii_fold(ocr_text)
-    checked = r"(?:\[x\]|\(x\)|☒|✅|✓|✔|x)"
-    amount = r"(?:300|1\s*000|1000|2\s*500|2500)\s*(?:kc|kč)"
-    positive_checked = re.compile(rf"(?:{checked}\s*{amount})|(?:{amount}\s*{checked})")
-    return bool(positive_checked.search(text))
-
-
-def _has_checked_no_fee(ocr_text: str) -> bool:
-    text = _ascii_fold(ocr_text)
-    checked = r"(?:\[x\]|\(x\)|☒|✅|✓|✔|x)"
-    return bool(re.search(rf"{checked}\s*bez poplatku\s*\(0\s*(?:kc|kč)\)", text))
-
-
-def _should_suppress_fee_guidance(classifier: ClassifierResult) -> bool:
-    if not _looks_like_card_pickup_notice(classifier):
-        return False
-    if _has_checked_no_fee(classifier.ocr_text):
-        return True
-    return not _has_checked_positive_fee(classifier.ocr_text)
-
-
-def _mentions_fee(text: str) -> bool:
-    folded = _ascii_fold(text)
-    lowered = text.lower()
-    return any(term in folded or term in lowered for term in _FEE_TERMS)
-
-
-def _filter_fee_items(items: list[str]) -> list[str]:
-    return [item for item in items if not _mentions_fee(item)]
+def _classifier_should_suppress_fee_guidance(classifier: ClassifierResult, ocr_text: str) -> bool:
+    return should_suppress_fee_guidance(classifier.doc_type, ocr_text)
 
 
 def _strip_unconfirmed_fee_text(text: str | None) -> str | None:
@@ -158,7 +94,7 @@ def _strip_unconfirmed_fee_text(text: str | None) -> str | None:
         flags=re.IGNORECASE,
     )
     sentences = re.split(r"(?<=[.!?])\s+", cleaned.strip())
-    kept = [sentence for sentence in sentences if sentence and not _mentions_fee(sentence)]
+    kept = [sentence for sentence in sentences if sentence and not mentions_fee(sentence)]
     return " ".join(kept).strip() or None
 
 
@@ -181,32 +117,104 @@ def _clean_confirmation_actions(actions: list[str], language: UserLanguage) -> l
     return kept or [_confirmation_followup_action(language)]
 
 
-def _apply_card_pickup_fee_guardrail(result: AnalysisResult, classifier: ClassifierResult) -> AnalysisResult:
-    if not _should_suppress_fee_guidance(classifier):
-        return result
+# ---------------------------------------------------------------------------
+# Declarative post-processing guardrails
+#
+# Each guardrail is (condition, per-field transforms). One registry drives BOTH
+# the batch path (transform the whole result) and the stream path (transform a
+# single just-completed field), so the two can't drift — historically they were
+# two hand-maintained if-ladders that already disagreed when a doc matched both
+# rules. Transforms take (value, language) and are defensive about types because
+# stream values come from partial JSON. Add a new doc_type rule here, not as
+# another branch in two places.
+# ---------------------------------------------------------------------------
 
-    result.summary = _strip_unconfirmed_fee_text(result.summary) or result.summary
-    result.tips = _strip_unconfirmed_fee_text(result.tips)
-    result.actions_required = _filter_fee_items(result.actions_required)
-    result.documents_needed = _filter_fee_items(result.documents_needed)
-    return result
+FieldTransform = Callable[[Any, UserLanguage], Any]
+
+
+@dataclass(frozen=True)
+class Guardrail:
+    name: str
+    applies: Callable[[ClassifierResult, str], bool]
+    field_transforms: dict[str, FieldTransform]
+
+
+def _strip_fee_keep_original(value: Any, _language: UserLanguage) -> Any:
+    # summary must never go empty just because every sentence mentioned a fee.
+    if not isinstance(value, str):
+        return value
+    return _strip_unconfirmed_fee_text(value) or value
+
+
+def _strip_fee(value: Any, _language: UserLanguage) -> Any:
+    if not isinstance(value, str):
+        return value
+    return _strip_unconfirmed_fee_text(value)
+
+
+def _filter_fee(value: Any, _language: UserLanguage) -> Any:
+    if not isinstance(value, list):
+        return value
+    return filter_fee_items(value)
+
+
+def _to_empty_list(_value: Any, _language: UserLanguage) -> list[Any]:
+    return []
+
+
+def _to_none(_value: Any, _language: UserLanguage) -> None:
+    return None
+
+
+def _clean_confirmation(value: Any, language: UserLanguage) -> Any:
+    if not isinstance(value, list):
+        return value
+    return _clean_confirmation_actions([str(action) for action in value], language)
+
+
+ANALYSIS_GUARDRAILS: tuple[Guardrail, ...] = (
+    Guardrail(
+        name="card_pickup_unconfirmed_fee",
+        applies=_classifier_should_suppress_fee_guidance,
+        field_transforms={
+            "summary": _strip_fee_keep_original,
+            "tips": _strip_fee,
+            "actions_required": _filter_fee,
+            "documents_needed": _filter_fee,
+        },
+    ),
+    Guardrail(
+        name="submission_confirmation",
+        applies=_looks_like_submission_confirmation,
+        field_transforms={
+            "documents_needed": _to_empty_list,
+            "penalty": _to_none,
+            "deadlines": _to_empty_list,
+            "actions_required": _clean_confirmation,
+        },
+    ),
+)
+
+
+def _active_guardrails(classifier: ClassifierResult, ocr_text: str) -> list[Guardrail]:
+    return [rail for rail in ANALYSIS_GUARDRAILS if rail.applies(classifier, ocr_text)]
 
 
 def _apply_analysis_guardrails(
     result: AnalysisResult,
     classifier: ClassifierResult,
+    ocr_text: str,
     language: UserLanguage,
 ) -> AnalysisResult:
-    """Last-line defense against RAG-driven hallucinations for known doc types."""
-    result = _apply_card_pickup_fee_guardrail(result, classifier)
+    """Last-line defense against RAG-driven hallucinations for known doc types.
 
-    if not _looks_like_submission_confirmation(classifier):
-        return result
-
-    result.documents_needed = []
-    result.penalty = None
-    result.deadlines = []
-    result.actions_required = _clean_confirmation_actions(result.actions_required, language)
+    Applies every matching guardrail's transforms to the whole result, in
+    registry order (so a later rule can override an earlier one on the same
+    field, e.g. submission-confirmation blanking documents_needed).
+    """
+    for rail in _active_guardrails(classifier, ocr_text):
+        for field, transform in rail.field_transforms.items():
+            setattr(result, field, transform(getattr(result, field), language))
     return result
 
 
@@ -214,22 +222,15 @@ def _sanitize_stream_field(
     field: str,
     value: Any,
     classifier: ClassifierResult,
+    ocr_text: str,
     language: UserLanguage,
 ) -> Any:
-    if not _looks_like_submission_confirmation(classifier):
-        if not _should_suppress_fee_guidance(classifier):
-            return value
-        if field in {"summary", "tips"} and isinstance(value, str):
-            return _strip_unconfirmed_fee_text(value)
-        if field in {"actions_required", "documents_needed"} and isinstance(value, list):
-            return _filter_fee_items([str(item) for item in value])
-        return value
-    if field == "documents_needed":
-        return []
-    if field in {"penalty", "deadlines"}:
-        return None if field == "penalty" else []
-    if field == "actions_required" and isinstance(value, list):
-        return _clean_confirmation_actions([str(action) for action in value], language)
+    """Apply the same guardrail transforms to one just-completed streamed field,
+    so the preview matches the persisted (batch-processed) result."""
+    for rail in _active_guardrails(classifier, ocr_text):
+        transform = rail.field_transforms.get(field)
+        if transform is not None:
+            value = transform(value, language)
     return value
 
 
@@ -244,7 +245,13 @@ def _build_system_prompt(category: str, language: UserLanguage, has_datova_schra
     )
 
 
-def _build_user_message(classifier: ClassifierResult, rag_chunks: list[str], language: UserLanguage) -> str:
+def _build_user_message(
+    classifier: ClassifierResult,
+    ocr_text: str,
+    page_count: int,
+    rag_chunks: list[str],
+    language: UserLanguage,
+) -> str:
     rag_context = (
         "\n\n---\n".join(rag_chunks)
         if rag_chunks
@@ -256,17 +263,19 @@ def _build_user_message(classifier: ClassifierResult, rag_chunks: list[str], lan
         f"TYP DOKUMENTU: {classifier.doc_type}\n"
         f"ODESÍLATEL: {classifier.sender or 'neznámý'}\n"
         f"OCR CONFIDENCE: {classifier.confidence:.2f}\n"
-        f"POČET STRAN: {classifier.page_count}\n\n"
+        f"POČET STRAN: {page_count}\n\n"
         f"CÍLOVÝ JAZYK VÝSTUPU: {language}\n"
         "POZOR: OCR dokument může být česky, ale uživatelská textová pole "
         "musí být v cílovém jazyce výstupu.\n\n"
-        f"OCR TEXT:\n{classifier.ocr_text}\n\n"
+        f"OCR TEXT:\n{ocr_text}\n\n"
         f"BÁZE ZNALOSTÍ (RAG):\n{rag_context}"
     )
 
 
 def _build_messages(
     classifier: ClassifierResult,
+    ocr_text: str,
+    page_count: int,
     rag_chunks: list[str],
     language: UserLanguage,
     has_datova_schranka: bool,
@@ -276,7 +285,10 @@ def _build_messages(
             "role": "system",
             "content": _build_system_prompt(classifier.category, language, has_datova_schranka),
         },
-        {"role": "user", "content": _build_user_message(classifier, rag_chunks, language)},
+        {
+            "role": "user",
+            "content": _build_user_message(classifier, ocr_text, page_count, rag_chunks, language),
+        },
     ]
 
 
@@ -319,11 +331,53 @@ def _parse_analysis_result(raw: str) -> AnalysisResult:
         raise ValueError(f"LLM output failed schema: {exc.errors()[0]['msg']}") from exc
 
 
-def _filter_deadlines(result: AnalysisResult, classifier: ClassifierResult) -> AnalysisResult:
+def _relative_deadline_tip(days: int, language: UserLanguage) -> str:
+    if language == "en":
+        return (
+            f"The document sets a deadline of {days} days from delivery/receipt. "
+            "We can't auto-calculate the date, so add a manual reminder once you "
+            "know the delivery date."
+        )
+    if language == "uk":
+        return (
+            f"У документі є строк {days} днів від доручення. Точну дату ми не можемо "
+            "розрахувати автоматично — додайте нагадування вручну, коли знатимете дату вручення."
+        )
+    if language == "ru":
+        return (
+            f"В документе указан срок {days} дней с момента вручения. Точную дату мы не можем "
+            "рассчитать автоматически — добавьте напоминание вручную, когда узнаете дату вручения."
+        )
+    return (
+        f"Dokument uvádí lhůtu {days} dnů od doručení. Přesné datum neumíme spočítat "
+        "automaticky — až budete znát datum doručení, přidejte si připomínku ručně."
+    )
+
+
+def _append_relative_deadline_tip(
+    result: AnalysisResult, ocr_text: str, language: UserLanguage
+) -> AnalysisResult:
+    days = detect_relative_deadline_days(ocr_text)
+    if days is None:
+        return result
+    tip = _relative_deadline_tip(days, language)
+    existing = (result.tips or "").strip()
+    if tip in existing:
+        return result
+    result.tips = f"{existing}\n{tip}".strip() if existing else tip
+    return result
+
+
+def _filter_deadlines(
+    result: AnalysisResult,
+    classifier: ClassifierResult,
+    ocr_text: str,
+    language: UserLanguage,
+) -> AnalysisResult:
     # Last-line defense against hallucinated deadlines.
     kept, rejected = filter_valid_deadlines(
         result.deadlines,
-        source_text=classifier.ocr_text,
+        source_text=ocr_text,
         category=classifier.category,
     )
     if rejected:
@@ -334,11 +388,18 @@ def _filter_deadlines(result: AnalysisResult, classifier: ClassifierResult) -> A
             rejected,
         )
     result.deadlines = kept
+    # Relative deadlines never produce a valid absolute date; surface them as a
+    # manual-reminder tip instead of dropping silently. Skip ostatni (no auto
+    # deadlines by design).
+    if classifier.category != "ostatni":
+        result = _append_relative_deadline_tip(result, ocr_text, language)
     return result
 
 
 async def analyze_document(
     classifier: ClassifierResult,
+    ocr_text: str,
+    page_count: int,
     rag_chunks: list[str],
     language: UserLanguage,
     has_datova_schranka: bool,
@@ -351,14 +412,18 @@ async def analyze_document(
     response = await client.chat.completions.create(
         model=model,
         temperature=0.2,
-        max_tokens=settings.openai_max_output_tokens,
+        max_tokens=settings.openai_analyzer_max_output_tokens,
         response_format={"type": "json_object"},
-        messages=_build_messages(classifier, rag_chunks, language, has_datova_schranka),
+        messages=_build_messages(classifier, ocr_text, page_count, rag_chunks, language, has_datova_schranka),
     )
 
     raw = response.choices[0].message.content or "{}"
+    log_usage("analyze", model, extract_usage(response), category=classifier.category)
     result = _apply_analysis_guardrails(
-        _filter_deadlines(_parse_analysis_result(raw), classifier), classifier, language
+        _filter_deadlines(_parse_analysis_result(raw), classifier, ocr_text, language),
+        classifier,
+        ocr_text,
+        language,
     )
 
     logger.info(
@@ -374,6 +439,8 @@ async def analyze_document(
 
 async def stream_analyze_document(
     classifier: ClassifierResult,
+    ocr_text: str,
+    page_count: int,
     rag_chunks: list[str],
     language: UserLanguage,
     has_datova_schranka: bool,
@@ -386,15 +453,21 @@ async def stream_analyze_document(
     stream = await client.chat.completions.create(
         model=model,
         temperature=0.2,
-        max_tokens=settings.openai_max_output_tokens,
+        max_tokens=settings.openai_analyzer_max_output_tokens,
         response_format={"type": "json_object"},
         stream=True,
-        messages=_build_messages(classifier, rag_chunks, language, has_datova_schranka),
+        # Emits a final usage-only chunk (empty choices) after the content.
+        stream_options={"include_usage": True},
+        messages=_build_messages(classifier, ocr_text, page_count, rag_chunks, language, has_datova_schranka),
     )
 
     emitted: set[str] = set()
     raw_parts: list[str] = []
+    stream_usage: dict[str, int] | None = None
     async for event in stream:
+        usage = extract_usage(event)
+        if usage is not None:
+            stream_usage = usage
         if not event.choices:
             continue
         delta = event.choices[0].delta.content or ""
@@ -402,17 +475,22 @@ async def stream_analyze_document(
             continue
         raw_parts.append(delta)
         buffer = "".join(raw_parts)
-        for field, value in _extract_completed_json_fields(buffer, emitted).items():
+        for field, value in _extract_completed_json_fields(
+            buffer, emitted, fields=STREAM_INCREMENTAL_FIELDS
+        ).items():
             emitted.add(field)
             yield {
                 "type": "field",
                 "field": field,
-                "value": _sanitize_stream_field(field, value, classifier, language),
+                "value": _sanitize_stream_field(field, value, classifier, ocr_text, language),
             }
 
     raw = "".join(raw_parts) or "{}"
     result = _apply_analysis_guardrails(
-        _filter_deadlines(_parse_analysis_result(raw), classifier), classifier, language
+        _filter_deadlines(_parse_analysis_result(raw), classifier, ocr_text, language),
+        classifier,
+        ocr_text,
+        language,
     )
     data = result.model_dump(mode="json")
     for field in STREAM_ANALYSIS_FIELDS:
@@ -420,6 +498,7 @@ async def stream_analyze_document(
             emitted.add(field)
             yield {"type": "field", "field": field, "value": data.get(field)}
 
+    log_usage("analyze_stream", model, stream_usage, category=classifier.category)
     logger.info(
         "Analysis streamed model=%s category=%s confidence=%.2f deadlines=%d actions=%d fields=%d",
         model,

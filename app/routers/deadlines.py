@@ -9,8 +9,8 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
-from app.middleware.auth import get_current_user_id
-from app.models.schemas import DeadlineCreate, DeadlineResponse, DeadlineUpdate
+from app.middleware.auth import get_active_user_id
+from app.models.schemas import DeadlineCreate, DeadlineResponse, DeadlineStatus, DeadlineUpdate
 from app.services.rag import get_supabase
 
 logger = logging.getLogger(__name__)
@@ -35,20 +35,33 @@ async def _ensure_scan_owned(scan_id: UUID, user_id: UUID) -> None:
 @router.get("", response_model=list[DeadlineResponse])
 async def list_deadlines(
     only_active: bool = True,
-    user_id: UUID = Depends(get_current_user_id),
+    status_filter: DeadlineStatus | None = None,
+    limit: int = 50,
+    offset: int = 0,
+    user_id: UUID = Depends(get_active_user_id),
 ) -> list[DeadlineResponse]:
+    limit = max(1, min(limit, 100))
+    offset = max(0, offset)
+
     supabase = await get_supabase()
     query = supabase.table("deadlines").select("*").eq("user_id", str(user_id))
-    if only_active:
+    if status_filter is not None:
+        query = query.eq("status", status_filter)
+    elif only_active:
         query = query.eq("status", "active")
-    result = await query.order("due_date").execute()
+
+    result = (
+        await query.order("due_date", desc=status_filter == "completed")
+        .range(offset, offset + limit - 1)
+        .execute()
+    )
     return [DeadlineResponse.model_validate(row) for row in (result.data or [])]
 
 
 @router.get("/{deadline_id}", response_model=DeadlineResponse)
 async def get_deadline(
     deadline_id: UUID,
-    user_id: UUID = Depends(get_current_user_id),
+    user_id: UUID = Depends(get_active_user_id),
 ) -> DeadlineResponse:
     supabase = await get_supabase()
     result = (
@@ -67,7 +80,7 @@ async def get_deadline(
 @router.post("", response_model=DeadlineResponse, status_code=status.HTTP_201_CREATED)
 async def create_deadline(
     body: DeadlineCreate,
-    user_id: UUID = Depends(get_current_user_id),
+    user_id: UUID = Depends(get_active_user_id),
 ) -> DeadlineResponse:
     supabase = await get_supabase()
     if body.scan_id is not None:
@@ -91,7 +104,7 @@ async def create_deadline(
 async def update_deadline(
     deadline_id: UUID,
     body: DeadlineUpdate,
-    user_id: UUID = Depends(get_current_user_id),
+    user_id: UUID = Depends(get_active_user_id),
 ) -> DeadlineResponse:
     updates = body.model_dump(exclude_none=True, mode="json")
     if not updates:
@@ -118,7 +131,7 @@ async def update_deadline(
 @router.delete("/{deadline_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_deadline(
     deadline_id: UUID,
-    user_id: UUID = Depends(get_current_user_id),
+    user_id: UUID = Depends(get_active_user_id),
 ) -> None:
     supabase = await get_supabase()
     await (
