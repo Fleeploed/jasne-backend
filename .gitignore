@@ -1,7 +1,8 @@
 # ===== Secrets & local config =====
 .env
-.env.local
-.env.*.local
+.env.*
+!.env.example
+!.env.*.example
 *.pem
 *.key
 
@@ -79,3 +80,18 @@ test.txt
 notes.txt
 # Local data
 knowledge/
+
+# Private credentials and local service configuration
+*.p8
+*.p12
+*.pfx
+*.mobileprovision
+*.jks
+*.keystore
+credentials.json
+service-account*.json
+serviceAccount*.json
+GoogleService-Info.plist
+google-services.json
+sentry.properties
+help-admin/config.js

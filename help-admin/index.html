@@ -797,15 +797,21 @@
 
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/js-yaml@4.1.0/dist/js-yaml.min.js"></script>
+  <script src="./config.js"></script>
   <script>
-    // ================== EDIT THESE ==================
-    const SUPABASE_URL = "https://ndestbxknbgaxxdjoqkv.supabase.co";
-    const SUPABASE_ANON_KEY = "REDACTED_PUBLIC_SUPABASE_ANON_KEY";
+    // Public client configuration is loaded from ignored config.js.
+    const SUPABASE_URL = window.JASNE_ADMIN_CONFIG?.supabaseUrl;
+    const SUPABASE_ANON_KEY = window.JASNE_ADMIN_CONFIG?.supabaseAnonKey;
 
     // Бэкенд для прокси-вызовов перевода (браузер сам в DeepL не пускают из-за CORS).
     // DeepL-ключ хранится в backend env var DEEPL_API_KEY, не в этом файле.
-    const BACKEND_URL = "https://jasne-backend.onrender.com";
+    const BACKEND_URL = window.JASNE_ADMIN_CONFIG?.backendUrl;
     // ================================================
+
+    if (!SUPABASE_URL || !SUPABASE_ANON_KEY || !BACKEND_URL) {
+      document.body.textContent = "Админка не настроена. Создайте config.js по инструкции в README.";
+      throw new Error("Missing help-admin configuration");
+    }
 
     const { createClient } = window.supabase;
     const sb = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
